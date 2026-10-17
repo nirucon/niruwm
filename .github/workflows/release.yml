@@ -13,7 +13,7 @@ on:
       nirubar_ref:
         description: "nirubar tag/branch to bundle"
         required: true
-        default: "minimal-bar"
+        default: "main"
   push:
     tags: ["v*"]
 
@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: nirucon/nirubar
-          ref: ${{ inputs.nirubar_ref || 'minimal-bar' }}
+          ref: ${{ inputs.nirubar_ref || 'main' }}
           path: nirubar
       - uses: dtolnay/rust-toolchain@stable
         with:

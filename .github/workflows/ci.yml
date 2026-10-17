@@ -86,7 +86,7 @@ jobs:
         run: |
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
           if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
-            git clone --depth 1 --branch minimal-bar https://github.com/nirucon/nirubar /tmp/nirubar-src
+            git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
             ( cd /tmp/nirubar-src && cargo build --release --locked && cp target/release/nirubar /tmp/niru/bin/ )
           else
             # Debian bookworm ships Rust 1.63; use the same static artifact
