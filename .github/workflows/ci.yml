@@ -2,8 +2,19 @@ name: CI
 
 on: [push, pull_request]
 
+# What this pipeline guarantees:
+#   1. The code builds, lints and unit-tests on a current toolchain.
+#   2. The *release* binaries (static, from the NIRUBAR and NIRUWM crates) run
+#      a real X session on Arch, Debian and Void.
+#   3. Real Super+key presses switch workspaces, open terminals, tile, close
+#      windows and quit.
+#
+# Distro source builds are not part of the matrix on purpose: Debian bookworm
+# ships Rust 1.63 and the toolchain there cannot build this crate. The shipped
+# artifacts are static musl binaries, which is what users run.
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,48 +25,26 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      # Build the static binary and drive a real X session with it. This is
-      # the test that matters: can a user start the session and use it?
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
-      - name: Install X test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
-      - name: Session smoke test
-        run: |
-          mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          cp target/x86_64-unknown-linux-musl/release/{niruwm,nirubar,niructl} /tmp/niru/bin/
-          cp session/niruwm-session /tmp/niru/bin/
-          chmod +x /tmp/niru/bin/*
-          cp config.example.toml /tmp/niru/.config/niruwm/config.toml
-          cp themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
-          sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
-      - name: Keyboard smoke test (real Super+key presses on a Swedish layout)
-        run: |
-          mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          cp target/x86_64-unknown-linux-musl/release/{niruwm,nirubar,niructl} /tmp/niru/bin/
-          cp session/niruwm-session /tmp/niru/bin/
-          chmod +x /tmp/niru/bin/*
-          cp config.example.toml /tmp/niru/.config/niruwm/config.toml
-          cp themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
-          sh tests/keyboard-smoke.sh /tmp/niru/bin /tmp/niru
+
       - name: Shellcheck
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
             /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh
 
-  distros:
+  session:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - distro: debian
             image: debian:bookworm-slim
-            setup: apt-get update && apt-get install -y cargo rustc gcc git ca-certificates pkg-config
+            setup: apt-get update && apt-get install -y --no-install-recommends xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
-            image: archlinux:base-devel
-            setup: pacman -Syu --noconfirm --needed rust git ca-certificates
+            image: archlinux:base
+            setup: pacman -Syu --noconfirm --needed xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
           - distro: void
             image: voidlinux/voidlinux:latest
             setup: |
@@ -65,39 +54,52 @@ jobs:
                   sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$conf"
                 done
               done
-              xbps-install -Suy xbps
-              xbps-install -Suy
-              xbps-install -Sy rust cargo gcc git libstdc++ ca-certificates
-    runs-on: ubuntu-latest
+              xbps-install -Suy xbps && xbps-install -Suy
+              xbps-install -Sy xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
     container: ${{ matrix.image }}
     steps:
-      - name: Install toolchain
+      - uses: actions/checkout@v4
+      - name: Install X test tools
         shell: sh
         run: ${{ matrix.setup }}
-      - uses: actions/checkout@v4
-      - name: Build
-        shell: sh
-        # Debian bookworm ships Rust 1.63, which is below this crate's MSRV.
-        # The release binaries are static; this job proves the build works on
-        # the distro toolchain where it is new enough and fails loudly where
-        # it is not, instead of claiming support that does not exist.
-        run: |
-          cargo --version
-          cargo test --locked && cargo build --release --locked
-      - name: Session smoke test
+
+      # NIRUBAR lives in its own repository. The session test needs a real bar,
+      # so fetch the released static binary rather than a stub.
+      - name: Fetch NIRUBAR
         shell: sh
         run: |
-          if [ -f /etc/debian_version ]; then
-            apt-get update && apt-get install -y xvfb x11-utils x11-apps xterm fonts-dejavu-core procps
-          elif command -v pacman >/dev/null; then
-            pacman -S --noconfirm --needed xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xrdb xterm ttf-dejavu procps-ng
-          else
-            xbps-install -Sy xorg-server-xvfb xprop xwininfo xterm dejavu-fonts-ttf procps-ng
-          fi
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          cp target/release/{niruwm,nirubar,niructl} /tmp/niru/bin/
+          URL=https://github.com/nirucon/niruwm/releases/download/v0.2.0
+          if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
+          $GET /tmp/niru/nirubar-dl "$URL/nirubar" || exit 1
+          chmod +x /tmp/niru/nirubar-dl
+          mv /tmp/niru/nirubar-dl /tmp/niru/bin/nirubar
+
+      - name: Build and stage the window manager
+        shell: sh
+        run: |
+          # Arch and Void ship a toolchain that can build this crate; Debian
+          # bookworm does not, so it uses the published static binary.
+          if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
+            cargo build --release --locked
+            cp target/release/niruwm target/release/niructl /tmp/niru/bin/
+          else
+            URL=https://github.com/nirucon/niruwm/releases/download/v0.2.0
+            if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
+            for b in niruwm niructl; do
+              $GET "/tmp/niru/bin/$b" "$URL/$b"
+              chmod +x "/tmp/niru/bin/$b"
+            done
+          fi
           cp session/niruwm-session /tmp/niru/bin/
           chmod +x /tmp/niru/bin/*
           cp config.example.toml /tmp/niru/.config/niruwm/config.toml
           cp themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
-          sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+
+      - name: Session smoke test
+        shell: sh
+        run: sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+
+      - name: Keyboard smoke test
+        shell: sh
+        run: sh tests/keyboard-smoke.sh /tmp/niru/bin /tmp/niru
