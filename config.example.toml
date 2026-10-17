@@ -1,5 +1,7 @@
-# Shared by niruwm and nirubar: ~/.config/niru/config.toml
-# Invalid settings are rejected; reload retains the working configuration.
+# NIRUWM + NIRUBAR shared configuration.
+# Location: ~/.config/niruwm/config.toml (or $XDG_CONFIG_HOME/niruwm/).
+# Both programs read this file. Unknown keys are rejected so typos are visible;
+# the installer creates it once and never overwrites your edits.
 theme = "niru-noir"
 gap = 8
 border_width = 2
@@ -10,3 +12,14 @@ launcher = ["rofi", "-show", "drun"]
 
 font_size = 15.0
 # font_path = "/path/to/your/monospace.ttf"
+
+[bar]
+# The bar is a separate process; NIRUWM starts it from PATH.
+enabled = true
+# Keep it minimal: workspace tags, Swedish date and hh:mm.
+# Set title = true to show the focused window title between them.
+title = false
+title_max = 60
+# Width of one workspace cell, in pixels.
+cell_width = 30
+separator = "|"

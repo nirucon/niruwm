@@ -1,9 +1,11 @@
+mod clients;
 mod events;
 mod keys;
+
 use crate::config::{Config, Result, Theme};
 use crate::layout::{Layout, Rect};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     process::{Child, Command},
 };
 use x11rb::{
@@ -12,42 +14,61 @@ use x11rb::{
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
+
 #[derive(Clone)]
-struct Client {
+pub(crate) struct Client {
     win: Window,
     tag: u32,
     floating: bool,
     fullscreen: bool,
     geom: Rect,
+    /// Set for windows that asked for WM_TAKE_FOCUS; focus is then delivered
+    /// as a message rather than with SetInputFocus.
+    take_focus: bool,
 }
+
 pub(crate) struct Wm {
-    c: RustConnection,
-    root: Window,
-    atoms: HashMap<&'static str, Atom>,
-    clients: Vec<Client>,
-    focus: Option<Window>,
-    tag: u32,
-    cfg: Config,
-    theme: Theme,
-    layout: Layout,
-    bar: Option<Child>,
-    hidden: std::collections::HashSet<Window>,
-    pending_unmaps: HashMap<Window, u32>,
+    pub(crate) c: RustConnection,
+    pub(crate) root: Window,
+    pub(crate) screen_w: u16,
+    pub(crate) screen_h: u16,
+    pub(crate) atoms: HashMap<&'static str, Atom>,
+    pub(crate) clients: Vec<Client>,
+    pub(crate) focus: Option<Window>,
+    pub(crate) tag: u32,
+    pub(crate) cfg: Config,
+    pub(crate) theme: Theme,
+    pub(crate) layout: Layout,
+    pub(crate) bar: Option<Child>,
+    pub(crate) hidden: HashSet<Window>,
+    pub(crate) pending_unmaps: HashMap<Window, u32>,
+    /// Cached keycode → keysym lookup. Reading the keyboard mapping on every
+    /// key press costs an X round trip; it only changes on MappingNotify.
+    pub(crate) keys: HashMap<u8, u32>,
 }
+
 impl Wm {
-    fn atom(&self, n: &str) -> Atom {
+    pub(crate) fn atom(&self, n: &str) -> Atom {
         self.atoms[n]
     }
-    fn prop(&self, w: Window, n: &str, t: Atom, v: &[u32]) -> Result<()> {
+
+    pub(crate) fn prop(&self, w: Window, n: &str, t: Atom, v: &[u32]) -> Result<()> {
         self.c
             .change_property32(PropMode::REPLACE, w, self.atom(n), t, v)?;
         Ok(())
     }
+
     pub(crate) fn new() -> Result<Self> {
         let cfg = Config::load()?;
         let theme = Theme::load(&cfg.theme)?;
         let (c, s) = x11rb::connect(None)?;
         let root = c.setup().roots[s].root;
+        let screen_w = c.setup().roots[s].width_in_pixels;
+        let screen_h = c.setup().roots[s].height_in_pixels;
+
+        // SubstructureRedirect is the standard "no other WM" lock. It fails
+        // cleanly when another window manager owns the display, so the session
+        // returns to SDDM instead of drawing over another desktop.
         c.change_window_attributes(
             root,
             &ChangeWindowAttributesAux::new().event_mask(
@@ -55,18 +76,25 @@ impl Wm {
                     | EventMask::SUBSTRUCTURE_NOTIFY
                     | EventMask::PROPERTY_CHANGE
                     | EventMask::STRUCTURE_NOTIFY
-                    | EventMask::KEY_PRESS,
+                    | EventMask::KEY_PRESS
+                    | EventMask::BUTTON_PRESS
+                    | EventMask::POINTER_MOTION
+                    | EventMask::ENTER_WINDOW
+                    | EventMask::FOCUS_CHANGE,
             ),
         )?
         .check()
-        .map_err(|_| "Another window manager is running; choose a separate X session")?;
+        .map_err(|_| "Another window manager is already running on this display")?;
+
         let mut atoms = HashMap::new();
         for n in [
             "_NET_SUPPORTED",
             "_NET_SUPPORTING_WM_CHECK",
             "_NET_WM_NAME",
             "UTF8_STRING",
+            "WM_NAME",
             "_NET_CLIENT_LIST",
+            "_NET_CLIENT_LIST_STACKING",
             "_NET_ACTIVE_WINDOW",
             "_NET_CURRENT_DESKTOP",
             "_NET_NUMBER_OF_DESKTOPS",
@@ -75,19 +103,31 @@ impl Wm {
             "_NET_WM_WINDOW_TYPE",
             "_NET_WM_WINDOW_TYPE_DOCK",
             "_NET_WM_WINDOW_TYPE_DIALOG",
+            "_NET_WM_WINDOW_TYPE_UTILITY",
+            "_NET_WM_WINDOW_TYPE_SPLASH",
             "_NET_WM_STATE",
             "_NET_WM_STATE_FULLSCREEN",
+            "_NET_WM_STATE_HIDDEN",
+            "_NET_WM_STATE_ABOVE",
+            "_NET_WM_STATE_STICKY",
+            "_NET_WM_STRUT_PARTIAL",
+            "_NET_WM_STRUT",
+            "_NET_WM_PID",
             "WM_PROTOCOLS",
             "WM_DELETE_WINDOW",
             "WM_STATE",
             "WM_TAKE_FOCUS",
             "_NIRUWM_COMMAND",
+            "_NIRUWM_QUIT",
         ] {
             atoms.insert(n, c.intern_atom(false, n.as_bytes())?.reply()?.atom);
         }
+
         let mut wm = Self {
             c,
             root,
+            screen_w,
+            screen_h,
             atoms,
             clients: vec![],
             focus: None,
@@ -96,14 +136,40 @@ impl Wm {
             theme,
             layout: Layout::Tile,
             bar: None,
-            hidden: Default::default(),
+            hidden: HashSet::new(),
             pending_unmaps: HashMap::new(),
+            keys: HashMap::new(),
         };
-        let check = wm.c.generate_id()?;
-        wm.c.create_window(
+        wm.announce()?;
+        wm.refresh_keymap()?;
+        wm.grab()?;
+        let existing = wm.c.query_tree(root)?.reply()?.children;
+        let viewable: Vec<Window> = existing
+            .into_iter()
+            .filter(|w| {
+                wm.c.get_window_attributes(*w)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .map(|a| a.map_state == MapState::VIEWABLE && !a.override_redirect)
+                    .unwrap_or(false)
+            })
+            .collect();
+        for w in viewable {
+            wm.manage(w)?;
+        }
+        wm.arrange()?;
+        wm.start_bar();
+        Ok(wm)
+    }
+
+    /// Advertise EWMH support. Panels (NIRUBAR, polybar), pagers and
+    /// `wmctrl` all decide what to show from `_NET_SUPPORTED`.
+    fn announce(&self) -> Result<()> {
+        let check = self.c.generate_id()?;
+        self.c.create_window(
             0,
             check,
-            root,
+            self.root,
             -1,
             -1,
             1,
@@ -113,319 +179,80 @@ impl Wm {
             0,
             &CreateWindowAux::new(),
         )?;
-        wm.prop(
-            root,
+        self.prop(
+            self.root,
             "_NET_SUPPORTING_WM_CHECK",
             AtomEnum::WINDOW.into(),
             &[check],
         )?;
-        wm.prop(
+        self.prop(
             check,
             "_NET_SUPPORTING_WM_CHECK",
             AtomEnum::WINDOW.into(),
             &[check],
         )?;
-        wm.c.change_property8(
+        self.c.change_property8(
             PropMode::REPLACE,
             check,
-            wm.atom("_NET_WM_NAME"),
-            wm.atom("UTF8_STRING"),
-            b"NIRUWM",
+            self.atom("_NET_WM_NAME"),
+            self.atom("UTF8_STRING"),
+            format!("NIRUWM {}", env!("CARGO_PKG_VERSION")).as_bytes(),
         )?;
-        wm.prop(
-            root,
+        let supported: Vec<u32> = self
+            .atoms
+            .iter()
+            .filter(|(n, _)| n.starts_with("_NET_") && **n != "_NET_SUPPORTED")
+            .map(|(_, a)| *a)
+            .collect();
+        self.prop(
+            self.root,
             "_NET_SUPPORTED",
             AtomEnum::ATOM.into(),
-            &wm.atoms
-                .iter()
-                .filter(|(n, _)| n.starts_with("_NET_"))
-                .map(|(_, a)| *a)
-                .collect::<Vec<_>>(),
+            &supported,
         )?;
-        wm.prop(
-            root,
+        self.prop(
+            self.root,
             "_NET_NUMBER_OF_DESKTOPS",
             AtomEnum::CARDINAL.into(),
             &[9],
         )?;
-        wm.c.change_property8(
+        self.c.change_property8(
             PropMode::REPLACE,
-            root,
-            wm.atom("_NET_DESKTOP_NAMES"),
-            wm.atom("UTF8_STRING"),
+            self.root,
+            self.atom("_NET_DESKTOP_NAMES"),
+            self.atom("UTF8_STRING"),
             b"1\x002\x003\x004\x005\x006\x007\x008\x009\x00",
         )?;
-        wm.grab()?;
-        let children = wm.c.query_tree(root)?.reply()?.children;
-        for w in children {
-            let attr = wm.c.get_window_attributes(w)?.reply();
-            if let Ok(a) = attr {
-                if a.map_state == MapState::VIEWABLE && !a.override_redirect {
-                    wm.manage(w)?;
-                }
-            }
-        }
-        wm.arrange()?;
-        wm.bar = Command::new("nirubar").spawn().ok();
-        Ok(wm)
-    }
-    fn grab(&self) -> Result<()> {
-        self.c.ungrab_key(0, self.root, ModMask::ANY)?;
-        let setup = self.c.setup();
-        let map = self
-            .c
-            .get_keyboard_mapping(setup.min_keycode, setup.max_keycode - setup.min_keycode + 1)?
-            .reply()?;
-        for (i, syms) in map
-            .keysyms
-            .chunks(map.keysyms_per_keycode as usize)
-            .enumerate()
-        {
-            if syms.iter().any(|s| {
-                matches!(
-                    *s,
-                    0x31..=0x39
-                        | 0xff0d
-                        | 0xff09
-                        | 0x6a
-                        | 0x6b
-                        | 0x71
-                        | 0x74
-                        | 0x6d
-                        | 0x66
-                        | 0x70
-                        | 0x68
-                        | 0x6c
-                        | 0x72
-                        | 0x20
-                        | 0x79
-                        | 0x63
-                        | 0x65
-                        | 0x7a
-                        | 0x73
-                )
-            }) {
-                for extra in [0, 2, 16, 18] {
-                    for action in [0, 1, 4, 5] {
-                        self.c.grab_key(
-                            false,
-                            self.root,
-                            (u16::from(ModMask::M4) | extra | action).into(),
-                            (i + setup.min_keycode as usize) as u8,
-                            GrabMode::ASYNC,
-                            GrabMode::ASYNC,
-                        )?;
-                    }
-                }
-            }
-        }
         Ok(())
     }
-    fn values(&self, w: Window, n: &str) -> Vec<u32> {
-        self.c
-            .get_property(false, w, self.atom(n), AtomEnum::ANY, 0, 64)
-            .ok()
-            .and_then(|r| r.reply().ok())
-            .and_then(|r| r.value32().map(|v| v.collect()))
-            .unwrap_or_default()
+
+    /// Start the bar from PATH unless a session script already did.
+    ///
+    /// `niruwm-session` starts the bar before the WM so the strut exists
+    /// before the first window is tiled, and sets `NIRUWM_SESSION_BAR`.
+    /// Running `niruwm` directly (nested tests, tty start) still gets a bar.
+    fn start_bar(&mut self) {
+        if !self.cfg.bar.enabled {
+            return;
+        }
+        if std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
+            return;
+        }
+        match Command::new("nirubar").spawn() {
+            Ok(child) => self.bar = Some(child),
+            Err(e) => eprintln!("niruwm: cannot start nirubar: {e}"),
+        }
     }
-    fn manage(&mut self, w: Window) -> Result<()> {
-        if self.clients.iter().any(|c| c.win == w) {
-            return Ok(());
-        }
-        let a = self.c.get_window_attributes(w)?.reply()?;
-        if a.override_redirect {
-            return Ok(());
-        }
-        if self
-            .values(w, "_NET_WM_WINDOW_TYPE")
-            .contains(&self.atom("_NET_WM_WINDOW_TYPE_DOCK"))
-        {
-            self.c.map_window(w)?;
-            return Ok(());
-        }
-        let g = self.c.get_geometry(w)?.reply()?;
-        let transient = self
-            .c
-            .get_property(false, w, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)?
-            .reply()?
-            .value32()
-            .and_then(|mut v| v.next());
-        let floating = transient.is_some()
-            || self
-                .values(w, "_NET_WM_WINDOW_TYPE")
-                .contains(&self.atom("_NET_WM_WINDOW_TYPE_DIALOG"));
-        self.c.change_window_attributes(
-            w,
-            &ChangeWindowAttributesAux::new()
-                .event_mask(EventMask::ENTER_WINDOW | EventMask::PROPERTY_CHANGE),
-        )?;
-        self.clients.push(Client {
-            win: w,
-            tag: self.tag,
-            floating,
-            fullscreen: false,
-            geom: Rect {
-                x: g.x,
-                y: g.y,
-                w: g.width,
-                h: g.height,
-            },
-        });
-        self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
-        self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[self.tag])?;
-        self.c.map_window(w)?;
-        self.set_focus(w)?;
-        self.arrange()
-    }
-    fn set_focus(&mut self, w: Window) -> Result<()> {
-        self.focus = Some(w);
-        self.c
-            .set_input_focus(InputFocus::POINTER_ROOT, w, x11rb::CURRENT_TIME)?;
-        if self
-            .values(w, "WM_PROTOCOLS")
-            .contains(&self.atom("WM_TAKE_FOCUS"))
-        {
-            self.c.send_event(
-                false,
-                w,
-                EventMask::NO_EVENT,
-                ClientMessageEvent::new(
-                    32,
-                    w,
-                    self.atom("WM_PROTOCOLS"),
-                    [self.atom("WM_TAKE_FOCUS"), x11rb::CURRENT_TIME, 0, 0, 0],
-                ),
-            )?;
-        }
-        self.prop(
-            self.root,
-            "_NET_ACTIVE_WINDOW",
-            AtomEnum::WINDOW.into(),
-            &[w],
-        )?;
-        for c in &self.clients {
-            let color = if c.win == w {
-                &self.theme.focus
-            } else {
-                &self.theme.border
-            };
-            self.c.change_window_attributes(
-                c.win,
-                &ChangeWindowAttributesAux::new().border_pixel(Theme::pixel(color)?),
-            )?;
-        }
-        Ok(())
-    }
-    fn arrange(&mut self) -> Result<()> {
-        let screen = self.c.get_geometry(self.root)?.reply()?;
-        let area = Rect {
-            x: 0,
-            y: self.cfg.bar_height as i16,
-            w: screen.width,
-            h: screen.height.saturating_sub(self.cfg.bar_height),
-        };
-        let n = self
-            .clients
-            .iter()
-            .filter(|c| c.tag == self.tag && !c.floating && !c.fullscreen)
-            .count();
-        let boxes = self
-            .layout
-            .arrange(area, n, self.cfg.master_ratio, self.cfg.gap);
-        let mut idx = 0;
-        for c in &self.clients {
-            if c.tag != self.tag {
-                if !self.hidden.contains(&c.win) {
-                    self.hidden.insert(c.win);
-                    *self.pending_unmaps.entry(c.win).or_default() += 1;
-                    self.c.unmap_window(c.win)?;
-                }
-                continue;
-            }
-            if self.hidden.remove(&c.win) {
-                self.c.map_window(c.win)?;
-            }
-            let r = if c.fullscreen {
-                Rect {
-                    x: 0,
-                    y: 0,
-                    w: screen.width,
-                    h: screen.height,
-                }
-            } else if c.floating || self.layout == Layout::Floating {
-                c.geom
-            } else {
-                let r = boxes[idx];
-                idx += 1;
-                r
-            };
-            let b = if c.fullscreen || (!c.floating && (n == 1 || self.layout == Layout::Monocle)) {
-                0
-            } else {
-                self.cfg.border_width
-            };
-            self.c.configure_window(
-                c.win,
-                &ConfigureWindowAux::new()
-                    .x(i32::from(r.x))
-                    .y(i32::from(r.y))
-                    .width(u32::from(r.w.saturating_sub(b * 2).max(1)))
-                    .height(u32::from(r.h.saturating_sub(b * 2).max(1)))
-                    .border_width(u32::from(b)),
-            )?;
-            if c.fullscreen {
-                self.c.configure_window(
-                    c.win,
-                    &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-                )?;
-            }
-        }
-        let visible = self
-            .clients
-            .iter()
-            .filter(|c| c.tag == self.tag)
-            .map(|c| c.win)
-            .collect::<Vec<_>>();
-        if !self.focus.map(|w| visible.contains(&w)).unwrap_or(false) {
-            if let Some(w) = visible.last() {
-                self.set_focus(*w)?;
-            } else {
-                self.focus = None;
-                self.c
-                    .set_input_focus(InputFocus::POINTER_ROOT, self.root, x11rb::CURRENT_TIME)?;
-                self.prop(
-                    self.root,
-                    "_NET_ACTIVE_WINDOW",
-                    AtomEnum::WINDOW.into(),
-                    &[],
-                )?;
-            }
-        }
-        self.prop(
-            self.root,
-            "_NET_CURRENT_DESKTOP",
-            AtomEnum::CARDINAL.into(),
-            &[self.tag],
-        )?;
-        self.prop(
-            self.root,
-            "_NET_CLIENT_LIST",
-            AtomEnum::WINDOW.into(),
-            &self.clients.iter().map(|c| c.win).collect::<Vec<_>>(),
-        )?;
-        self.c.flush()?;
-        Ok(())
-    }
-    fn spawn(args: &[String]) {
-        if let Some(a) = args.first() {
-            match Command::new(a).args(&args[1..]).spawn() {
+
+    pub(crate) fn start(&mut self, program: &[String]) {
+        if let Some((cmd, args)) = program.split_first() {
+            match Command::new(cmd).args(args).spawn() {
                 Ok(mut child) => {
                     std::thread::spawn(move || {
                         let _ = child.wait();
                     });
                 }
-                Err(e) => eprintln!("spawn {a}: {e}"),
+                Err(e) => eprintln!("niruwm: cannot start {cmd}: {e}"),
             }
         }
     }

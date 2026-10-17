@@ -1,5 +1,179 @@
 #!/bin/sh
-# Separate session: never edits .xinitrc or replaces dwm.
-bindir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-export PATH="$bindir:$PATH"
-exec "$bindir/niruwm"
+# NIRUWM X11 session — the single entry point for SDDM, startx and `uvm`.
+#
+# Design rules:
+#  * Never depend on NIRUPI. If NIRUPI helpers exist they are reused, because
+#    they already implement lock, idle, battery and power behaviour; otherwise
+#    NIRUWM falls back to plain X11 tools.
+#  * Never write outside $XDG_RUNTIME_DIR and the user's own cache.
+#  * Everything started here is tracked and killed on exit, so logging out
+#    leaves no bar, compositor or notification daemon behind.
+set -eu
+
+SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+PATH="$HOME/.local/bin:$SELF_DIR:$PATH"
+export PATH
+
+log() { printf '[niruwm] %s\n' "$*" >&2; }
+
+[ -n "${DISPLAY:-}" ] || { log "DISPLAY is unset; launch from SDDM or startx"; exit 1; }
+
+WM="$SELF_DIR/niruwm"
+for candidate in "$HOME/.local/bin/niruwm" "$SELF_DIR/niruwm"; do
+  [ -x "$candidate" ] && { WM="$candidate"; break; }
+done
+[ -x "$WM" ] || { log "niruwm binary not found"; exit 127; }
+
+BAR=""
+for candidate in "$SELF_DIR/nirubar" "$HOME/.local/bin/nirubar"; do
+  [ -x "$candidate" ] && { BAR="$candidate"; break; }
+done
+
+CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+NM_CONF="$CONFIG_HOME/niruwm/session.conf"
+SESSION_STATE="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}"
+mkdir -p "$SESSION_STATE" 2>/dev/null || true
+
+# ── User preferences (optional, never required) ──────────────────────────────
+# shellcheck source=/dev/null
+[ -r "$NM_CONF" ] && . "$NM_CONF"
+KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-se}"
+KEYBOARD_VARIANT="${KEYBOARD_VARIANT:-}"
+START_DUNST="${START_DUNST:-1}"
+START_PICOM="${START_PICOM:-1}"
+START_IDLE="${START_IDLE:-1}"
+
+# ── Session bus ──────────────────────────────────────────────────────────────
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
+  eval "$(dbus-launch --sh-syntax)"
+fi
+command -v dbus-update-activation-environment >/dev/null 2>&1 &&
+  dbus-update-activation-environment DISPLAY XAUTHORITY 2>/dev/null || :
+
+# ── Audio: only Void needs this; Arch and Debian use systemd user units ──────
+DISTRO=""
+[ -r /etc/os-release ] && DISTRO="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-}")"
+if [ "$DISTRO" = void ] && command -v pipewire >/dev/null 2>&1; then
+  : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"; export XDG_RUNTIME_DIR
+  if ! pgrep -u "$(id -u)" -x pipewire >/dev/null 2>&1; then
+    pipewire >/dev/null 2>&1 &
+    i=0
+    while [ "$i" -lt 100 ] && [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; do sleep 0.1; i=$((i + 1)); done
+  fi
+  for d in wireplumber pipewire-pulse; do
+    command -v "$d" >/dev/null 2>&1 || continue
+    pgrep -u "$(id -u)" -x "$d" >/dev/null 2>&1 || "$d" >/dev/null 2>&1 &
+  done
+fi
+
+# ── Environment: the NIRU Noir look used by every NIRUWM-adjacent app ───────
+export GTK_THEME="${GTK_THEME:-Adwaita:dark}"
+[ -f "$HOME/.gtkrc-2.0" ] && export GTK2_RC_FILES="$HOME/.gtkrc-2.0"
+command -v qt5ct >/dev/null 2>&1 && export QT_QPA_PLATFORMTHEME=qt5ct
+command -v qt6ct >/dev/null 2>&1 && export QT_QPA_PLATFORMTHEME=qt6ct
+command -v kvantummanager >/dev/null 2>&1 && export QT_STYLE_OVERRIDE=kvantum
+export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
+export COLORTERM=truecolor
+
+# ── Keyboard: Swedish by default, overridable ───────────────────────────────
+if command -v setxkbmap >/dev/null 2>&1; then
+  if [ -n "$KEYBOARD_VARIANT" ]; then
+    setxkbmap "$KEYBOARD_LAYOUT" -variant "$KEYBOARD_VARIANT" 2>/dev/null || log "setxkbmap failed"
+  else
+    setxkbmap "$KEYBOARD_LAYOUT" 2>/dev/null || log "setxkbmap failed"
+  fi
+fi
+
+[ -r "$HOME/.Xresources" ] && command -v xrdb >/dev/null 2>&1 && xrdb -merge "$HOME/.Xresources"
+
+# ── Root background: Niru Noir unless a wallpaper tool takes over ───────────
+BG="0f0f10"
+[ -r "$CONFIG_HOME/niruwm/themes/niru-noir.toml" ] &&
+  BG="$(sed -n 's/^background *= *"\([0-9a-fA-F]\{6\}\)".*/\1/p' "$CONFIG_HOME/niruwm/themes/niru-noir.toml" | head -n1)"
+command -v xsetroot >/dev/null 2>&1 && xsetroot -solid "#${BG:-0f0f10}" 2>/dev/null || :
+
+# ── Helper processes, all tracked for clean logout ──────────────────────────
+STATUS_PID=""; DUNST_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""
+cleanup() {
+  for pid in $STATUS_PID $DUNST_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID; do
+    [ -n "$pid" ] || continue
+    kill "$pid" 2>/dev/null || :
+  done
+  [ -n "${BAR_PID:-}" ] && kill "$BAR_PID" 2>/dev/null || :
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+if [ "$START_PICOM" = 1 ] && command -v picom >/dev/null 2>&1 &&
+   ! pgrep -u "$(id -u)" -x picom >/dev/null 2>&1; then
+  picom >/dev/null 2>&1 & PICOM_PID=$!
+fi
+if [ "$START_DUNST" = 1 ] && command -v dunst >/dev/null 2>&1 &&
+   ! pgrep -u "$(id -u)" -x dunst >/dev/null 2>&1; then
+  dunst >/dev/null 2>&1 & DUNST_PID=$!
+fi
+
+# Reuse NIRUPI's helpers when present: they implement the same behaviour the
+# user already trusts, and they are read-only to this script.
+LOCKER=""
+if command -v nirupi-lock.sh >/dev/null 2>&1; then
+  LOCKER=nirupi-lock.sh
+elif command -v slock >/dev/null 2>&1; then
+  LOCKER=slock
+elif command -v swaylock >/dev/null 2>&1; then
+  LOCKER=swaylock
+fi
+
+if [ "$START_IDLE" = 1 ] && [ -n "$LOCKER" ]; then
+  if command -v xidlehook >/dev/null 2>&1; then
+    xidlehook --not-when-fullscreen --not-when-audio \
+      --timer 300 'xset dpms force off' 'xset dpms force on' \
+      --timer 600 "$LOCKER" '' >/dev/null 2>&1 & IDLE_PID=$!
+  elif command -v xss-lock >/dev/null 2>&1; then
+    xss-lock --transfer-sleep-lock -- "$LOCKER" >/dev/null 2>&1 & LOCK_PID=$!
+  elif command -v xautolock >/dev/null 2>&1; then
+    xautolock -time 10 -locker "$LOCKER" >/dev/null 2>&1 & IDLE_PID=$!
+  fi
+fi
+
+# Battery guard: NIRUPI's if installed, otherwise nothing (never invent policy).
+if [ -x "$HOME/.local/bin/nirupi-battery.sh" ] && ls /sys/class/power_supply/BAT* >/dev/null 2>&1; then
+  "$HOME/.local/bin/nirupi-battery.sh" >/dev/null 2>&1 & BAT_PID=$!
+fi
+
+# Optional NIRUPI autostart (respects the user's existing app set).
+if [ -x "$HOME/.local/bin/nirupi-autostart.sh" ]; then
+  ( i=0
+    while [ "$i" -lt 100 ]; do
+      pgrep -u "$(id -u)" -x niruwm >/dev/null 2>&1 && break
+      sleep 0.2; i=$((i + 1))
+    done
+    sleep 1
+    NIRUPI_DETECT_WM=niruwm "$HOME/.local/bin/nirupi-autostart.sh" run
+  ) >/dev/null 2>&1 &
+fi
+
+# ── Start the bar, then the window manager ─────────────────────────────────
+if [ -n "$BAR" ]; then
+  "$BAR" >/dev/null 2>&1 & BAR_PID=$!
+  # Tell the WM that the bar is already owned by this session; otherwise it
+  # would start a second instance, fail the singleton lock and leave a zombie.
+  NIRUWM_SESSION_BAR=1
+  export NIRUWM_SESSION_BAR
+  # Give the bar a moment to claim its strut so the WM sees the reserved area.
+  sleep 0.2
+fi
+
+# NIRUWM runs in the foreground but is NOT exec'd: an `exec` replaces this
+# shell, so the EXIT trap (which kills the bar and helpers) would never run
+# and NIRUBAR would survive logout. The shell waits for the WM and cleans up.
+"$WM" "$@"
+STATUS=$?
+# WM is gone; stop the bar explicitly before the EXIT trap runs so that the
+# X connection is closed in a defined order.
+if [ -n "${BAR_PID:-}" ]; then
+  kill "$BAR_PID" 2>/dev/null || :
+  wait "$BAR_PID" 2>/dev/null || :
+fi
+exit "$STATUS"

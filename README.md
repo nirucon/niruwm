@@ -1,143 +1,175 @@
 # NIRUWM
 
-An independently written, minimal Rust/X11 tiling window manager for the NIRU desktop.
-Companion bar: [NIRUBAR](https://github.com/nirucon/nirubar).
+A small, fast X11 tiling window manager in Rust, with **NIRUBAR** as its status
+bar. Niru Noir styling, dwm-style keybindings and a session that sits next to
+NIRUPI DWM in SDDM — log out of one, log into the other, and back.
 
-**0.1.0-alpha.1 — an experimental foundation, not yet a replacement for the
-complete patched NIRUPI/dwm desktop.** Existing dwm installation and configuration
-are not modified. Start in a nested X server first.
+**0.2.0** — first build intended for real daily testing on a laptop with one
+screen. Read *Scope* below before switching your main session.
 
-## Implemented
+## What works in 0.2.0
 
-- Nine dwm-style workspaces, window assignment and keyboard focus navigation.
-- Right/left master-stack, monocle, centered master, fibonacci and floating layouts.
-- Adjustable master ratio, smart gaps/borders and keyboard promotion to master.
-- Floating transient/dialog windows; client-requested floating geometry.
-- Fullscreen requests, close protocol and active-window requests through X11/EWMH.
-- Safe tag hiding with delayed-UnmapNotify bookkeeping (covered by burst-switch tests).
-- `niructl` commands, shared TOML configuration and runtime reload.
-- Niru Noir by default, file-based custom themes, optional separate NIRUBAR process.
-- Refuses to take over an existing window manager's session.
+- Nine dwm-style workspaces with clickable cells in the bar.
+- Layouts: tile, left stack, monocle, centred master, fibonacci, floating.
+- Focus follows mouse, keyboard focus cycling, floating dialogs.
+- Fullscreen, close protocol, EWMH desktop/active-window/client-list
+  properties, `_NET_SUPPORTED` advertisement.
+- The bar reserves space through `_NET_WM_STRUT_PARTIAL`; tiles never sit
+  underneath it.
+- Swedish keyboard layout by default (`setxkbmap se`), changeable.
+- `niructl` for tags, layouts, theme, reload and a clean quit.
+- A session script that reuses NIRUPI helpers when they exist (lock, battery,
+  autostart) and works with **no NIRUPI and no Rust** when they do not.
+- Static binaries: no Rust, gcc or `-dev` packages needed to install.
 
-## Install and try
+## Scope and known limits (be honest with yourself)
 
-Install NIRUBAR first, then:
+- **One screen.** Coordinates already go through a monitor type, but 0.2.0
+  uses the whole X screen. Do not use it on a multi-monitor desk yet.
+- **X11 only.** Wayland is out of scope; NIRUPI's helpers are X11 programs.
+- No swallow, scratchpad, sticky windows or rule engine yet.
+- Mouse drag/resize of floating windows is not implemented.
+- The bar shows tags, the Swedish date and `hh:mm`. It is not a NIRUPI status
+  bar replacement: no battery, network, MPRIS or clickable popups yet.
+- Keybindings are built in for 0.2.0. They match NIRUPI DWM for the common
+  actions below; a `[keys]` table is the next milestone.
 
-```sh
-git clone https://github.com/nirucon/niruwm.git
-cd niruwm
-./install.sh
-~/.local/bin/niruwm --check-config
-```
-
-The installer builds the locked release, installs under `~/.local/bin`, backs up
-existing binaries, and creates configuration only when absent. It does not edit
-`.xinitrc`, change the current desktop or automatically switch sessions.
-
-For a nested test (Xephyr is `xserver-xephyr` on Debian):
-
-```sh
-Xephyr :2 -screen 1280x800 -ac -noreset &
-DISPLAY=:2 ~/.local/bin/niruwm-session
-```
-
-For a separate display-manager entry, run `./install.sh --register-session`.
-That explicit option uses sudo only to install `/usr/share/xsessions/niruwm.desktop`.
-Keep your dwm entry and select **NIRUWM (alpha)** manually when ready to test.
-This session currently launches the WM and bar only; it does not provision NIRUPI's
-idle/lock, notification, compositor or power services.
-
-## Keys
+## Keybindings (Super = Win key)
 
 | Keys | Action |
 | --- | --- |
-| Super+Enter | Kitty |
-| Super+P / Super+Shift+P | Launcher |
-| Super+1..9 | Show workspace |
-| Super+Shift+1..9 | Assign focused window |
-| Super+J/K or Super+Tab | Next/previous window |
-| Super+T / Y | Right/left stack |
-| Super+M / C | Monocle / centered master |
-| Super+Ctrl+E / Super+F | Fibonacci / floating layout |
-| Super+H/L | Change master ratio |
-| Super+Shift+Space | Toggle focused window floating |
-| Super+Shift+Z | Promote focused window to master |
-| Super+Shift+E | Toggle fullscreen |
-| Super+Q | Close focused window |
-| Super+R | Reload configuration and WM theme |
-| Super+Ctrl+Shift+Q | Exit the test session |
+| `Super+Enter` | terminal (`kitty`) |
+| `Super+P` | launcher (`rofi -show drun`) |
+| `Super+1` … `Super+9` | show workspace |
+| `Super+Shift+1` … `Super+Shift+9` | move focused window to workspace |
+| `Super+Tab` / `Super+Shift+Tab` | next / previous workspace |
+| `Super+J` / `Super+K` | next / previous window |
+| `Super+Left/Right/Up/Down` | focus previous / next |
+| `Super+Ctrl+Left/Right/Up/Down` | move floating window |
+| `Super+T` | tile (right stack) |
+| `Super+Y` | left stack |
+| `Super+M` | monocle |
+| `Super+C` | centred master |
+| `Super+F` | floating layout |
+| `Super+Ctrl+E` | fibonacci |
+| `Super+H` / `Super+L` | shrink / grow master |
+| `Super+Shift+Space` | toggle focused window floating |
+| `Super+Shift+E` | fullscreen |
+| `Super+Q` | close focused window |
+| `Super+R` | reload configuration and theme |
+| `Super+Ctrl+Shift+Q` | quit (clean logout) |
 
-Use `niructl reload` to reload both the WM and bar. Caps Lock and Num Lock are
-accounted for in key grabs. Swedish-layout letters are used for the main actions.
+Mouse
+
+- Click a workspace cell in the bar to switch.
+- Click a window to focus it.
+- Scroll on the root window to switch workspace (Super+wheel is not bound).
+
+## Install
 
 ```sh
-niructl status
-niructl tag 3
-niructl layout centered
-niructl theme niru-noir
-niructl reload
-niructl quit
+git clone https://github.com/nirucon/niruwm
+cd niruwm
+./install.sh --register-session
 ```
 
-## Explicit alpha limits and next milestones
+That is all: the installer downloads static binaries (NIRUWM, NIRUBAR,
+NIRUCTL), verifies their SHA256 against the release checksums and installs
+them under `~/.local/bin`. `--register-session` adds
+`/usr/share/xsessions/niruwm.desktop` with sudo.
 
-The current layout uses the X screen as one rectangle. **Independent physical
-monitor geometry/tags and hotplug are the next compatibility milestone**; avoid
-using this alpha as your daily multi-monitor session. Runtime application rules,
-swallow, scratchpad, sticky windows, mouse drag/resize, saved layout state, tray,
-and full NIRUPI keybinding parity are still pending. ICCCM/EWMH coverage is partial;
-Java, games, unusual focus models and input methods need dedicated testing.
+Then log out of NIRUPI DWM and pick **NIRUWM** in SDDM.
 
-The intended progression is: monitor model and hotplug → rules and saved state →
-swallow/scratchpad/sticky → NIRUPI integration → measured performance and daily-use
-qualification. Never replace the working dwm session before those gates pass.
+To build yourself instead (needs Rust 1.75+):
 
-## Build requirements
+```sh
+./install.sh --build --register-session
+```
 
-Rust/Cargo 1.75 or newer, a C linker, and an X11 session. No systemd dependency.
-The bar needs fontconfig plus a TrueType font (JetBrainsMono Nerd Font is preferred,
-DejaVu Sans Mono works). This first renderer targets 24/32-bit TrueColor screens.
+Other commands:
+
+```sh
+./install.sh --check      # verify binaries and session entry; no changes
+./install.sh --uninstall  # remove NIRUWM files and the SDDM entry
+```
+
+`--uninstall` never touches NIRUPI: not `dwm`, not `dwm-status.sh`, not
+`nirupi-session`, not `~/.xinitrc`, not the NIRUPI manifests.
+
+## Switch back and forth
+
+The SDDM entry is additive. NIRUPI DWM stays in the list:
+
+| What | Where |
+| --- | --- |
+| NIRUPI DWM session | `/usr/share/xsessions/nirupi-dwm.desktop` → `nirupi-session` |
+| NIRUWM session | `/usr/share/xsessions/niruwm.desktop` → `niruwm-session` |
+
+Both launch the same X session environment (D-Bus, PipeWire on Void, GTK/Qt
+theme, cursor, `setxkbmap`). NIRUWM reuses `nirupi-lock.sh`,
+`nirupi-battery.sh` and `nirupi-autostart.sh` when present, so the lock screen
+and battery guard behave as you are used to. Logging out of NIRUWM removes its
+bar and helpers; nothing from NIRUPI is stopped or modified.
+
+## Configuration
+
+`~/.config/niruwm/config.toml` (shared by NIRUWM and NIRUBAR):
+
+```toml
+theme = "niru-noir"
+gap = 8
+border_width = 2
+bar_height = 28
+master_ratio = 0.55
+terminal = ["kitty"]
+launcher = ["rofi", "-show", "drun"]
+
+[bar]
+enabled = true
+title = false      # set true to show the focused window title
+cell_width = 30
+```
+
+The English default plus an existing `~/.config/niru/config.toml` from the
+0.1 alpha is still read when the new path does not exist.
+
+Session options (`~/.config/niruwm/session.conf`), all optional:
+
+```sh
+KEYBOARD_LAYOUT=se
+# KEYBOARD_VARIANT=nodeadkeys
+START_DUNST=1
+START_PICOM=1
+START_IDLE=1
+```
+
+## Testing
+
+The session smoke test is the gate for a release. It starts a bare X server,
+launches the session, opens a client, switches workspaces, quits and verifies
+that nothing is left running:
+
+```sh
+sh tests/session-smoke.sh /path/to/bin "$HOME"
+```
+
+CI runs it on Arch, Debian and Void containers, and also renders the bar in
+Xvfb to catch text that silently stops drawing.
+
+## Build requirements (only for `--build`)
+
+Rust 1.75 or newer, a C linker, `fontconfig` and a monospace TrueType font
+(JetBrainsMono Nerd Font preferred, DejaVu Sans Mono works).
 
 ```sh
 # Arch
 sudo pacman -S --needed rust base-devel fontconfig ttf-dejavu kitty rofi
 # Debian
 sudo apt install cargo rustc build-essential fontconfig fonts-dejavu-core kitty rofi
-# Void (glibc)
+# Void
 sudo xbps-install -S rust cargo base-devel fontconfig dejavu-fonts-ttf kitty rofi
 ```
 
-Void musl is not yet a tested target. CI builds on Debian, Arch and Void glibc;
-these builds do not replace real hardware/session testing.
-
-## Configuration and themes
-
-Both programs read `~/.config/niru/config.toml` (or `$XDG_CONFIG_HOME/niru/config.toml`).
-See `config.example.toml`. Commands are argument arrays, never passed through a shell.
-**Niru Noir is the built-in default**, using NIRUPI's original palette:
-`0f0f10`, `e5e5e5`, `a8a8a8`, `2a2a2d`, `5a5a60`.
-
-Additional themes are files in `~/.config/niru/themes/NAME.toml`, following
-`themes/niru-noir.toml`. Set `theme = "NAME"` and run `niructl reload`, or use
-`niructl theme NAME`. This rewrites the TOML configuration while preserving values
-(comments are not preserved). Invalid configurations/themes are rejected.
-The working runtime configuration is retained when reload fails.
-
-`font_size` and optional `font_path` control the bar's Unicode TrueType renderer.
-Changing themes does not modify GTK, terminals or other applications yet.
-
-## Development
-
-```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-cargo build --release --locked
-# Isolated X11 tests (install xvfb and xauth first):
-xvfb-run -a cargo test --locked --test x11 -- --ignored --test-threads=1
-```
-
-Initial local verification: Rust 1.75, unit tests and real Xvfb integration tests.
-No performance advantage over dwm is claimed without measurements.
+## License
 
 MIT. Copyright 2026 Nicklas Rudolfsson.
