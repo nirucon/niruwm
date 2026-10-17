@@ -115,9 +115,20 @@ ok "layout bindings respond"
 
 # ── 7. Quit by keyboard ────────────────────────────────────────────────────
 xdotool key --clearmodifiers "super+ctrl+shift+q"
+# The WM is our child, so it becomes a zombie when it exits; `kill -0` would
+# still succeed, so inspect the process state instead.
+exited=0
 i=0
-while kill -0 "$WM_PID" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-kill -0 "$WM_PID" 2>/dev/null && fail "super+ctrl+shift+q did not quit"
+while [ "$i" -lt 100 ]; do
+  state=$(ps -o stat= -p "$WM_PID" 2>/dev/null || true)
+  if [ -z "$state" ] || [ "${state#Z}" != "$state" ]; then
+    exited=1
+    break
+  fi
+  sleep 0.05
+  i=$((i + 1))
+done
+[ "$exited" = 1 ] || fail "super+ctrl+shift+q did not quit (state: $state)"
 ok "super+ctrl+shift+q quits cleanly"
 
 echo "PASS keyboard-smoke"

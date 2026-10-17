@@ -171,9 +171,16 @@ fi
 "$WM" "$@"
 STATUS=$?
 # WM is gone; stop the bar explicitly before the EXIT trap runs so that the
-# X connection is closed in a defined order.
+# X connection is closed in a defined order. The wait is bounded: a bar that
+# ignores SIGTERM must not keep the login session alive.
 if [ -n "${BAR_PID:-}" ]; then
   kill "$BAR_PID" 2>/dev/null || :
+  i=0
+  while kill -0 "$BAR_PID" 2>/dev/null && [ "$i" -lt 30 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  kill -KILL "$BAR_PID" 2>/dev/null || :
   wait "$BAR_PID" 2>/dev/null || :
 fi
 exit "$STATUS"

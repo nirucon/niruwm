@@ -89,9 +89,22 @@ ok "returned to tag 1"
 
 # ── 6. Clean logout ────────────────────────────────────────────────────────
 niructl quit || fail "niructl quit failed"
+
+# Wait for the process to disappear. `kill -0` is not enough: the session is a
+# child of this script, so once it exits it stays a zombie (state Z) until
+# reaped, and `kill -0` still succeeds against a zombie.
+exited=0
 i=0
-while kill -0 "$SESSION" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
-kill -0 "$SESSION" 2>/dev/null && fail "session did not exit after quit"
+while [ "$i" -lt 100 ]; do
+  state=$(ps -o stat= -p "$SESSION" 2>/dev/null || true)
+  if [ -z "$state" ] || [ "${state#Z}" != "$state" ]; then
+    exited=1
+    break
+  fi
+  sleep 0.05
+  i=$((i + 1))
+done
+[ "$exited" = 1 ] || fail "session did not exit after quit (state: $state)"
 ok "session exited on quit"
 
 # No leftover bar process.

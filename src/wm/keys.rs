@@ -95,12 +95,6 @@ impl Wm {
             // A grabbed key that matches no binding (layout changed under us).
             return Ok(true);
         };
-        if std::env::var_os("NIRUWM_DEBUG_KEYS").is_some() {
-            eprintln!(
-                "KEY detail={} state={:#x} -> {} {:?}",
-                e.detail, state, e.detail, b.action
-            );
-        }
         self.dispatch(b.action)
     }
 
