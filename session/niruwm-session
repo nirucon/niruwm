@@ -1,0 +1,4 @@
+#!/bin/sh
+# Separate session: never edits .xinitrc or replaces dwm.
+export PATH="$HOME/.local/bin:$PATH"
+exec niruwm

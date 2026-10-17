@@ -1,0 +1,48 @@
+name: Rust and X11
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base
+      - run: xvfb-run -a cargo test --locked --test x11 -- --ignored --test-threads=1
+
+  distros:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: debian
+            image: debian:trixie
+          - distro: arch
+            image: archlinux:base-devel
+          - distro: void
+            image: voidlinux/voidlinux:latest
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    steps:
+      - name: Bootstrap native Rust toolchain
+        shell: sh
+        run: |
+          case "${{ matrix.distro }}" in
+            debian) apt-get update && apt-get install -y cargo rustc gcc git ca-certificates ;;
+            arch) pacman -Syu --noconfirm --needed rust gcc git ca-certificates ;;
+            void)
+              for d in /etc/xbps.d /usr/share/xbps.d; do
+                [ ! -d "$d" ] || sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$d"/*.conf
+              done
+              xbps-install -Suy xbps
+              xbps-install -Suy
+              xbps-install -Sy rust cargo gcc git libstdc++ ca-certificates
+              ;;
+          esac
+      - uses: actions/checkout@v4
+      - run: cargo test --locked && cargo build --release --locked

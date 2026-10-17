@@ -1,0 +1,12 @@
+# Shared by niruwm and nirubar: ~/.config/niru/config.toml
+# Invalid settings are rejected; reload retains the working configuration.
+theme = "niru-noir"
+gap = 8
+border_width = 2
+bar_height = 28
+master_ratio = 0.55
+terminal = ["kitty"]
+launcher = ["rofi", "-show", "drun"]
+
+font_size = 15.0
+# font_path = "/path/to/your/monospace.ttf"
