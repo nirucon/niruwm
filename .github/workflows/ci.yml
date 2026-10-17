@@ -41,7 +41,7 @@ jobs:
         include:
           - distro: debian
             image: debian:bookworm-slim
-            setup: apt-get update && apt-get install -y --no-install-recommends xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
+            setup: apt-get update && apt-get install -y --no-install-recommends curl xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
             image: archlinux:base
             setup: pacman -Syu --noconfirm --needed xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
