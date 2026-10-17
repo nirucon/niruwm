@@ -178,7 +178,15 @@ install_config() {
 }
 
 register_session() {
-  [ -n "${DISPLAY:-}" ] || true
+  # Never write a root-owned session entry by accident: SDDM would start a
+  # session that cannot read the user's config, and the binaries would live in
+  # /root. This happened once when the installer was run under `sudo` instead
+  # of being allowed to ask for sudo itself.
+  [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] &&
+    die "run ./install.sh as $SUDO_USER, not under sudo"
+  case "$BINDIR" in
+    /root/*) die "refusing to register a session pointing into /root" ;;
+  esac
   tmp="$(mktemp)"
   cat > "$tmp" <<EOF
 [Desktop Entry]
