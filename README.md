@@ -17,7 +17,8 @@ screen. Read *Scope* below before switching your main session.
 - The bar reserves space through `_NET_WM_STRUT_PARTIAL`; tiles never sit
   underneath it.
 - Swedish keyboard layout by default (`setxkbmap se`), changeable.
-- `niructl` for tags, layouts, theme, reload and a clean quit.
+- `niructl` for tags, layouts, theme, reload and a clean quit. Commands are
+  synchronous: they return once the window manager has applied them.
 - A session script that reuses NIRUPI helpers when they exist (lock, battery,
   autostart) and works with **no NIRUPI and no Rust** when they do not.
 - Static binaries: no Rust, gcc or `-dev` packages needed to install.
@@ -31,39 +32,84 @@ screen. Read *Scope* below before switching your main session.
 - Mouse drag/resize of floating windows is not implemented.
 - The bar shows tags, the Swedish date and `hh:mm`. It is not a NIRUPI status
   bar replacement: no battery, network, MPRIS or clickable popups yet.
-- Keybindings are built in for 0.2.0. They match NIRUPI DWM for the common
-  actions below; a `[keys]` table is the next milestone.
+- One workspace visible at a time; dwm's tag bitmasks are not implemented.
+- No window rules, swallow or scratchpad yet.
 
 ## Keybindings (Super = Win key)
+
+The defaults follow NIRUPI DWM. Only `Super+P` differs: it opens the launcher
+directly (NIRUPI opens dmenu there) because NIRUWM has no dmenu integration yet.
 
 | Keys | Action |
 | --- | --- |
 | `Super+Enter` | terminal (`kitty`) |
+| `Super+Shift+Enter` | second terminal (`terminal_alt`) |
+| `Super+B` | browser (`nirupi-browser` if installed, else `browser`) |
 | `Super+P` | launcher (`rofi -show drun`) |
+| `Super+Shift+P` | NIRUPI unified launcher (`nirupi-launch.sh`) |
+| `Super+W` | window switcher |
+| `Super+F` … `Super+T` etc. | see layouts below |
 | `Super+1` … `Super+9` | show workspace |
-| `Super+Shift+1` … `Super+Shift+9` | move focused window to workspace |
+| `Super+Shift+1` … `Super+Shift+9` | move focused window |
+| `Super+0` / `Super+Shift+0` | last workspace / move there |
 | `Super+Tab` / `Super+Shift+Tab` | next / previous workspace |
-| `Super+J` / `Super+K` | next / previous window |
+| `Super+J` / `Super+K` | focus next / previous window |
 | `Super+Left/Right/Up/Down` | focus previous / next |
-| `Super+Ctrl+Left/Right/Up/Down` | move floating window |
+| `Super+Shift+Left/Right/Up/Down` | rotate the focused window in the stack |
+| `Super+Ctrl+Left/Right/Up/Down` | move a floating window |
+| `Super+Ctrl+Shift+arrows` | resize a floating window |
 | `Super+T` | tile (right stack) |
 | `Super+Y` | left stack |
 | `Super+M` | monocle |
 | `Super+C` | centred master |
+| `Super+U` | centred floating master |
 | `Super+F` | floating layout |
 | `Super+Ctrl+E` | fibonacci |
+| `Super+Ctrl+,` / `Super+Ctrl+.` | previous / next layout |
 | `Super+H` / `Super+L` | shrink / grow master |
+| `Super+I` / `Super+D` | more / fewer master windows |
 | `Super+Shift+Space` | toggle focused window floating |
 | `Super+Shift+E` | fullscreen |
 | `Super+Q` | close focused window |
+| `Super+Shift+Q` | NIRUPI power menu |
+| `Super+Ctrl+Shift+Q` | quit to SDDM |
 | `Super+R` | reload configuration and theme |
-| `Super+Ctrl+Shift+Q` | quit (clean logout) |
+| `Super+G` | toggle gaps |
+| `Super+Escape` | lock (`nirupi-lock.sh` or `slock`) |
+| `Super+V` | clipboard menu |
+| `Super+Print` / `Print` | screenshot |
+| `Super+Shift+R` | NIRUPI reload |
 
-Mouse
+NIRUPI helper bindings (`Super+Shift+M`, `Super+Alt+K`, `Super+Ctrl+T`,
+`Super+S`, `Super+Shift+C`, `Super+Shift+D`, `Super+Shift+L`, `Super+Shift+T`,
+`Super+N`, `Super+Shift+Z`, and more) run the matching `nirupi-*.sh` when it
+exists and do nothing otherwise.
 
-- Click a workspace cell in the bar to switch.
-- Click a window to focus it.
-- Scroll on the root window to switch workspace (Super+wheel is not bound).
+### Changing bindings
+
+Add a `[[keys]]` table to `config.toml`. Entries replace a default with the
+same keys:
+
+```toml
+[[keys]]
+keys = "super+ctrl+Return"
+action = "start alacritty"
+
+[[keys]]
+keys = "super+shift+c"
+action = "start google-chrome-stable"
+```
+
+Actions: `terminal`, `terminal_alt`, `browser`, `launcher`,
+`launcher_unified`, `window_switcher`, `start CMD`, `shell CMD`, `tag N`,
+`movetotag N`, `toggletag N`, `togglemovetotag N`, `layout NAME`,
+`layout_next`, `layout_prev`, `focus_next`, `focus_prev`, `move_next`,
+`move_prev`, `move_float left|right|up|down`, `toggle_float`,
+`toggle_fullscreen`, `close`, `quit`, `reload`, `toggle_gaps`, `swap_next`,
+`swap_prev`, `theme NAME`.
+
+Limits: `Super+Ctrl+N` and `Super+Ctrl+Shift+N` ("toggle tag") are accepted
+but 0.2.0 shows one workspace at a time.
 
 ## Install
 

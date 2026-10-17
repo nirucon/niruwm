@@ -1,4 +1,5 @@
 use super::*;
+use crate::bindings::{Action, LayoutId};
 
 impl Wm {
     pub(crate) fn run(&mut self) -> Result<()> {
@@ -36,7 +37,7 @@ impl Wm {
                     }
                     Event::KeyPress(e) => return self.key(e),
                     Event::MappingNotify(_) => {
-                        self.refresh_keymap()?;
+                        self.resolve_bindings()?;
                         self.grab()?;
                     }
                     Event::ConfigureNotify(e) if e.window == self.root => {
@@ -120,59 +121,40 @@ impl Wm {
     fn client_message(&mut self, e: ClientMessageEvent) -> Result<bool> {
         let d = e.data.as_data32();
         if e.type_ == self.atom("_NIRUWM_COMMAND") {
-            match d[0] {
-                1 if d[1] < 9 => self.tag = d[1],
-                2 => {
-                    // movetotag: move the focused window to tag d[1] and
-                    // follow it, like dwm's `tag`.
-                    if let Some(w) = self.focus {
-                        if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
-                            c.tag = d[1];
-                        }
-                        self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[d[1]])?;
-                        self.tag = d[1];
-                    }
+            // The control channel speaks the same actions as the key table,
+            // so `niructl` and a binding can never drift apart.
+            // The protocol carries zero-based indices (as EWMH does), while
+            // the binding table uses the numbers a user types. Convert here
+            // so both paths land on the same workspace.
+            let action = match d[0] {
+                1 if d[1] < 9 => Some(Action::FocusTag(d[1] + 1)),
+                2 if d[1] < 9 => Some(Action::MoveToTag(d[1] + 1)),
+                3 => Some(Action::SetLayout(match d[1] {
+                    1 => LayoutId::Monocle,
+                    2 => LayoutId::Left,
+                    3 => LayoutId::Centered,
+                    4 => LayoutId::Fibonacci,
+                    5 => LayoutId::Floating,
+                    _ => LayoutId::Tile,
+                })),
+                4 => Some(Action::Reload),
+                5 => Some(Action::Quit),
+                _ => None,
+            };
+            if let Some(action) = action {
+                if !self.dispatch(action)? {
+                    return Ok(false);
                 }
-                3 => {
-                    self.layout = match d[1] {
-                        1 => Layout::Monocle,
-                        2 => Layout::Left,
-                        3 => Layout::Centered,
-                        4 => Layout::Fibonacci,
-                        5 => Layout::Floating,
-                        _ => Layout::Tile,
-                    }
-                }
-                4 => {
-                    if let Ok(c) = Config::load() {
-                        if let Ok(t) = Theme::load(&c.theme) {
-                            let old_height = self.cfg.bar_height;
-                            self.cfg = c;
-                            self.theme = t;
-                            self.grab()?;
-                            if self.cfg.bar_height != old_height {
-                                if let Some(mut b) = self.bar.take() {
-                                    let _ = b.kill();
-                                    let _ = b.wait();
-                                }
-                                self.start_bar();
-                            }
-                        }
-                    }
-                }
-                5 => return Ok(false),
-                _ => (),
             }
             self.arrange()?;
         } else if e.type_ == self.atom("_NET_CURRENT_DESKTOP") && d[0] < 9 {
             // From NIRUBAR's clickable workspaces or an external pager.
-            self.tag = d[0];
-            self.arrange()?;
+            self.view_tag(d[0])?;
         } else if e.type_ == self.atom("_NET_ACTIVE_WINDOW") {
             if d[0] < 9 {
                 if let Some(c) = self.clients.iter().find(|c| c.win == e.window) {
-                    self.tag = c.tag;
-                    self.arrange()?;
+                    let tag = c.tag;
+                    self.view_tag(tag)?;
                     self.set_focus(e.window)?;
                 }
             }

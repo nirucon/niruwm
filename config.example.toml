@@ -7,7 +7,12 @@ gap = 8
 border_width = 2
 bar_height = 28
 master_ratio = 0.55
+
 terminal = ["kitty"]
+# Optional second terminal on Super+Shift+Enter (NIRUPI uses alacritty).
+terminal_alt = []
+browser = ["brave"]
+
 launcher = ["rofi", "-show", "drun"]
 
 font_size = 15.0
@@ -23,3 +28,21 @@ title_max = 60
 # Width of one workspace cell, in pixels.
 cell_width = 30
 separator = "|"
+
+# ── Key bindings ─────────────────────────────────────────────────────────────
+# Leave this empty to use the built-in table, which follows NIRUPI DWM.
+# An entry with the same keys as a default replaces that default; new keys are
+# added. Keys: super, shift, ctrl, alt. Names: Return, space, Tab, Escape,
+# Left/Right/Up/Down, Print, comma, period, F1..F35, or a single character.
+#
+# [[keys]]
+# keys = "super+Return"
+# action = "terminal"
+#
+# [[keys]]
+# keys = "super+shift+c"
+# action = "start google-chrome-stable"
+#
+# [[keys]]
+# keys = "super+ctrl+s"
+# action = "shell maim -s ~/Pictures/$(date +%s).png"

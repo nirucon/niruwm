@@ -20,10 +20,16 @@ pub struct Config {
     pub bar_height: u16,
     pub master_ratio: f32,
     pub terminal: Vec<String>,
+    /// Optional second terminal (`Super+Shift+Enter`), NIRUPI uses alacritty.
+    pub terminal_alt: Vec<String>,
+    pub browser: Vec<String>,
     pub launcher: Vec<String>,
     pub font_path: Option<String>,
     pub font_size: f32,
     pub bar: Bar,
+    /// Optional bindings. When empty, the built-in NIRUPI-compatible table is
+    /// used. Entries replace a default binding with the same keys.
+    pub keys: Vec<crate::bindings::RawBinding>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -52,10 +58,13 @@ impl Default for Config {
             bar_height: 28,
             master_ratio: 0.55,
             terminal: vec!["kitty".into()],
+            terminal_alt: Vec::new(),
+            browser: vec!["brave".into()],
             launcher: vec!["rofi".into(), "-show".into(), "drun".into()],
             font_path: None,
             font_size: 15.0,
             bar: Bar::default(),
+            keys: Vec::new(),
         }
     }
 }
@@ -111,6 +120,29 @@ impl Config {
         let c: Self = toml::from_str(&text)?;
         c.validate()?;
         Ok(c)
+    }
+
+    /// Final binding table: the defaults with any user entry replacing the
+    /// binding that uses the same keys.
+    #[allow(dead_code)] // used by the WM binary, shared with niructl
+    pub fn effective_keys(&self) -> Vec<crate::bindings::RawBinding> {
+        use crate::bindings::{parse_keys, RawBinding};
+        let mut table = crate::bindings::Action::defaults();
+        for user in &self.keys {
+            match parse_keys(&user.keys) {
+                Ok((mods, key)) => {
+                    let same =
+                        |k: &str| matches!(parse_keys(k), Ok((m, kk)) if m == mods && kk == key);
+                    table.retain(|b| !same(&b.keys));
+                    table.push(RawBinding {
+                        keys: user.keys.clone(),
+                        action: user.action.clone(),
+                    });
+                }
+                Err(e) => eprintln!("niruwm: ignoring binding {:?}: {e}", user.keys),
+            }
+        }
+        table
     }
 
     fn validate(&self) -> Result<()> {
@@ -190,6 +222,24 @@ mod tests {
         assert!(c.bar.enabled);
         assert!(!c.bar.title, "the bar defaults to tags and clock only");
         assert_eq!(c.bar.cell_width, 30);
+    }
+
+    #[test]
+    fn accepts_the_bar_config_unchanged() {
+        // NIRUBAR and NIRUWM share one file: a key the bar writes must not
+        // stop the window manager from starting.
+        let shared = r#"
+theme = "niru-noir"
+terminal = ["kitty"]
+
+[bar]
+title = true
+cell_width = 34
+"#;
+        let c: Config = toml::from_str(shared).expect("shared config must parse");
+        assert!(c.bar.title);
+        assert_eq!(c.bar.cell_width, 34);
+        assert_eq!(c.terminal, vec!["kitty"]);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod bindings;
 mod config;
 mod layout;
 mod wm;

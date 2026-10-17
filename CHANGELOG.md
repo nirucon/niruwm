@@ -7,6 +7,17 @@ and logged out of, on a real machine.
 
 ### Added
 
+- Configurable, NIRUPI-compatible key table (~110 bindings): terminals,
+  browser, launchers, all nine workspaces with move/toggle variants, seven
+  layouts, nmaster, floating movement/resize, NIRUPI helper scripts, lock,
+  screenshots, power menu and quit.
+- `[[keys]]` entries in `config.toml` replace a default with the same keys.
+- `terminal_alt` and `browser` settings. `Super+B` uses `nirupi-browser` when
+  installed, so it matches NIRUPI on a machine that has it.
+- `tests/keyboard-smoke.sh`: presses real Super combinations through XTEST on
+  a Swedish layout and checks workspace switching, opening terminals, tiling,
+  window closing and quitting.
+
 - `session/niruwm-session`: one entry point for SDDM, `startx` and manual
   starts. Sets up D-Bus, PipeWire (Void), GTK/Qt theming, cursor, Xresources
   and the Swedish keyboard layout; reuses NIRUPI's lock, battery and
@@ -22,6 +33,17 @@ and logged out of, on a real machine.
   Rust, compiler or `-dev` packages.
 
 ### Fixed
+
+- `niructl` returned before the WM applied a command, so scripts that read
+  `_NET_CURRENT_DESKTOP` immediately raced the event loop. Commands are now
+  synchronous.
+- Tag numbers are one-based in bindings (`super+3` is the third workspace),
+  while the EWMH property carries a zero-based index; the conversion happens
+  once, in one place.
+- A binding for `0` selected workspace 1 instead of the last one.
+- The bar rejected the shared configuration once the WM grew new keys; both
+  programs now accept every field of the shared file, with tests that fail if
+  they drift apart.
 
 - **Bar text was clipped.** Glyph rasterisation applied the outline's pixel
   offset twice, so almost every glyph fell outside its box and the bar looked

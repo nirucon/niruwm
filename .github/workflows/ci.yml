@@ -20,7 +20,7 @@ jobs:
       - name: Install X test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb x11-utils x11-apps xterm fonts-dejavu-core procps
+          sudo apt-get install -y xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
       - name: Session smoke test
         run: |
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
@@ -30,10 +30,20 @@ jobs:
           cp config.example.toml /tmp/niru/.config/niruwm/config.toml
           cp themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
           sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+      - name: Keyboard smoke test (real Super+key presses on a Swedish layout)
+        run: |
+          mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
+          cp target/x86_64-unknown-linux-musl/release/{niruwm,nirubar,niructl} /tmp/niru/bin/
+          cp session/niruwm-session /tmp/niru/bin/
+          chmod +x /tmp/niru/bin/*
+          cp config.example.toml /tmp/niru/.config/niruwm/config.toml
+          cp themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
+          sh tests/keyboard-smoke.sh /tmp/niru/bin /tmp/niru
       - name: Shellcheck
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
-            -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session /src/tests/session-smoke.sh
+            -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
+            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh
 
   distros:
     strategy:

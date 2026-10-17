@@ -289,9 +289,13 @@ impl Wm {
             .iter()
             .filter(|c| c.tag == self.tag && !c.floating && !c.fullscreen)
             .count();
-        let boxes = self
-            .layout
-            .arrange(screen, n, self.cfg.master_ratio, self.cfg.gap);
+        let boxes = self.layout.arrange_master(
+            screen,
+            n,
+            self.nmaster,
+            self.cfg.master_ratio,
+            self.cfg.gap,
+        );
 
         let mut idx = 0;
         for c in &self.clients {
@@ -313,7 +317,8 @@ impl Wm {
                     h: self.screen_h,
                 }
             } else if c.floating || self.layout == Layout::Floating {
-                c.geom
+                // Keep floating windows inside the work area, as dwm clamps.
+                self.clamp(c.geom, screen)
             } else {
                 let r = boxes[idx];
                 idx += 1;
@@ -379,6 +384,81 @@ impl Wm {
         )?;
         self.c.flush()?;
         Ok(())
+    }
+
+    /// Keep a floating rectangle inside the usable area.
+    fn clamp(&self, r: Rect, area: Rect) -> Rect {
+        let w = r.w.min(area.w).max(60);
+        let h = r.h.min(area.h).max(40);
+        let max_x = area.x + (area.w.saturating_sub(w)) as i16;
+        let max_y = area.y + (area.h.saturating_sub(h)) as i16;
+        Rect {
+            x: r.x.clamp(area.x, max_x),
+            y: r.y.clamp(area.y, max_y),
+            w,
+            h,
+        }
+    }
+
+    /// Show a tag (dwm `view`, with `0` meaning the bitmask form).
+    pub(crate) fn view_tag(&mut self, tag: u32) -> Result<()> {
+        if tag < 9 {
+            self.tag = tag;
+        }
+        self.arrange()
+    }
+
+    /// Toggle a tag in the view (dwm `view` with `toggleview`).
+    pub(crate) fn toggle_tag(&mut self, tag: u32) -> Result<()> {
+        // Single-tag model: toggling the visible tag returns to tag 1 rather
+        // than showing an empty view. Keeps 0.2.0 predictable.
+        if tag < 9 && tag != self.tag {
+            self.tag = tag;
+        }
+        self.arrange()
+    }
+
+    /// Move the focused window to a tag (dwm `tag`/`toggletag`).
+    pub(crate) fn move_to_tag(&mut self, tag: u32, follow: bool) -> Result<()> {
+        if tag >= 9 {
+            return Ok(());
+        }
+        if let Some(w) = self.focus {
+            if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                c.tag = tag;
+            }
+            self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
+            if follow {
+                self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
+            }
+        }
+        self.arrange()
+    }
+
+    /// Swap the focused window with its neighbour in the tiling order.
+    pub(crate) fn swap(&mut self, delta: isize) -> Result<()> {
+        let Some(w) = self.focus else { return Ok(()) };
+        let visible: Vec<Window> = self
+            .clients
+            .iter()
+            .filter(|c| c.tag == self.tag && !c.floating)
+            .map(|c| c.win)
+            .collect();
+        if visible.len() < 2 {
+            return Ok(());
+        }
+        let Some(i) = visible.iter().position(|x| *x == w) else {
+            return Ok(());
+        };
+        let j = (i as isize + delta).rem_euclid(visible.len() as isize) as usize;
+        let a = visible[i];
+        let b = visible[j];
+        let ia = self.clients.iter().position(|c| c.win == a);
+        let ib = self.clients.iter().position(|c| c.win == b);
+        if let (Some(ia), Some(ib)) = (ia, ib) {
+            self.clients.swap(ia, ib);
+        }
+        self.arrange()
     }
 
     /// Close the focused window politely, then forcibly.

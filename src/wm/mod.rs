@@ -2,6 +2,7 @@ mod clients;
 mod events;
 mod keys;
 
+use crate::bindings::Binding;
 use crate::config::{Config, Result, Theme};
 use crate::layout::{Layout, Rect};
 use std::{
@@ -42,9 +43,11 @@ pub(crate) struct Wm {
     pub(crate) bar: Option<Child>,
     pub(crate) hidden: HashSet<Window>,
     pub(crate) pending_unmaps: HashMap<Window, u32>,
-    /// Cached keycode → keysym lookup. Reading the keyboard mapping on every
-    /// key press costs an X round trip; it only changes on MappingNotify.
-    pub(crate) keys: HashMap<u8, u32>,
+    /// Resolved key bindings. Built once and rebuilt on MappingNotify or
+    /// reload, so a key press costs a lookup, never an X round trip.
+    pub(crate) bindings: Vec<Binding>,
+    /// Windows in the master column (dwm's nmaster).
+    pub(crate) nmaster: usize,
 }
 
 impl Wm {
@@ -138,10 +141,11 @@ impl Wm {
             bar: None,
             hidden: HashSet::new(),
             pending_unmaps: HashMap::new(),
-            keys: HashMap::new(),
+            bindings: Vec::new(),
+            nmaster: 1,
         };
         wm.announce()?;
-        wm.refresh_keymap()?;
+        wm.resolve_bindings()?;
         wm.grab()?;
         let existing = wm.c.query_tree(root)?.reply()?.children;
         let viewable: Vec<Window> = existing
@@ -244,15 +248,64 @@ impl Wm {
         }
     }
 
+    /// Reload configuration, theme and bindings. A broken file keeps the
+    /// working runtime instead of leaving a half-applied state.
+    pub(crate) fn reload(&mut self) -> Result<()> {
+        let cfg = match Config::load() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("niruwm: reload rejected: {e}");
+                return Ok(());
+            }
+        };
+        let theme = match Theme::load(&cfg.theme) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("niruwm: reload rejected: {e}");
+                return Ok(());
+            }
+        };
+        let old_height = self.cfg.bar_height;
+        self.cfg = cfg;
+        self.theme = theme;
+        self.resolve_bindings()?;
+        self.grab()?;
+        if self.cfg.bar_height != old_height {
+            if let Some(mut b) = self.bar.take() {
+                let _ = b.kill();
+                let _ = b.wait();
+            }
+            std::env::remove_var("NIRUWM_SESSION_BAR");
+            self.start_bar();
+        }
+        self.update_borders()?;
+        Ok(())
+    }
+
     pub(crate) fn start(&mut self, program: &[String]) {
+        self.spawn_owned(program);
+    }
+
+    pub(crate) fn spawn_owned(&mut self, program: &[String]) {
         if let Some((cmd, args)) = program.split_first() {
             match Command::new(cmd).args(args).spawn() {
                 Ok(mut child) => {
+                    // Reap in a thread: a long-running app must not become a
+                    // zombie, and the event loop must not block on it.
                     std::thread::spawn(move || {
                         let _ = child.wait();
                     });
                 }
                 Err(e) => eprintln!("niruwm: cannot start {cmd}: {e}"),
+            }
+        }
+    }
+
+    /// Start a detached program without waiting for it at all.
+    pub(crate) fn spawn_detached(program: &[String]) {
+        if let Some((cmd, args)) = program.split_first() {
+            if let Err(e) = Command::new(cmd).args(args).spawn() {
+                eprintln!("niruwm: cannot start {cmd}: {e}");
             }
         }
     }

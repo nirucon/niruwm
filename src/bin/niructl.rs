@@ -3,6 +3,9 @@
 //! Communication is a client message on the root window. It is deliberately
 //! the same mechanism `xdotool` and EWMH clients use, so no daemon, socket or
 //! dependency is required.
+#[path = "../bindings.rs"]
+#[allow(dead_code)] // niructl only reads the shared config shape.
+mod bindings;
 #[path = "../config.rs"]
 mod config;
 
@@ -79,7 +82,42 @@ fn run() -> Result<()> {
         send(&c, root, atom(CMD_ATOM)?, [action, value, 0, 0, 0])?;
     }
     c.flush()?;
+
+    // Wait until the window manager has applied the command. Without this a
+    // script that runs `niructl tag 3` and then reads the property races the
+    // WM; with it, `niructl` is synchronous like `wmctrl -s`.
+    if action != 5 {
+        wait_applied(&c, root, &atom, action, value)?;
+    }
     Ok(())
+}
+
+/// Poll the property the command changes until it reflects the request.
+fn wait_applied(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    action: u32,
+    value: u32,
+) -> Result<()> {
+    let check: Option<(Atom, u32)> = match action {
+        1 => Some((atom("_NET_CURRENT_DESKTOP")?, value)),
+        _ => None,
+    };
+    let Some((prop, want)) = check else {
+        // Layout, reload and theme have no single readable property; a short
+        // pause is enough for them to take effect.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        return Ok(());
+    };
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    for _ in 0..100 {
+        if property_u32(c, root, prop) == Some(want) {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err("window manager did not apply the command".into())
 }
 
 fn parse_tag(args: &[String]) -> Result<u32> {
