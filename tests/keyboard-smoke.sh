@@ -25,7 +25,7 @@ fail() { echo "FAIL $*"; exit 1; }
 ok() { echo "OK   $*"; }
 
 # Swedish layout, as the session sets it.
-setxkbmap se 2>/dev/null || true
+command -v setxkbmap >/dev/null 2>&1 && setxkbmap se 2>/dev/null || true
 
 "$BINDIR/nirubar" >/tmp/kbd-bar.log 2>&1 &
 BAR_PID=$!
@@ -51,7 +51,9 @@ press() {
   sleep 0.35
 }
 
-tagnow() { xprop -root _NET_CURRENT_DESKTOP | awk '{print $NF}'; }
+# xprop output differs between Xorg versions: some print "= 2" on the same
+# line, some wrap it. Take the last integer anywhere in the output.
+tagnow() { xprop -root _NET_CURRENT_DESKTOP | grep -oE '[0-9]+' | tail -1; }
 clients() { xprop -root _NET_CLIENT_LIST | sed 's/.*# //'; }
 
 # ── 1. Workspace switching by keyboard ─────────────────────────────────────
