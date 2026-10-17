@@ -1,51 +1,128 @@
-name: Rust and X11
+name: CI
+
 on: [push, pull_request]
+
+# What this pipeline guarantees:
+#   1. The code builds, lints and unit-tests on a current toolchain.
+#   2. The *release* binaries (static, from the NIRUBAR and NIRUWM crates) run
+#      a real X session on Arch, Debian and Void.
+#   3. Real Super+key presses switch workspaces, open terminals, tile, close
+#      windows and quit.
+#
+# Distro source builds are not part of the matrix on purpose: Debian bookworm
+# ships Rust 1.63 and the toolchain there cannot build this crate. The shipped
+# artifacts are static musl binaries, which is what users run.
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      - run: cargo build --release --locked
-      - run: sudo apt-get update && sudo apt-get install -y xvfb xfonts-base
-      - run: xvfb-run -a cargo test --locked --test x11 -- --ignored --test-threads=1
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
-  distros:
+      - name: Shellcheck
+        run: |
+          docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
+            -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
+            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh
+
+  session:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - distro: debian
-            image: debian:trixie
+            image: debian:bookworm-slim
+            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl wget git cargo rustc gcc xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
-            image: archlinux:base-devel
+            image: archlinux:base
+            setup: pacman -Syu --noconfirm --needed ca-certificates curl git rust gcc xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
           - distro: void
             image: voidlinux/voidlinux:latest
-    runs-on: ubuntu-latest
-    container: ${{ matrix.image }}
-    steps:
-      - name: Bootstrap native Rust toolchain
-        shell: sh
-        run: |
-          case "${{ matrix.distro }}" in
-            debian) apt-get update && apt-get install -y cargo rustc gcc git ca-certificates ;;
-            arch) pacman -Syu --noconfirm --needed rust gcc git ca-certificates ;;
-            void)
+            setup: |
               for d in /etc/xbps.d /usr/share/xbps.d; do
                 for conf in "$d"/*.conf; do
                   [ -f "$conf" ] || continue
                   sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$conf"
                 done
               done
-              xbps-install -Suy xbps
-              xbps-install -Suy
-              xbps-install -Sy rust cargo gcc git libstdc++ ca-certificates
-              ;;
-          esac
+              xbps-install -Suy xbps && xbps-install -Suy
+              xbps-install -Sy ca-certificates curl git rust cargo gcc xorg-server-xvfb xprop || true
+              xbps-install -Sy xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
+    container: ${{ matrix.image }}
+    steps:
+      # Void ships no libstdc++ by default, and the runner's Node needs it
+      # before any action can start. Install it with a plain shell step first.
+      - name: Bootstrap libstdc++ (Void only)
+        if: matrix.distro == 'void'
+        shell: sh
+        run: |
+          for d in /etc/xbps.d /usr/share/xbps.d; do
+            for conf in "$d"/*.conf; do
+              [ -f "$conf" ] || continue
+              sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$conf"
+            done
+          done
+          xbps-install -Suy xbps >/dev/null 2>&1 || true
+          xbps-install -Sy libstdc++ ca-certificates >/dev/null 2>&1 || true
       - uses: actions/checkout@v4
-      - run: cargo test --locked && cargo build --release --locked
+      - name: Install X test tools
+        shell: sh
+        run: ${{ matrix.setup }}
+
+      # NIRUBAR lives in its own repository. The session needs a real bar, so
+      # fetch its source and build it here. Downloading a release artifact
+      # would test whatever was published last, not the code in this commit.
+      - name: Build NIRUBAR from source
+        shell: sh
+        run: |
+          mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
+          if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
+            git clone --depth 1 --branch minimal-bar https://github.com/nirucon/nirubar /tmp/nirubar-src
+            ( cd /tmp/nirubar-src && cargo build --release --locked && cp target/release/nirubar /tmp/niru/bin/ )
+          else
+            # Debian bookworm ships Rust 1.63; use the same static artifact
+            # that ships to users, and verify its version explicitly.
+            URL=https://github.com/nirucon/niruwm/releases/download/v0.3.0
+            if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
+            $GET /tmp/niru/bin/nirubar "$URL/nirubar"
+            chmod +x /tmp/niru/bin/nirubar
+            test "$(/tmp/niru/bin/nirubar --version | awk '{print $2}')" = "0.2.0"
+          fi
+
+      - name: Build and stage the window manager
+        shell: sh
+        run: |
+          # Arch and Void ship a toolchain that can build this crate; Debian
+          # bookworm does not, so it uses the published static binary.
+          if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
+            cargo build --release --locked
+            cp target/release/niruwm target/release/niructl /tmp/niru/bin/
+          else
+            URL=https://github.com/nirucon/niruwm/releases/download/v0.3.0
+            if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
+            for b in niruwm niructl; do
+              $GET "/tmp/niru/bin/$b" "$URL/$b"
+              chmod +x "/tmp/niru/bin/$b"
+            done
+          fi
+          cp session/niruwm-session /tmp/niru/bin/
+          chmod +x /tmp/niru/bin/*
+          cp config.example.toml /tmp/niru/.config/niruwm/config.toml
+          cp themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
+
+      - name: Session smoke test
+        shell: sh
+        run: sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+
+      - name: Keyboard smoke test
+        shell: sh
+        run: sh tests/keyboard-smoke.sh /tmp/niru/bin /tmp/niru

@@ -1,12 +1,59 @@
-# Shared by niruwm and nirubar: ~/.config/niru/config.toml
-# Invalid settings are rejected; reload retains the working configuration.
+# NIRUWM + NIRUBAR shared configuration.
+# Location: ~/.config/niruwm/config.toml (or $XDG_CONFIG_HOME/niruwm/).
+# Both programs read this file. Unknown keys are rejected so typos are visible;
+# the installer creates it once and never overwrites your edits.
 theme = "niru-noir"
 gap = 8
 border_width = 2
 bar_height = 28
 master_ratio = 0.55
+
 terminal = ["kitty"]
+# Optional second terminal on Super+Shift+Enter (NIRUPI uses alacritty).
+terminal_alt = []
+browser = ["brave"]
+
 launcher = ["rofi", "-show", "drun"]
 
 font_size = 15.0
 # font_path = "/path/to/your/monospace.ttf"
+
+[wallpaper]
+# NIRUWM only owns the wallpaper when this is true. Leave it false when
+# NIRUPI's wallrotate.sh should keep managing the background.
+enabled = false
+dir = "~/Pictures/Wallpapers"
+# random = new picture each rotation, fixed = one picture kept,
+# single = always the file below.
+mode = "random"
+file = ""
+rotation_minutes = 10
+
+[bar]
+# The bar is a separate process; NIRUWM starts it from PATH.
+enabled = true
+# Keep it minimal: workspace tags, Swedish date and hh:mm.
+# Set title = true to show the focused window title between them.
+title = false
+title_max = 60
+# Width of one workspace cell, in pixels.
+cell_width = 30
+separator = "|"
+
+# ── Key bindings ─────────────────────────────────────────────────────────────
+# Leave this empty to use the built-in table, which follows NIRUPI DWM.
+# An entry with the same keys as a default replaces that default; new keys are
+# added. Keys: super, shift, ctrl, alt. Names: Return, space, Tab, Escape,
+# Left/Right/Up/Down, Print, comma, period, F1..F35, or a single character.
+#
+# [[keys]]
+# keys = "super+Return"
+# action = "terminal"
+#
+# [[keys]]
+# keys = "super+shift+c"
+# action = "start google-chrome-stable"
+#
+# [[keys]]
+# keys = "super+ctrl+s"
+# action = "shell maim -s ~/Pictures/$(date +%s).png"

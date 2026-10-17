@@ -1,0 +1,98 @@
+name: Release (BETA — assets published to niruwm)
+
+# NIRUWM and NIRUBAR are separate repositories but ship as one session.
+# This workflow checks out both, builds static binaries, cross-checks that the
+# bar renders in a real X server, and attaches everything to one release on
+# the NIRUWM repository so `install.sh` can install a consistent pair.
+#
+# Tag NIRUWM with vX.Y.Z and run from the Actions tab (workflow_dispatch),
+# giving NIRUBAR_REF = a tag or branch of nirucon/nirubar.
+on:
+  workflow_dispatch:
+    inputs:
+      nirubar_ref:
+        description: "nirubar tag/branch to bundle"
+        required: true
+        default: "minimal-bar"
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: niruwm
+      - uses: actions/checkout@v4
+        with:
+          repository: nirucon/nirubar
+          ref: ${{ inputs.nirubar_ref || 'minimal-bar' }}
+          path: nirubar
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build NIRUWM
+        working-directory: niruwm
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Build NIRUBAR
+        working-directory: nirubar
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Check bundled versions match
+        working-directory: nirubar
+        run: |
+          got=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          want=$(grep -m1 '^version' "$GITHUB_WORKSPACE/niruwm/nirubar-version" 2>/dev/null | cut -d'"' -f2 || true)
+          echo "bundled nirubar: $got"
+          if [ -n "$want" ] && [ "$got" != "$want" ]; then
+            echo "::error::nirubar is $got but this release expects $want"
+            exit 1
+          fi
+
+      - name: Verify the binaries are static
+        run: |
+          for bin in niruwm/target/x86_64-unknown-linux-musl/release/niruwm \
+                     nirubar/target/x86_64-unknown-linux-musl/release/nirubar; do
+            file "$bin"
+            if ldd "$bin" 2>&1 | grep -q "=>"; then
+              echo "::error::$bin is dynamically linked"
+              exit 1
+            fi
+          done
+
+      - name: Release smoke test (real X session)
+        run: |
+          sudo apt-get install -y xvfb x11-utils x11-apps xterm fonts-dejavu-core procps
+          mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
+          cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl} /tmp/niru/bin/
+          cp nirubar/target/x86_64-unknown-linux-musl/release/nirubar /tmp/niru/bin/
+          cp niruwm/session/niruwm-session /tmp/niru/bin/
+          chmod +x /tmp/niru/bin/*
+          cp niruwm/config.example.toml /tmp/niru/.config/niruwm/config.toml
+          cp niruwm/themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
+          sh niruwm/tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+
+      - name: Collect assets
+        run: |
+          mkdir -p dist
+          cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl} dist/
+          cp nirubar/target/x86_64-unknown-linux-musl/release/nirubar dist/
+          cd dist && sha256sum niruwm nirubar niructl > SHA256SUMS && cat SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-beta.{1}', '0.2.0', github.run_number) }}
+          files: |
+            dist/niruwm
+            dist/nirubar
+            dist/niructl
+            dist/SHA256SUMS
+          generate_release_notes: true
