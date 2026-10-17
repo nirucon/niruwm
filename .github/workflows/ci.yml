@@ -41,10 +41,10 @@ jobs:
         include:
           - distro: debian
             image: debian:bookworm-slim
-            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl wget xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
+            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl wget git cargo rustc gcc xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
             image: archlinux:base
-            setup: pacman -Syu --noconfirm --needed ca-certificates curl xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
+            setup: pacman -Syu --noconfirm --needed ca-certificates curl git rust gcc xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
           - distro: void
             image: voidlinux/voidlinux:latest
             setup: |
@@ -55,7 +55,7 @@ jobs:
                 done
               done
               xbps-install -Suy xbps && xbps-install -Suy
-              xbps-install -Sy ca-certificates curl xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
+              xbps-install -Sy ca-certificates curl git rust cargo gcc xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
     container: ${{ matrix.image }}
     steps:
       # Void ships no libstdc++ by default, and the runner's Node needs it
@@ -77,17 +77,25 @@ jobs:
         shell: sh
         run: ${{ matrix.setup }}
 
-      # NIRUBAR lives in its own repository. The session test needs a real bar,
-      # so fetch the released static binary rather than a stub.
-      - name: Fetch NIRUBAR
+      # NIRUBAR lives in its own repository. The session needs a real bar, so
+      # fetch its source and build it here. Downloading a release artifact
+      # would test whatever was published last, not the code in this commit.
+      - name: Build NIRUBAR from source
         shell: sh
         run: |
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          URL=https://github.com/nirucon/niruwm/releases/download/v0.2.0
-          if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
-          $GET /tmp/niru/nirubar-dl "$URL/nirubar" || exit 1
-          chmod +x /tmp/niru/nirubar-dl
-          mv /tmp/niru/nirubar-dl /tmp/niru/bin/nirubar
+          if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
+            git clone --depth 1 --branch minimal-bar https://github.com/nirucon/nirubar /tmp/nirubar-src
+            ( cd /tmp/nirubar-src && cargo build --release --locked && cp target/release/nirubar /tmp/niru/bin/ )
+          else
+            # Debian bookworm ships Rust 1.63; use the same static artifact
+            # that ships to users, and verify its version explicitly.
+            URL=https://github.com/nirucon/niruwm/releases/download/v0.2.0
+            if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
+            $GET /tmp/niru/bin/nirubar "$URL/nirubar"
+            chmod +x /tmp/niru/bin/nirubar
+            test "$(/tmp/niru/bin/nirubar --version | awk '{print $2}')" = "0.2.0"
+          fi
 
       - name: Build and stage the window manager
         shell: sh
