@@ -181,6 +181,8 @@ impl Wm {
             0,
             WindowClass::INPUT_OUTPUT,
             0,
+            // No event mask is needed: XSendEvent with an empty mask delivers
+            // to the client that created the window (this WM), exactly once.
             &CreateWindowAux::new(),
         )?;
         self.prop(

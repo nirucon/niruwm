@@ -128,22 +128,37 @@ fn parse_tag(args: &[String]) -> Result<u32> {
     Ok(n - 1)
 }
 
+/// Send a command to the window manager.
+///
+/// The message goes to NIRUWM's own check window (advertised through
+/// `_NET_SUPPORTING_WM_CHECK`) with `NoEvent`. Sending to the root with
+/// SUBSTRUCTURE_REDIRECT is the EWMH convention, but the manager selects many
+/// masks on the root and X may deliver one message once per matching mask;
+/// a duplicate `quit` left the process stuck in its event loop. Addressing the
+/// manager directly is unambiguous: one message, one recipient.
 fn send(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
     atom: Atom,
     data: [u32; 5],
 ) -> Result<()> {
-    // EWMH: clients send ClientMessage to the root window with
-    // SubstructureRedirectMask | SubstructureNotifyMask, the manager selects
-    // SubstructureRedirect on the root, and X delivers it once.
+    let check = property_u32(c, root, atom_named(c, "_NET_SUPPORTING_WM_CHECK")?)
+        .ok_or("no window manager is running")?;
     c.send_event(
         false,
-        root,
-        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-        ClientMessageEvent::new(32, root, atom, data),
+        check,
+        EventMask::NO_EVENT,
+        ClientMessageEvent::new(32, check, atom, data),
     )?;
+    // Round-trip before returning. Without this the process could exit with
+    // the request still buffered in the X connection, and the command was
+    // silently lost — about one login in five lost `quit`.
+    c.sync()?;
     Ok(())
+}
+
+fn atom_named(c: &x11rb::rust_connection::RustConnection, name: &str) -> Result<Atom> {
+    Ok(c.intern_atom(false, name.as_bytes())?.reply()?.atom)
 }
 
 fn property_u32(c: &x11rb::rust_connection::RustConnection, w: Window, atom: Atom) -> Option<u32> {
