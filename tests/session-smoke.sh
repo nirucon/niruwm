@@ -104,7 +104,17 @@ while [ "$i" -lt 100 ]; do
   sleep 0.05
   i=$((i + 1))
 done
-[ "$exited" = 1 ] || fail "session did not exit after quit (state: $state)"
+if [ "$exited" != 1 ]; then
+  echo "--- diagnostic: what is still running ---"
+  ps -o pid,ppid,stat,wchan:25,cmd -e 2>/dev/null | grep -E "niruwm|nirubar" | grep -v grep || echo "(no niruwm/nirubar processes)"
+  echo "--- session pid $SESSION ---"
+  ps -o pid,ppid,stat,wchan:25,cmd -p "$SESSION" 2>/dev/null || echo "(gone)"
+  echo "--- session children ---"
+  ps --ppid "$SESSION" -o pid,stat,cmd 2>/dev/null || echo "(none)"
+  echo "--- session log ---"
+  cat /tmp/session.log 2>/dev/null | tail -20 || true
+  fail "session did not exit after quit (state: $state)"
+fi
 ok "session exited on quit"
 
 # No leftover bar process.
