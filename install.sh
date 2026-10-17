@@ -124,9 +124,12 @@ install_release() {
     [ -n "$expected" ] || die "no checksum for $b"
     actual="$(sha256 "$dl_dir/$b")"
     [ "$expected" = "$actual" ] || die "checksum mismatch for $b"
+    chmod 0755 "$dl_dir/$b"
+  done
+  verify_versions "$dl_dir"
+  for b in niruwm nirubar niructl; do
     put "$dl_dir/$b" "$BINDIR/$b"
   done
-  verify_versions "$tmp"
   put "$(dirname "$0")/session/niruwm-session" "$BINDIR/niruwm-session" 0755
   install_config
   say "Installed NIRUWM $tag in $BINDIR"
