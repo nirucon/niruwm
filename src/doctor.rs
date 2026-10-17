@@ -131,7 +131,17 @@ fn distro() -> &'static str {
     }
 }
 
+/// Look for a program in PATH, and also in `~/.local/bin`.
+///
+/// The session script prepends `~/.local/bin`, but `--doctor` is often run
+/// from a shell that does not: without this fallback it reports programs as
+/// missing when they are installed exactly where NIRU puts them.
 fn in_path(name: &str) -> bool {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let local_bin = Path::new(&home).join(".local/bin").join(name);
+    if local_bin.is_file() {
+        return true;
+    }
     let Ok(path) = std::env::var("PATH") else {
         return false;
     };
