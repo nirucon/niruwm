@@ -126,6 +126,9 @@ impl Wm {
                 self.start(&cmd);
             }
             Action::LauncherUnified => {
+                // Only call the NIRUPI launcher when it is actually there;
+                // otherwise fall back to NIRUWM's own launcher so the binding
+                // is never dead on a clean install.
                 if self.helper_present("nirupi-launch.sh") {
                     self.shell("$HOME/.local/bin/nirupi-launch.sh");
                 } else {
@@ -133,6 +136,7 @@ impl Wm {
                     self.start(&cmd);
                 }
             }
+            Action::Lock => self.lock_screen(),
             Action::WindowSwitcher => {
                 if self.helper_present("nirupi-window.sh") {
                     self.shell("$HOME/.local/bin/nirupi-window.sh");
@@ -234,6 +238,23 @@ impl Wm {
     /// that stays open must not block the event loop.
     fn shell(&self, cmd: &str) {
         Self::spawn_detached(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
+    }
+
+    /// Lock the screen. Preference order: nirulock, NIRUPI's wrapper, slock.
+    ///
+    /// Never fails silently: if nothing is installed the user gets a message
+    /// instead of a key that appears broken.
+    fn lock_screen(&mut self) {
+        for candidate in ["nirulock", "nirupi-lock.sh", "slock"] {
+            if self.command_present(candidate) || self.helper_present(candidate) {
+                self.start(&[candidate.to_string()]);
+                return;
+            }
+        }
+        self.shell(
+            "notify-send -a NIRUWM 'Lock' 'No screen locker found: install nirulock, nirupi-lock or slock' 2>/dev/null || true",
+        );
+        eprintln!("niruwm: no screen locker found (nirulock, nirupi-lock.sh, slock)");
     }
 
     fn browser_present(&self) -> bool {

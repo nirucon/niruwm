@@ -18,6 +18,17 @@ launcher = ["rofi", "-show", "drun"]
 font_size = 15.0
 # font_path = "/path/to/your/monospace.ttf"
 
+[wallpaper]
+# NIRUWM only owns the wallpaper when this is true. Leave it false when
+# NIRUPI's wallrotate.sh should keep managing the background.
+enabled = false
+dir = "~/Pictures/Wallpapers"
+# random = new picture each rotation, fixed = one picture kept,
+# single = always the file below.
+mode = "random"
+file = ""
+rotation_minutes = 10
+
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
 enabled = true

@@ -30,6 +30,36 @@ pub struct Config {
     /// Optional bindings. When empty, the built-in NIRUPI-compatible table is
     /// used. Entries replace a default binding with the same keys.
     pub keys: Vec<crate::bindings::RawBinding>,
+    pub wallpaper: WallpaperConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WallpaperConfig {
+    /// NIRUWM sets and rotates the wallpaper only when this is true.
+    /// Leave it false when NIRUPI's wallrotate.sh should keep managing it.
+    pub enabled: bool,
+    /// Directory to pick pictures from.
+    pub dir: String,
+    /// `random` (new picture each rotation), `fixed` (one picture, kept),
+    /// or `single` (always `file`).
+    pub mode: String,
+    /// Used by `mode = "single"`.
+    pub file: String,
+    /// Minutes between changes. 0 disables rotation.
+    pub rotation_minutes: u32,
+}
+
+impl Default for WallpaperConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: "~/Pictures/Wallpapers".into(),
+            mode: "random".into(),
+            file: String::new(),
+            rotation_minutes: 10,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -65,6 +95,7 @@ impl Default for Config {
             font_size: 15.0,
             bar: Bar::default(),
             keys: Vec::new(),
+            wallpaper: WallpaperConfig::default(),
         }
     }
 }
@@ -161,6 +192,12 @@ impl Config {
         }
         if self.bar.title_max > 512 {
             return Err("bar.title_max must be at most 512".into());
+        }
+        if !["random", "fixed", "single"].contains(&self.wallpaper.mode.as_str()) {
+            return Err("wallpaper.mode must be random, fixed or single".into());
+        }
+        if self.wallpaper.rotation_minutes > 100_000 {
+            return Err("wallpaper.rotation_minutes is too large".into());
         }
         Ok(())
     }

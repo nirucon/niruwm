@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+
+- `niruwm --doctor`: lists the programs the default bindings use, says which
+  are missing, and names the package on Arch, Debian and Void.
+- Wallpaper handling: directory, `random`/`fixed`/`single` modes and rotation.
+  Off by default so it never fights NIRUPI's `wallrotate.sh`.
+- `Super+Escape` locks with the first available locker: nirulock, then
+  NIRUPI's wrapper, then slock.
+- The session prefers NIRUSCREENSAVER for the idle screen and NIRULOCK for
+  locking when installed, and reads the idle times from
+  `~/.config/niruui/screensaver.toml`.
+- The event loop sleeps until X has work (or one second), so wallpaper
+  rotation needs no second thread and an idle WM uses no CPU.
+
+### Changed
+
+- `Super+P` opens `rofi -show drun` directly. It no longer depends on NIRUPI.
+  `Super+Shift+P` still uses NIRUPI's combined launcher when it is installed.
+- The bar shows a battery and network indicator.
+
+### Fixed
+
+- A missing glyph rendered as a blank box in the bar. Icons are now chosen per
+  glyph from what the font can draw.
+
+
 ## 0.2.0 — first laptop test build
 
 The first version intended to be started from SDDM, used for a normal session

@@ -14,6 +14,8 @@ pub enum Action {
     Browser,
     Launcher,
     LauncherUnified,
+    /// Lock the screen with the first available locker.
+    Lock,
     WindowSwitcher,
     Start(String),
     /// Run a shell command (used by NIRUPI helper scripts and pipelines).
@@ -170,14 +172,16 @@ impl Action {
         add("super+Return", "terminal");
         add("super+shift+Return", "terminal_alt");
         add("super+b", "browser");
-        add("super+shift+p", "launcher_unified");
+        // Super+P is NIRUWM's own launcher: rofi -show drun, no NIRUPI needed.
+        // Super+Shift+P uses NIRUPI's combined launcher when installed.
         add("super+p", "launcher");
+        add("super+shift+p", "launcher_unified");
         add("super+w", "window_switcher");
         add("super+shift+f", "start pcmanfm");
         add("super+shift+m", "shell nirupi-menu.sh");
         add("super+alt+k", "shell dwm-keybindings.sh -i");
         add("super+shift+h", "shell nirupi-keys.sh");
-        add("super+Escape", "shell nirupi-lock.sh");
+        add("super+Escape", "lock");
         add("super+shift+Escape", "shell sleep-suspend.sh");
         add("super+shift+q", "shell nirupi-power.sh");
         add("super+ctrl+t", "shell nirupi theme menu");
@@ -321,6 +325,9 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher" => Action::Launcher,
         "launcher_unified" => Action::LauncherUnified,
         "window_switcher" => Action::WindowSwitcher,
+        // Lock with the best available locker: NIRUWM's own nirulock when
+        // installed, then NIRUPI's wrapper, then slock.
+        "lock" => Action::Lock,
         "start" => Action::Start(arg()?.to_string()),
         "shell" => Action::Shell(arg()?.to_string()),
         "focus_next" => Action::FocusNext,

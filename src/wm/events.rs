@@ -1,74 +1,119 @@
 use super::*;
 use crate::bindings::{Action, LayoutId};
+use std::os::fd::AsRawFd;
+
+/// How often the wallpaper timer is checked while idle.
+const ROTATION_TICK: i32 = 1000;
+
+/// Block until `fd` is readable or the timeout expires. Returns true on data.
+fn wait_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> bool {
+    let mut pfd = libc_pollfd {
+        fd,
+        events: 1, // POLLIN
+        revents: 0,
+    };
+    // SAFETY: one valid pollfd for the duration of the call.
+    let n = unsafe { poll(&mut pfd, 1, timeout_ms) };
+    n > 0
+}
+
+/// Minimal `poll(2)` binding: adding the `libc` crate for one call is not
+/// worth it, and this is the only place the WM needs a syscall.
+#[repr(C)]
+struct libc_pollfd {
+    fd: std::os::fd::RawFd,
+    events: i16,
+    revents: i16,
+}
+
+extern "C" {
+    fn poll(fds: *mut libc_pollfd, nfds: u64, timeout: i32) -> i32;
+}
 
 impl Wm {
     pub(crate) fn run(&mut self) -> Result<()> {
         loop {
-            let event = self.c.wait_for_event()?;
-            let outcome: Result<bool> = (|| {
-                match event {
-                    Event::MapRequest(e) => self.manage(e.window)?,
-                    Event::DestroyNotify(e) => {
+            // Drain everything already queued first: a burst of events (a tag
+            // switch unmap/map sequence) must be handled before sleeping.
+            while let Some(event) = self.c.poll_for_event()? {
+                if !self.handle(event)? {
+                    return Ok(());
+                }
+            }
+            self.c.flush()?;
+
+            // Nothing queued. Sleep until X has something for us, but never
+            // longer than the wallpaper check interval, so rotation happens
+            // without a second thread. `poll(2)` blocks in the kernel; this
+            // does not spin.
+            let ready = wait_readable(self.c.stream().as_raw_fd(), ROTATION_TICK);
+            if ready && self.wallpaper.tick() {
+                eprintln!("niruwm: wallpaper changed");
+            }
+        }
+    }
+
+    /// Handle one event. Returns `false` when the WM should exit.
+    fn handle(&mut self, event: Event) -> Result<bool> {
+        let outcome: Result<bool> = (|| {
+            match event {
+                Event::MapRequest(e) => self.manage(e.window)?,
+                Event::DestroyNotify(e) => {
+                    self.unmanage(e.window);
+                    self.arrange()?;
+                }
+                Event::UnmapNotify(e) => {
+                    // Ignore the UnmapNotify that our own tag hiding
+                    // produces; a client that unmaps itself is withdrawn.
+                    if let Some(count) = self.pending_unmaps.get_mut(&e.window) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.pending_unmaps.remove(&e.window);
+                        }
+                    } else {
                         self.unmanage(e.window);
                         self.arrange()?;
                     }
-                    Event::UnmapNotify(e) => {
-                        // Ignore the UnmapNotify that our own tag hiding
-                        // produces; a client that unmaps itself is withdrawn.
-                        if let Some(count) = self.pending_unmaps.get_mut(&e.window) {
-                            *count = count.saturating_sub(1);
-                            if *count == 0 {
-                                self.pending_unmaps.remove(&e.window);
-                            }
-                        } else {
-                            self.unmanage(e.window);
-                            self.arrange()?;
-                        }
-                    }
-                    Event::ConfigureRequest(e) => self.configure_request(e)?,
-                    Event::EnterNotify(e) => {
-                        if self
-                            .clients
-                            .iter()
-                            .any(|c| c.win == e.event && c.tag == self.tag)
-                        {
-                            self.set_focus(e.event)?;
-                        }
-                    }
-                    Event::KeyPress(e) => return self.key(e),
-                    Event::MappingNotify(_) => {
-                        self.resolve_bindings()?;
-                        self.grab()?;
-                    }
-                    Event::ConfigureNotify(e) if e.window == self.root => {
-                        let g = self.c.get_geometry(self.root)?.reply()?;
-                        self.screen_w = g.width;
-                        self.screen_h = g.height;
-                        self.arrange()?;
-                    }
-                    Event::PropertyNotify(e) if e.window == self.root => {
-                        if e.atom == self.atom("_NIRUWM_QUIT") {
-                            return Ok(false);
-                        }
-                    }
-                    Event::ClientMessage(e) => {
-                        if !self.client_message(e)? {
-                            return Ok(false);
-                        }
-                    }
-                    Event::Error(e) => eprintln!("niruwm: X11 error: {e:?}"),
-                    _ => (),
                 }
-                self.c.flush()?;
+                Event::ConfigureRequest(e) => self.configure_request(e)?,
+                Event::EnterNotify(e) => {
+                    if self
+                        .clients
+                        .iter()
+                        .any(|c| c.win == e.event && c.tag == self.tag)
+                    {
+                        self.set_focus(e.event)?;
+                    }
+                }
+                Event::KeyPress(e) => return self.key(e),
+                Event::MappingNotify(_) => {
+                    self.resolve_bindings()?;
+                    self.grab()?;
+                }
+                Event::ConfigureNotify(e) if e.window == self.root => {
+                    let g = self.c.get_geometry(self.root)?.reply()?;
+                    self.screen_w = g.width;
+                    self.screen_h = g.height;
+                    self.arrange()?;
+                }
+                Event::ClientMessage(e) => {
+                    if !self.client_message(e)? {
+                        return Ok(false);
+                    }
+                }
+                Event::Error(e) => eprintln!("niruwm: X11 error: {e:?}"),
+                _ => (),
+            }
+            self.c.flush()?;
+            Ok(true)
+        })();
+        match outcome {
+            Ok(keep_going) => Ok(keep_going),
+            Err(e) => {
+                eprintln!("niruwm: {e}");
                 Ok(true)
-            })();
-            match outcome {
-                Ok(false) => break,
-                Ok(true) => (),
-                Err(e) => eprintln!("niruwm: {e}"),
             }
         }
-        Ok(())
     }
 
     fn configure_request(&mut self, e: ConfigureRequestEvent) -> Result<()> {

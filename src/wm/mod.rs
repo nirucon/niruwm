@@ -5,6 +5,7 @@ mod keys;
 use crate::bindings::Binding;
 use crate::config::{Config, Result, Theme};
 use crate::layout::{Layout, Rect};
+use crate::wallpaper::Wallpaper;
 use std::{
     collections::{HashMap, HashSet},
     process::{Child, Command},
@@ -48,6 +49,8 @@ pub(crate) struct Wm {
     pub(crate) bindings: Vec<Binding>,
     /// Windows in the master column (dwm's nmaster).
     pub(crate) nmaster: usize,
+    /// Wallpaper owner. Only active when `[wallpaper] enabled = true`.
+    pub(crate) wallpaper: Wallpaper,
 }
 
 impl Wm {
@@ -64,6 +67,7 @@ impl Wm {
     pub(crate) fn new() -> Result<Self> {
         let cfg = Config::load()?;
         let theme = Theme::load(&cfg.theme)?;
+        let wallpaper = Wallpaper::new(&cfg.wallpaper);
         let (c, s) = x11rb::connect(None)?;
         let root = c.setup().roots[s].root;
         let screen_w = c.setup().roots[s].width_in_pixels;
@@ -143,6 +147,7 @@ impl Wm {
             pending_unmaps: HashMap::new(),
             bindings: Vec::new(),
             nmaster: 1,
+            wallpaper,
         };
         wm.announce()?;
         wm.resolve_bindings()?;
@@ -163,6 +168,11 @@ impl Wm {
         }
         wm.arrange()?;
         wm.start_bar();
+        // Set the wallpaper once the WM owns the display; a failure here must
+        // not stop the session, so it is reported and ignored.
+        if let Err(e) = wm.wallpaper.apply() {
+            eprintln!("niruwm: wallpaper: {e}");
+        }
         Ok(wm)
     }
 

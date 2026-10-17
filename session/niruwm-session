@@ -116,20 +116,57 @@ fi
 
 # Reuse NIRUPI's helpers when present: they implement the same behaviour the
 # user already trusts, and they are read-only to this script.
+# Screen lock: Nirulock (the NIRU program) when installed, then NIRUPI's
+# wrapper, then slock. Locking is the one thing that must always work, so the
+# list is a fallback chain rather than a single dependency.
 LOCKER=""
-if command -v nirupi-lock.sh >/dev/null 2>&1; then
-  LOCKER=nirupi-lock.sh
-elif command -v slock >/dev/null 2>&1; then
-  LOCKER=slock
-elif command -v swaylock >/dev/null 2>&1; then
-  LOCKER=swaylock
+for candidate in nirulock nirupi-lock.sh slock swaylock; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    LOCKER="$candidate"
+    break
+  fi
+done
+# Screensaver: the NIRU idle screen when installed. It is not a locker, so it
+# is only used for the dim/blank step before the screen is locked.
+SCREENSAVER=""
+for candidate in niruscreensaver xset; do
+  if command -v "$candidate" >/dev/null 2>&1; then
+    SCREENSAVER="$candidate"
+    break
+  fi
+done
+
+# Idle ladder. Times come from ~/.config/niruui/screensaver.toml when present,
+# so the screensaver's own settings describe the whole sequence.
+IDLE_SCREEN_MINUTES="${IDLE_SCREEN_MINUTES:-15}"
+IDLE_LOCK_MINUTES="${IDLE_LOCK_MINUTES:-15}"
+IDLE_DPMS_MINUTES="${IDLE_DPMS_MINUTES:-15}"
+SAVER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/niruui/screensaver.toml"
+if [ -r "$SAVER_CONF" ]; then
+  v="$(sed -n 's/^[[:space:]]*idle_minutes[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$SAVER_CONF" | tail -n1)"
+  [ -n "$v" ] && IDLE_SCREEN_MINUTES="$v"
+  v="$(sed -n 's/^[[:space:]]*dpms_off_minutes[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$SAVER_CONF" | tail -n1)"
+  [ -n "$v" ] && IDLE_DPMS_MINUTES="$v"
 fi
 
 if [ "$START_IDLE" = 1 ] && [ -n "$LOCKER" ]; then
   if command -v xidlehook >/dev/null 2>&1; then
-    xidlehook --not-when-fullscreen --not-when-audio \
-      --timer 300 'xset dpms force off' 'xset dpms force on' \
-      --timer 600 "$LOCKER" '' >/dev/null 2>&1 & IDLE_PID=$!
+    set --
+    # screen -> lock -> display off, chained with delta timers.
+    if [ "$IDLE_SCREEN_MINUTES" -gt 0 ]; then
+      if [ "$SCREENSAVER" = niruscreensaver ]; then
+        set -- "$@" --timer "$((IDLE_SCREEN_MINUTES * 60))" "niruscreensaver" ""
+      else
+        set -- "$@" --timer "$((IDLE_SCREEN_MINUTES * 60))" "xset dpms force off" "xset dpms force on"
+      fi
+    fi
+    if [ "$IDLE_LOCK_MINUTES" -gt 0 ]; then
+      set -- "$@" --timer "$((IDLE_LOCK_MINUTES * 60))" "$LOCKER" ""
+    fi
+    if [ "$IDLE_DPMS_MINUTES" -gt 0 ]; then
+      set -- "$@" --timer "$((IDLE_DPMS_MINUTES * 60))" "xset dpms force off" "xset dpms force on"
+    fi
+    xidlehook --not-when-fullscreen --not-when-audio "$@" >/dev/null 2>&1 & IDLE_PID=$!
   elif command -v xss-lock >/dev/null 2>&1; then
     xss-lock --transfer-sleep-lock -- "$LOCKER" >/dev/null 2>&1 & LOCK_PID=$!
   elif command -v xautolock >/dev/null 2>&1; then
