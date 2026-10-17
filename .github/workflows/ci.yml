@@ -58,6 +58,20 @@ jobs:
               xbps-install -Sy ca-certificates curl xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
     container: ${{ matrix.image }}
     steps:
+      # Void ships no libstdc++ by default, and the runner's Node needs it
+      # before any action can start. Install it with a plain shell step first.
+      - name: Bootstrap libstdc++ (Void only)
+        if: matrix.distro == 'void'
+        shell: sh
+        run: |
+          for d in /etc/xbps.d /usr/share/xbps.d; do
+            for conf in "$d"/*.conf; do
+              [ -f "$conf" ] || continue
+              sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$conf"
+            done
+          done
+          xbps-install -Suy xbps >/dev/null 2>&1 || true
+          xbps-install -Sy libstdc++ ca-certificates >/dev/null 2>&1 || true
       - uses: actions/checkout@v4
       - name: Install X test tools
         shell: sh
