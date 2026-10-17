@@ -126,9 +126,21 @@ install_release() {
     [ "$expected" = "$actual" ] || die "checksum mismatch for $b"
     put "$dl_dir/$b" "$BINDIR/$b"
   done
+  verify_versions "$tmp"
   put "$(dirname "$0")/session/niruwm-session" "$BINDIR/niruwm-session" 0755
   install_config
   say "Installed NIRUWM $tag in $BINDIR"
+}
+
+# Both binaries ship together. A mismatch means the release was built against
+# the wrong NIRUBAR branch, which has happened; refuse rather than mix versions.
+verify_versions() {
+  dir="$1"
+  wm="$("$dir/niruwm" --version 2>/dev/null | awk '{print $2}')"
+  bar="$("$dir/nirubar" --version 2>/dev/null | awk '{print $2}')"
+  say "NIRUWM $wm, NIRUBAR $bar"
+  [ -n "$wm" ] && [ -n "$bar" ] || die "cannot read binary versions"
+  [ "$wm" = "$bar" ] || die "version mismatch: niruwm $wm / nirubar $bar — refusing to install a mixed pair"
 }
 
 build_local() {
@@ -139,6 +151,7 @@ build_local() {
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
   done
+  verify_versions "$(dirname "$0")/target/release"
   put "session/niruwm-session" "$BINDIR/niruwm-session" 0755
   install_config
   say "Installed from source in $BINDIR"
