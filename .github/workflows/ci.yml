@@ -37,7 +37,10 @@ jobs:
             arch) pacman -Syu --noconfirm --needed rust gcc git ca-certificates ;;
             void)
               for d in /etc/xbps.d /usr/share/xbps.d; do
-                [ ! -d "$d" ] || sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$d"/*.conf
+                for conf in "$d"/*.conf; do
+                  [ -f "$conf" ] || continue
+                  sed -i 's#alpha.de.repo.voidlinux.org#repo-default.voidlinux.org#g' "$conf"
+                done
               done
               xbps-install -Suy xbps
               xbps-install -Suy

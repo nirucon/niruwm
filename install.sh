@@ -4,7 +4,7 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 case "${1:-}" in ""|--register-session) ;; *) echo "Usage: ./install.sh [--register-session]" >&2; exit 2;; esac
 command -v cargo >/dev/null || { echo "Install Rust/Cargo and a C linker first (see README)." >&2; exit 1; }
 cargo build --release --locked
-bindir="${HOME}/.local/bin"
+bindir="${NIRU_PREFIX:-$HOME/.local}/bin"
 configdir="${XDG_CONFIG_HOME:-$HOME/.config}/niru"
 mkdir -p "$bindir" "$configdir/themes"
 stamp=$(date +%Y%m%d-%H%M%S)

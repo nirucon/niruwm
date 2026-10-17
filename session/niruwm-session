@@ -1,4 +1,5 @@
 #!/bin/sh
 # Separate session: never edits .xinitrc or replaces dwm.
-export PATH="$HOME/.local/bin:$PATH"
-exec niruwm
+bindir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export PATH="$bindir:$PATH"
+exec "$bindir/niruwm"

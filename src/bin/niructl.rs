@@ -18,7 +18,11 @@ fn run() -> Result<()> {
             .get_property(false, root, a, AtomEnum::CARDINAL, 0, 1)?
             .reply()?;
         let tag = p.value32().and_then(|mut v| v.next()).unwrap_or(0);
-        println!("tag={} theme={}", tag + 1, Config::load()?.theme);
+        println!(
+            "tag={} theme={}",
+            tag + 1,
+            Theme::load(&Config::load()?.theme)?.name
+        );
         return Ok(());
     }
     let (action, value) = match cmd.as_str() {
