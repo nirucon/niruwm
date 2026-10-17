@@ -78,41 +78,39 @@ jobs:
         shell: sh
         run: ${{ matrix.setup }}
 
-      # NIRUBAR lives in its own repository. The session needs a real bar, so
-      # fetch its source and build it here. Downloading a release artifact
-      # would test whatever was published last, not the code in this commit.
-      - name: Build NIRUBAR from source
+      # Both programs are built from source where the toolchain allows it.
+      # Debian bookworm ships Rust 1.63, which cannot build these crates, so it
+      # gets its binaries from the *current* release. The version is read from
+      # Cargo.toml rather than hardcoded, so a release never has to exist at a
+      # URL this file guessed.
+      - name: Stage the binaries
         shell: sh
         run: |
+          set -eu
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
-            git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
-            ( cd /tmp/nirubar-src && cargo build --release --locked && cp target/release/nirubar /tmp/niru/bin/ )
-          else
-            # Debian bookworm ships Rust 1.63; use the same static artifact
-            # that ships to users, and verify its version explicitly.
-            URL=https://github.com/nirucon/niruwm/releases/download/v0.3.0
-            if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
-            $GET /tmp/niru/bin/nirubar "$URL/nirubar"
-            chmod +x /tmp/niru/bin/nirubar
-            test "$(/tmp/niru/bin/nirubar --version | awk '{print $2}')" = "0.2.0"
+          modern=0
+          if command -v cargo >/dev/null 2>&1 &&
+             cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
+            modern=1
           fi
-
-      - name: Build and stage the window manager
-        shell: sh
-        run: |
-          # Arch and Void ship a toolchain that can build this crate; Debian
-          # bookworm does not, so it uses the published static binary.
-          if command -v cargo >/dev/null 2>&1 && cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
+          if [ "$modern" = 1 ]; then
+            echo "building both from source"
+            git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
+            ( cd /tmp/nirubar-src && cargo build --release --locked )
+            cp /tmp/nirubar-src/target/release/nirubar /tmp/niru/bin/
             cargo build --release --locked
             cp target/release/niruwm target/release/niructl /tmp/niru/bin/
           else
-            URL=https://github.com/nirucon/niruwm/releases/download/v0.3.0
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+            url="https://github.com/nirucon/niruwm/releases/download/v$version"
+            echo "toolchain too old; using the v$version release binaries"
             if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
-            for b in niruwm niructl; do
-              $GET "/tmp/niru/bin/$b" "$URL/$b"
+            for b in niruwm nirubar niructl; do
+              $GET "/tmp/niru/bin/$b" "$url/$b"
               chmod +x "/tmp/niru/bin/$b"
             done
+            test "$(/tmp/niru/bin/nirubar --version | awk '{print $2}')" = "$version"
+            test "$(/tmp/niru/bin/niruwm --version | awk '{print $2}')" = "$version"
           fi
           cp session/niruwm-session /tmp/niru/bin/
           chmod +x /tmp/niru/bin/*
