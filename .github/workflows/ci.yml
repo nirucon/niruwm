@@ -55,7 +55,8 @@ jobs:
                 done
               done
               xbps-install -Suy xbps && xbps-install -Suy
-              xbps-install -Sy ca-certificates curl git rust cargo gcc xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
+              xbps-install -Sy ca-certificates curl git rust cargo gcc xorg-server-xvfb xprop || true
+              xbps-install -Sy xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
     container: ${{ matrix.image }}
     steps:
       # Void ships no libstdc++ by default, and the runner's Node needs it
@@ -90,7 +91,7 @@ jobs:
           else
             # Debian bookworm ships Rust 1.63; use the same static artifact
             # that ships to users, and verify its version explicitly.
-            URL=https://github.com/nirucon/niruwm/releases/download/v0.2.0
+            URL=https://github.com/nirucon/niruwm/releases/download/v0.3.0
             if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
             $GET /tmp/niru/bin/nirubar "$URL/nirubar"
             chmod +x /tmp/niru/bin/nirubar
@@ -106,7 +107,7 @@ jobs:
             cargo build --release --locked
             cp target/release/niruwm target/release/niructl /tmp/niru/bin/
           else
-            URL=https://github.com/nirucon/niruwm/releases/download/v0.2.0
+            URL=https://github.com/nirucon/niruwm/releases/download/v0.3.0
             if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
             for b in niruwm niructl; do
               $GET "/tmp/niru/bin/$b" "$URL/$b"
