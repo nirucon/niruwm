@@ -169,7 +169,7 @@ add_missing_sections() {
   file="$1"
   example="$2"
   added=""
-  for section in wallpaper bar; do
+  for section in wallpaper monitors scratchpad rules bar; do
     grep -q "^\[$section\]" "$file" && continue
     # Copy the block from the example: from its header to the next header.
     # Stop at the next section header. Comment blocks that introduce the next
@@ -236,6 +236,8 @@ add_missing_keys() {
   add_key bar date_format '"%Y-%m-%d"'
   add_key bar time_format '"%H:%M"'
   add_key bar popups true
+  # 0.6.0
+  add_key bar popup_timeout_seconds 8
   if [ -n "$changed" ]; then
     say "Added settings to $file:$changed"
   fi
