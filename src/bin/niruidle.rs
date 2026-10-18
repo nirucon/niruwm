@@ -36,6 +36,8 @@ struct Settings {
     lock_after: u64,
     /// Minutes after locking before the display is turned off.
     dpms_after: u64,
+    /// Safety net: give up waiting for a password after this long.
+    lock_timeout: u64,
 }
 
 fn config_path() -> std::path::PathBuf {
@@ -60,6 +62,7 @@ fn load_settings() -> Settings {
         screen: 15,
         lock_after: 15,
         dpms_after: 15,
+        lock_timeout: 5,
     };
     let Ok(text) = std::fs::read_to_string(config_path()) else {
         return s;
@@ -79,6 +82,9 @@ fn load_settings() -> Settings {
     }
     if let Some(n) = read_u64(&v, "dpms_off_minutes") {
         s.dpms_after = n;
+    }
+    if let Some(n) = read_u64(&v, "lock_timeout_minutes") {
+        s.lock_timeout = n;
     }
     s
 }
@@ -125,6 +131,23 @@ fn spawn(program: &str) -> Option<u32> {
 
 /// Run a program and wait for it: the locker blocks until the password is
 /// accepted, which is exactly what the ladder needs.
+///
+/// A lock timeout is set first. Nirulock ignores SIGTERM on purpose, so
+/// without a timeout a bug in the locker would leave the machine locked with
+/// no way in except ssh. Five minutes is long enough for any password and
+/// short enough to always recover.
+fn lock_with_timeout(program: &str, minutes: u64) {
+    if minutes > 0 {
+        let _ = Command::new("timeout")
+            .arg(format!("{}m", minutes))
+            .arg(program)
+            .status();
+    } else {
+        let _ = Command::new(program).status();
+    }
+}
+
+#[allow(dead_code)]
 fn run_blocking(program: &str) -> bool {
     Command::new(program)
         .status()
@@ -153,8 +176,8 @@ fn main() {
     let settings = load_settings();
     if arg == "--config" {
         println!(
-            "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking",
-            settings.screen, settings.lock_after, settings.dpms_after
+            "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking\nlock gives up after {} min",
+            settings.screen, settings.lock_after, settings.dpms_after, settings.lock_timeout
         );
         return;
     }
@@ -246,8 +269,11 @@ fn main() {
                 }
             }
             if let Some(l) = &locker {
-                eprintln!("niruidle: idle {idle}s: lock");
-                run_blocking(l);
+                eprintln!(
+                    "niruidle: idle {idle}s: lock (timeout {} min)",
+                    settings.lock_timeout
+                );
+                lock_with_timeout(l, settings.lock_timeout);
             }
             locked = true;
         }
