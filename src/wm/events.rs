@@ -50,6 +50,9 @@ impl Wm {
             if ready && self.wallpaper.tick() {
                 eprintln!("niruwm: wallpaper changed");
             }
+            // The same tick notices a bar that died. It is cheap: one
+            // try_wait per child, once a second, and nothing else.
+            self.restart_bars();
         }
     }
 

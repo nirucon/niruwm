@@ -78,6 +78,8 @@ pub(crate) struct Wm {
     /// True while a lock screen owns the keyboard. The WM releases its key
     /// grabs so every key reaches the lock, then takes them back.
     pub(crate) keys_released: bool,
+    /// When the bar was last started, to pace restarts.
+    pub(crate) last_bar_start: std::time::Instant,
 }
 
 impl Wm {
@@ -200,6 +202,7 @@ impl Wm {
             scratchpad: None,
             scratchpad_shown: false,
             keys_released: false,
+            last_bar_start: std::time::Instant::now(),
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
         wm.focused_monitor = crate::monitor::primary(&monitors, &wm.monitor_cfg);
@@ -401,6 +404,35 @@ impl Wm {
             let _ = b.kill();
             let _ = b.wait();
         }
+    }
+
+    /// Start a bar again after it died on its own.
+    ///
+    /// A bar is not optional furniture: without it the workspaces are invisible
+    /// and the session looks broken. It died for some reason, so the restart is
+    /// paced: at most one attempt every ten seconds, and the attempts are
+    /// logged, so a bar that cannot start cannot turn into a loop.
+    pub(crate) fn restart_bars(&mut self) {
+        if !self.cfg.bar.enabled || std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_bar_start).as_secs() < 10 {
+            return;
+        }
+        let mut dead = false;
+        for child in &mut self.bars {
+            if let Ok(Some(status)) = child.try_wait() {
+                eprintln!("niruwm: the bar exited ({status}); starting it again");
+                dead = true;
+            }
+        }
+        if !dead {
+            return;
+        }
+        self.last_bar_start = now;
+        self.stop_bars();
+        self.start_bar();
     }
 
     /// Reload configuration, theme and bindings. A broken file keeps the
