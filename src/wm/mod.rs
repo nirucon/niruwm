@@ -45,7 +45,8 @@ pub(crate) struct Wm {
     pub(crate) cfg: Config,
     pub(crate) theme: Theme,
     pub(crate) layout: Layout,
-    pub(crate) bar: Option<Child>,
+    /// One bar per monitor, in monitor order.
+    pub(crate) bars: Vec<Child>,
     pub(crate) hidden: HashSet<Window>,
     pub(crate) pending_unmaps: HashMap<Window, u32>,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
@@ -176,7 +177,7 @@ impl Wm {
             cfg,
             theme,
             layout: Layout::Tile,
-            bar: None,
+            bars: Vec::new(),
             hidden: HashSet::new(),
             pending_unmaps: HashMap::new(),
             bindings: Vec::new(),
@@ -290,6 +291,17 @@ impl Wm {
     ///
     /// Windows on a screen that disappeared move to the first remaining one,
     /// and each surviving screen keeps its active workspace.
+    /// Restart the bars after a monitor change.
+    ///
+    /// A bar is tied to one screen's geometry, so a hotplug needs new bars
+    /// rather than moved ones: the width and the strut both change.
+    pub(crate) fn restart_bars_if_owning(&mut self) {
+        if std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
+            return;
+        }
+        self.start_bar();
+    }
+
     pub(crate) fn refresh_monitors(&mut self) -> Result<()> {
         let (monitors, multi) = randr::refresh(
             &self.c,
@@ -318,6 +330,7 @@ impl Wm {
         }
         self.monitors = monitors;
         self.multi_monitor = multi;
+        self.restart_bars_if_owning();
         // Focus followed the pointer at login; after a hotplug a window is
         // more useful than an empty screen.
         let active = self
@@ -348,9 +361,27 @@ impl Wm {
         if std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
             return;
         }
-        match Command::new("nirubar").spawn() {
-            Ok(child) => self.bar = Some(child),
-            Err(e) => eprintln!("niruwm: cannot start nirubar: {e}"),
+        self.stop_bars();
+        // One bar per monitor. Each is told where it belongs, so it covers that
+        // screen only and its workspace cells describe that screen.
+        for m in &self.monitors {
+            let geometry = format!("{},{},{}", m.rect.x, m.rect.y, m.rect.w);
+            match Command::new("nirubar")
+                .arg("--monitor")
+                .arg(geometry)
+                .spawn()
+            {
+                Ok(child) => self.bars.push(child),
+                Err(e) => eprintln!("niruwm: cannot start nirubar: {e}"),
+            }
+        }
+    }
+
+    /// Stop every bar and wait for it, so none survives a reload or logout.
+    pub(crate) fn stop_bars(&mut self) {
+        for mut b in self.bars.drain(..) {
+            let _ = b.kill();
+            let _ = b.wait();
         }
     }
 
@@ -377,10 +408,6 @@ impl Wm {
         self.resolve_bindings()?;
         self.grab()?;
         if self.cfg.bar_height != old_height {
-            if let Some(mut b) = self.bar.take() {
-                let _ = b.kill();
-                let _ = b.wait();
-            }
             std::env::remove_var("NIRUWM_SESSION_BAR");
             self.start_bar();
         }
@@ -419,9 +446,6 @@ impl Wm {
 
 impl Drop for Wm {
     fn drop(&mut self) {
-        if let Some(b) = &mut self.bar {
-            let _ = b.kill();
-            let _ = b.wait();
-        }
+        self.stop_bars();
     }
 }

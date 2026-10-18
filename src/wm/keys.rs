@@ -266,9 +266,13 @@ impl Wm {
     /// keys work with nothing installed beyond `wpctl` or `playerctl`.
     fn media_key(&mut self, name: &str) {
         let cmd: Option<(&str, Vec<String>)> = match name {
-            "XF86AudioRaiseVolume" => Some(("sh", vec!["-c".into(), VOLUME_UP.to_string()])),
-            "XF86AudioLowerVolume" => Some(("sh", vec!["-c".into(), VOLUME_DOWN.to_string()])),
-            "XF86AudioMute" => Some(("sh", vec!["-c".into(), VOLUME_MUTE.to_string()])),
+            "XF86AudioRaiseVolume" => {
+                Some(("sh", vec!["-c".into(), format!("{VOLUME_SCRIPT} up")]))
+            }
+            "XF86AudioLowerVolume" => {
+                Some(("sh", vec!["-c".into(), format!("{VOLUME_SCRIPT} down")]))
+            }
+            "XF86AudioMute" => Some(("sh", vec!["-c".into(), format!("{VOLUME_SCRIPT} mute")])),
             "XF86AudioPlay" | "XF86AudioPause" => Some(("playerctl", vec!["play-pause".into()])),
             "XF86AudioNext" => Some(("playerctl", vec!["next".into()])),
             "XF86AudioPrev" => Some(("playerctl", vec!["previous".into()])),
@@ -393,26 +397,35 @@ pub(crate) fn tag_index(n: u32) -> u32 {
 /// changes something you cannot see is not feedback. `notify-send` reaches
 /// whatever notification daemon is running (dunst, NIRUPI's, or the desktop's),
 /// and silence is acceptable when none is.
-const VOLUME_UP: &str = r#"wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null
-wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null || amixer -q set Master 5%+ unmute 2>/dev/null
+/// Volume key commands.
+///
+/// They change the volume and then show the result, because a key that changes
+/// something invisible is not feedback. `notify-send` reaches whatever
+/// notification daemon runs (dunst, NIRUPI's, or none, in which case the call
+/// is silent).
+///
+/// One notification is replaced by the next instead of stacking: pressing the
+/// key five times shows one bubble with the final level, not five. That is what
+/// `-r` (replace id) does, and the id is stable per operation.
+const VOLUME_SCRIPT: &str = r#"op="$1"
+case "$op" in
+  up)   wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null || amixer -q set Master 5%+ unmute 2>/dev/null ;;
+  down) wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null ;;
+  mute) wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null ;;
+esac
 v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | awk '{printf "%d", $2*100}')
-[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*/\1/p' | head -1)
-[ -n "$v" ] && notify-send -a NIRU -h int:value:"$v" -t 1500 "Volume" "${v}%" 2>/dev/null
+[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*//p' | head -1)
+if wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -q MUTED; then
+  body="Muted"
+else
+  body="${v}%"
+fi
+# A stable id per operation, so repeated presses replace the same bubble.
+case "$op" in up) id=9101 ;; down) id=9102 ;; *) id=9103 ;; esac
+notify-send -a NIRU -r "$id" -h int:value:"${v:-0}" -t 1200 "Volume" "$body" 2>/dev/null
 exit 0"#;
 
-const VOLUME_DOWN: &str = r#"wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null
-v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | awk '{printf "%d", $2*100}')
-[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*/\1/p' | head -1)
-[ -n "$v" ] && notify-send -a NIRU -h int:value:"$v" -t 1500 "Volume" "${v}%" 2>/dev/null
-exit 0"#;
-
-const VOLUME_MUTE: &str = r#"wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null
-muted=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -c MUTED)
-if [ "$muted" = 1 ]; then msg="Muted"; else msg="Unmuted"; fi
-notify-send -a NIRU -t 1500 "Volume" "$msg" 2>/dev/null
-exit 0"#;
-
-/// Look up a program in PATH without spawning anything.
+/// Look up a program in PATH without spawning anything./// Look up a program in PATH without spawning anything.
 pub(crate) fn which(name: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;

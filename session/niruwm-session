@@ -55,16 +55,34 @@ DISTRO=""
 [ -r /etc/os-release ] && DISTRO="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-}")"
 if [ "$DISTRO" = void ] && command -v pipewire >/dev/null 2>&1; then
   : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"; export XDG_RUNTIME_DIR
-  if ! pgrep -u "$(id -u)" -x pipewire >/dev/null 2>&1; then
+  # The runtime directory must exist before PipeWire starts. A display manager
+  # normally creates it, but not always before the session script runs, and a
+  # PipeWire that starts too early keeps running without ever creating its
+  # socket: audio is then dead for the whole session while processes exist.
+  mkdir -p "$XDG_RUNTIME_DIR"
+  chmod 700 "$XDG_RUNTIME_DIR"
+  if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+    # A process without a socket is useless. Restart it rather than trusting
+    # that "pipewire is running" means audio works.
+    pkill -u "$(id -u)" -x pipewire 2>/dev/null || :
+    sleep 0.3
     pipewire >/dev/null 2>&1 &
     i=0
     while [ "$i" -lt 100 ] && [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; do sleep 0.1; i=$((i + 1)); done
+    if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+      log "PipeWire did not create its socket; audio and the volume module will be unavailable"
+    fi
   fi
   for d in wireplumber pipewire-pulse; do
     command -v "$d" >/dev/null 2>&1 || continue
     pgrep -u "$(id -u)" -x "$d" >/dev/null 2>&1 || "$d" >/dev/null 2>&1 &
   done
 fi
+
+# The lock screen cannot show a message while it covers the screen, so its
+# diagnostic log is always on. It is tiny and only written on lock and unlock.
+NIRULOCK_TRACE=1
+export NIRULOCK_TRACE
 
 # ── Environment: the NIRU Noir look used by every NIRUWM-adjacent app ───────
 export GTK_THEME="${GTK_THEME:-Adwaita:dark}"

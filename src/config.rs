@@ -200,6 +200,8 @@ pub struct Bar {
     pub media_width: usize,
     /// Minutes between package update checks.
     pub update_check_minutes: u32,
+    /// Let the bar own a system tray.
+    pub tray: bool,
     /// Seconds before an open panel closes itself. 0 keeps it until dismissed.
     pub popup_timeout_seconds: u32,
     /// Battery segment in the bar. Read by NIRUBAR; declared here so the
@@ -257,6 +259,7 @@ impl Default for Bar {
             popups: true,
             media_width: 32,
             update_check_minutes: 30,
+            tray: true,
             popup_timeout_seconds: 4,
             battery: true,
             network: true,
