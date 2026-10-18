@@ -20,15 +20,7 @@ const USAGE: &str =
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
-fn run() -> Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let Some(cmd) = args.first() else {
-        return Err(USAGE.into());
-    };
-    let (c, s) = x11rb::connect(None)?;
-    let root = c.setup().roots[s].root;
-    let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
-
+fn offline(cmd: &str) -> Result<()> {
     if cmd == "layouts" {
         // Print the layouts in the order Super+Ctrl+period cycles them, with
         // the key that selects each one directly.
@@ -88,6 +80,23 @@ fn run() -> Result<()> {
         println!("Select with: niructl theme NAME   (or set theme in config.toml)");
         return Ok(());
     }
+    Ok(())
+}
+
+fn run() -> Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let Some(cmd) = args.first() else {
+        return Err(USAGE.into());
+    };
+    // Listing themes and layouts reads only local files, so it works without
+    // a display: people often run it over ssh or before X is up.
+    if cmd == "themes" || cmd == "layouts" {
+        return offline(cmd);
+    }
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
+
     if cmd == "status" {
         let tag = property_u32(&c, root, atom("_NET_CURRENT_DESKTOP")?).unwrap_or(0);
         let wm = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?).is_some();
