@@ -1,6 +1,11 @@
 mod clients;
 mod events;
 mod keys;
+
+/// Exposed for `--doctor`, which reports which keys the layout can deliver.
+pub fn keysym_for(name: &str) -> Option<u32> {
+    keys::keysym_named(name)
+}
 mod randr;
 
 use crate::bindings::Binding;

@@ -1,6 +1,7 @@
 mod bindings;
 mod config;
 mod doctor;
+mod keyboard;
 mod layout;
 mod monitor;
 mod replay;

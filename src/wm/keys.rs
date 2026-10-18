@@ -54,6 +54,11 @@ impl Wm {
             };
             let Some(code) = by_sym.get(&sym).copied() else {
                 // Not on this keyboard layout; skip instead of failing the WM.
+                // Media keys are worth naming: when they are missing the user
+                // presses them and nothing happens, with nothing to explain it.
+                if key.starts_with("XF86") {
+                    eprintln!("niruwm: {key} is not on this keyboard layout");
+                }
                 continue;
             };
             list.push(Binding { mods, action, code });
@@ -139,23 +144,11 @@ impl Wm {
             Action::Lock => self.lock_screen(),
             Action::Scratchpad => self.toggle_scratchpad()?,
             Action::MediaKey(name) => {
-                // Volume and playback are handled by the same code the bar
-                // reads, so the two can never disagree about the volume.
-                let program = match name.as_str() {
-                    n if n.contains("Volume") => "wpctl",
-                    n if n.contains("Mute")
-                        || n.contains("Play")
-                        || n.contains("Next")
-                        || n.contains("Prev")
-                        || n.contains("Pause") =>
-                    {
-                        "playerctl"
-                    }
-                    _ => "",
-                };
-                if !program.is_empty() {
-                    self.media_key(&name);
-                }
+                // `media_key` knows which command each key needs. The previous
+                // version guessed a program from the key name first and dropped
+                // keys it did not recognise, so a correct binding could still
+                // do nothing.
+                self.media_key(&name);
             }
             Action::WindowSwitcher => {
                 if self.helper_present("nirupi-window.sh") {
@@ -266,13 +259,32 @@ impl Wm {
     /// keys work with nothing installed beyond `wpctl` or `playerctl`.
     fn media_key(&mut self, name: &str) {
         let cmd: Option<(&str, Vec<String>)> = match name {
-            "XF86AudioRaiseVolume" => {
-                Some(("sh", vec!["-c".into(), format!("{VOLUME_SCRIPT} up")]))
-            }
-            "XF86AudioLowerVolume" => {
-                Some(("sh", vec!["-c".into(), format!("{VOLUME_SCRIPT} down")]))
-            }
-            "XF86AudioMute" => Some(("sh", vec!["-c".into(), format!("{VOLUME_SCRIPT} mute")])),
+            // `sh -c SCRIPT sh OP`: the operation must be `$1` inside the
+            // script. Appending it to the script text made `op` empty and the
+            // whole case statement was skipped, which is why the key showed a
+            // notification and changed nothing.
+            "XF86AudioRaiseVolume" => Some((
+                "sh",
+                vec!["-c".into(), VOLUME_SCRIPT.into(), "sh".into(), "up".into()],
+            )),
+            "XF86AudioLowerVolume" => Some((
+                "sh",
+                vec![
+                    "-c".into(),
+                    VOLUME_SCRIPT.into(),
+                    "sh".into(),
+                    "down".into(),
+                ],
+            )),
+            "XF86AudioMute" => Some((
+                "sh",
+                vec![
+                    "-c".into(),
+                    VOLUME_SCRIPT.into(),
+                    "sh".into(),
+                    "mute".into(),
+                ],
+            )),
             "XF86AudioPlay" | "XF86AudioPause" => Some(("playerctl", vec!["play-pause".into()])),
             "XF86AudioNext" => Some(("playerctl", vec!["next".into()])),
             "XF86AudioPrev" => Some(("playerctl", vec!["previous".into()])),
@@ -414,7 +426,7 @@ case "$op" in
   mute) wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null ;;
 esac
 v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | awk '{printf "%d", $2*100}')
-[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*//p' | head -1)
+[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*/\1/p' | head -1)
 if wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -q MUTED; then
   body="Muted"
 else
@@ -437,7 +449,7 @@ pub(crate) fn which(name: &str) -> bool {
 
 /// X keysym values for named keys. Only names that cannot be derived from the
 /// keysym table are listed; printable characters use their Latin-1 value.
-fn keysym_named(name: &str) -> Option<u32> {
+pub fn keysym_named(name: &str) -> Option<u32> {
     let v = match name {
         "Return" => 0xff0d,
         "Tab" => 0xff09,

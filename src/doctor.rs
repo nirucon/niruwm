@@ -6,6 +6,7 @@
 //! Void. It changes nothing.
 
 use crate::config::{Config, Result};
+use crate::keyboard;
 use std::path::Path;
 
 /// A program some binding or part of the session expects.
@@ -117,6 +118,27 @@ const NEEDS: &[Need] = &[
     },
 ];
 
+/// Which locker `niruidle` will start, in the order it looks.
+///
+/// Absolute paths first: a session started by a display manager does not
+/// always have `~/.local/bin` in PATH, and a bare name then falls through to
+/// `slock`, which does not speak the NIRU lock protocol.
+fn lock_screen(home: &Path) -> String {
+    let candidates = [
+        home.join(".local/bin/nirulock"),
+        home.join(".local/bin/nirupi-lock.sh"),
+        Path::new("/usr/bin/slock").to_path_buf(),
+        Path::new("/usr/local/bin/slock").to_path_buf(),
+        Path::new("/usr/bin/swaylock").to_path_buf(),
+    ];
+    for c in candidates {
+        if c.is_file() {
+            return c.display().to_string();
+        }
+    }
+    "none found: install nirulock".to_string()
+}
+
 /// Which distribution this looks like, chosen by its package manager.
 fn distro() -> &'static str {
     if Path::new("/etc/arch-release").exists() || Path::new("/usr/bin/pacman").exists() {
@@ -188,6 +210,21 @@ pub fn run() -> Result<()> {
             " (built-in plus your overrides)"
         }
     );
+
+    // Which bindings this keyboard can actually deliver.
+    //
+    // A key that is bound but absent from the layout does nothing, silently.
+    // That is how the media keys looked broken while the code was fine: the
+    // binding existed but the keycode was never found.
+    match keyboard::resolve(&cfg) {
+        Some((present, missing)) => {
+            println!("keyboard: {present} bindings usable on this layout");
+            for name in &missing {
+                println!("  not on this keyboard: {name}");
+            }
+        }
+        None => println!("keyboard: no DISPLAY, cannot read the keymap"),
+    }
     println!();
 
     // Programs.
@@ -220,6 +257,12 @@ pub fn run() -> Result<()> {
         }
         println!();
     }
+
+    // Which lock screen the idle timer will start. A wrong choice here is
+    // invisible until the screen locks and the password will not work, so it
+    // is worth reporting next to everything else.
+    println!();
+    println!("lock screen: {}", lock_screen(Path::new(&home)));
 
     // Session helpers NIRUPI provides, reported so the user knows why some
     // bindings do nothing on a machine without NIRUPI.
