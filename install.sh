@@ -13,7 +13,7 @@
 # read for writing and never removed.
 set -eu
 
-VERSION="0.8.0"
+VERSION="0.9.0"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -237,7 +237,7 @@ add_missing_keys() {
   add_key bar time_format '"%H:%M"'
   add_key bar popups true
   # 0.6.0
-  add_key bar popup_timeout_seconds 8
+  add_key bar popup_timeout_seconds 4
   if [ -n "$changed" ]; then
     say "Added settings to $file:$changed"
   fi

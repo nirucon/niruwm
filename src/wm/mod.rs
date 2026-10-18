@@ -51,8 +51,6 @@ pub(crate) struct Wm {
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
     /// reload, so a key press costs a lookup, never an X round trip.
     pub(crate) bindings: Vec<Binding>,
-    /// Windows in the master column (dwm's nmaster).
-    pub(crate) nmaster: usize,
     /// Wallpaper owner. Only active when `[wallpaper] enabled = true`.
     pub(crate) wallpaper: Wallpaper,
     /// Connected screens. A window belongs to the screen it was opened on.
@@ -182,7 +180,6 @@ impl Wm {
             hidden: HashSet::new(),
             pending_unmaps: HashMap::new(),
             bindings: Vec::new(),
-            nmaster: 1,
             wallpaper,
             monitors: Vec::new(),
             multi_monitor: false,

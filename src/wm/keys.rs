@@ -189,8 +189,10 @@ impl Wm {
             }
             Action::LayoutNext => self.layout = self.layout.next(),
             Action::LayoutPrev => self.layout = self.layout.prev(),
-            Action::IncMaster => self.nmaster += 1,
-            Action::DecMaster => self.nmaster = self.nmaster.saturating_sub(1),
+            // Master count is per screen: changing it on one monitor must not
+            // rearrange the other.
+            Action::IncMaster => return self.change_master(1).map(|_| true),
+            Action::DecMaster => return self.change_master(-1).map(|_| true),
             Action::IncMasterRatio => {
                 self.cfg.master_ratio = (self.cfg.master_ratio + 0.05).min(0.9)
             }

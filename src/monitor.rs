@@ -22,6 +22,9 @@ pub struct Monitor {
     pub workspaces: Vec<String>,
     /// Which of `workspaces` is shown.
     pub active: usize,
+    /// Windows in the master column on this screen (dwm's `nmaster`).
+    /// Per screen, so raising it on one monitor does not change the other.
+    pub nmaster: usize,
 }
 
 impl Monitor {
@@ -32,6 +35,7 @@ impl Monitor {
             rect,
             workspaces,
             active: 0,
+            nmaster: 1,
         }
     }
 
@@ -112,6 +116,7 @@ pub fn build(mut outputs: Vec<(String, Rect, bool)>, cfg: &MonitorConfig) -> (Ve
                 rect,
                 workspaces: list.clone(),
                 active: 0,
+                nmaster: 1,
             },
             _ => Monitor::new(name, rect, count),
         })
@@ -315,6 +320,14 @@ mod layout_tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn master_count_is_independent_per_screen() {
+        let mut m = two();
+        m[0].nmaster = 3;
+        assert_eq!(m[0].nmaster, 3);
+        assert_eq!(m[1].nmaster, 1, "the other screen keeps its own count");
     }
 
     #[test]

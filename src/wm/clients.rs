@@ -395,7 +395,7 @@ impl Wm {
             let boxes = self.layout.arrange_master(
                 screen,
                 n,
-                self.nmaster,
+                self.monitors.get(mi).map(|m| m.nmaster).unwrap_or(1),
                 self.cfg.master_ratio,
                 self.cfg.gap,
             );
@@ -575,6 +575,17 @@ impl Wm {
             w,
             h,
         }
+    }
+
+    /// Change the master count on the focused screen only.
+    pub(crate) fn change_master(&mut self, delta: i32) -> Result<()> {
+        if let Some(m) = self.monitors.get_mut(self.focused_monitor) {
+            let next = m.nmaster as i32 + delta;
+            // At least one master and never more than the screen is tiled for;
+            // the layout code handles the upper bound.
+            m.nmaster = next.max(1) as usize;
+        }
+        self.arrange()
     }
 
     /// The workspace shown on the focused screen.

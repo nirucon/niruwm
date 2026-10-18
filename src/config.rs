@@ -254,7 +254,7 @@ impl Default for Bar {
             time_format: "%H:%M".into(),
             popups: true,
             media_width: 32,
-            popup_timeout_seconds: 8,
+            popup_timeout_seconds: 4,
             battery: true,
             network: true,
             icons: true,

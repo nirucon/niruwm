@@ -119,7 +119,7 @@ icons = true
 # Clicking a module opens a small panel with more detail.
 popups = true
 # Seconds before an open panel closes itself. 0 waits for a click or Escape.
-popup_timeout_seconds = 8
+popup_timeout_seconds = 4
 # Characters kept from the media title before an ellipsis.
 media_width = 32
 
