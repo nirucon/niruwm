@@ -178,6 +178,15 @@ pub fn run(script: &str) -> Result<usize> {
     for (i, step) in steps.iter().enumerate() {
         let outcome = match step {
             Step::Key(combo) => {
+                // One line before each key, so a failed run in CI shows what
+                // was pressed and where the view was at the time. A modified
+                // Tab reaches the window manager as a bare Tab on some
+                // synthetic keyboards, and the tag log would only show the
+                // result, not the cause.
+                eprintln!(
+                    "niruwm: replay: press {combo} (tag {})",
+                    current_tag().map(|t| t + 1).unwrap_or(0)
+                );
                 // `--clearmodifiers` matters: a stuck modifier from a previous
                 // step would otherwise change what this one does.
                 let _ = Command::new("xdotool")

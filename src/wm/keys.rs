@@ -162,7 +162,16 @@ impl Wm {
             Action::FocusNext => self.focus_next(1)?,
             Action::FocusPrev => self.focus_next(-1)?,
             Action::FocusTag(n) => self.view_tag(tag_index(n))?,
-            Action::NextTag(d) => self.next_tag(d)?,
+            Action::NextTag(d) => {
+                self.next_tag(d)?;
+                // One line per step: when a replay goes the wrong way (a
+                // modifier that did not arrive, say), this is the evidence.
+                eprintln!(
+                    "niruwm: tag {} after {}",
+                    self.active_tag() + 1,
+                    if d > 0 { "next" } else { "previous" }
+                );
+            }
             Action::ToggleTag(n) => self.toggle_tag(tag_index(n))?,
             Action::MoveToTag(n) => self.move_to_tag(tag_index(n), false)?,
             Action::ToggleMoveToTag(n) => self.move_to_tag(tag_index(n), true)?,
