@@ -93,7 +93,11 @@ jobs:
              cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
             modern=1
           fi
-          if [ "$modern" = 1 ]; then
+          # A container job has no release binaries to download, and the
+          # release publish job is what a fresh tag waits for, so the only road
+          # is building. 0.13.0 failed here on Debian bookworm when this step
+          # still downloaded binaries that a tag does not have yet.
+          if [ "$modern" = 1 ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
             echo "building both from source"
             git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
             ( cd /tmp/nirubar-src && cargo build --release --locked )
@@ -103,12 +107,15 @@ jobs:
           else
             version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
             url="https://github.com/nirucon/niruwm/releases/download/v$version"
-            echo "toolchain too old; using the v$version release binaries"
-            if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
-            for b in niruwm nirubar niructl niruidle; do
-              $GET "/tmp/niru/bin/$b" "$url/$b"
-              chmod +x "/tmp/niru/bin/$b"
-            done
+            # Same rule as the installer in this repository: binaries first,
+            # and when there are no binaries, build the two crates the release
+            # job builds. An old distro toolchain is old, not incapable.
+            echo "toolchain too old for the release binaries; building from source"
+            git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
+            ( cd /tmp/nirubar-src && cargo build --release --locked )
+            cp /tmp/nirubar-src/target/release/nirubar /tmp/niru/bin/
+            cargo build --release --locked
+            cp target/release/niruwm target/release/niructl target/release/niruidle /tmp/niru/bin/
             test "$(/tmp/niru/bin/nirubar --version | awk '{print $2}')" = "$version"
             test "$(/tmp/niru/bin/niruwm --version | awk '{print $2}')" = "$version"
           fi
