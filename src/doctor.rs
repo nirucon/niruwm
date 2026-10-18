@@ -30,11 +30,11 @@ const NEEDS: &[Need] = &[
     },
     Need {
         name: "rofi",
-        why: "Super+P launcher",
-        required: true,
-        arch: "rofi",
-        debian: "rofi",
-        void: "rofi",
+        why: "NIRUPI's launcher; NIRUWM does not need it",
+        required: false,
+        arch: "rofi (optional, NIRUPI compatible)",
+        debian: "rofi (optional, NIRUPI compatible)",
+        void: "rofi (optional, NIRUPI compatible)",
     },
     Need {
         name: "setxkbmap",
@@ -93,14 +93,6 @@ const NEEDS: &[Need] = &[
         void: "feh",
     },
     Need {
-        name: "xidlehook",
-        why: "idle ladder (screen off, lock)",
-        required: false,
-        arch: "xidlehook",
-        debian: "xidlehook",
-        void: "xidlehook",
-    },
-    Need {
         name: "nirulock",
         why: "Super+Escape lock",
         required: false,
@@ -110,11 +102,19 @@ const NEEDS: &[Need] = &[
     },
     Need {
         name: "nirupi-lock.sh",
-        why: "Super+Escape lock (NIRUPI)",
+        why: "alternative lock (part of NIRUPI)",
         required: false,
         arch: "part of NIRUPI",
         debian: "part of NIRUPI",
         void: "part of NIRUPI",
+    },
+    Need {
+        name: "xidlehook",
+        why: "fallback idle timer; niruidle replaces it",
+        required: false,
+        arch: "xidlehook (optional)",
+        debian: "xidlehook (optional)",
+        void: "xidlehook (optional)",
     },
 ];
 

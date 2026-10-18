@@ -76,7 +76,10 @@ fn main() {
         std::process::exit(2)
     }
     if let Err(e) = Wm::new().and_then(|mut w| w.run()) {
-        eprintln!("niruwm: {e}");
+        // A session that ends without a word is the worst possible outcome:
+        // the bar appears for a moment and the screen goes black. Say what
+        // failed, on stderr and in the session log, before leaving.
+        eprintln!("niruwm: the session ended: {e}");
         std::process::exit(1)
     }
 }

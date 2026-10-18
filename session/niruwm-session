@@ -187,8 +187,27 @@ fi
 # NIRUWM runs in the foreground but is NOT exec'd: an `exec` replaces this
 # shell, so the EXIT trap (which kills the bar and helpers) would never run
 # and NIRUBAR would survive logout. The shell waits for the WM and cleans up.
-"$WM" "$@"
+# The manager's own words go to the session log even when the display
+# manager throws stderr away. A session that stops without a reason is what a
+# blank screen with only the pointer looks like; this is the one place a
+# person can find out why afterwards.
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/niruwm"
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+WM_LOG="$LOG_DIR/session.log"
+{
+  printf '\n=== %s session start ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  printf 'exec: %s\n' "$WM"
+  printf 'config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/niruwm/config.toml"
+} >>"$WM_LOG" 2>/dev/null || WM_LOG=/dev/null
+if [ "$WM_LOG" = /dev/null ]; then
+  "$WM" "$@"
+else
+  "$WM" "$@" 2>>"$WM_LOG"
+fi
 STATUS=$?
+if [ "$STATUS" -ne 0 ] && [ "$WM_LOG" != /dev/null ]; then
+  log "niruwm exited with status $STATUS; see $WM_LOG"
+fi
 # WM is gone; stop the bar explicitly before the EXIT trap runs so that the
 # X connection is closed in a defined order. The wait is bounded: a bar that
 # ignores SIGTERM must not keep the login session alive.
