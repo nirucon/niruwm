@@ -218,7 +218,12 @@ impl Wm {
             // to be released. d[0] = 1 means "locked", 0 means "unlocked".
             if d[0] == 1 {
                 self.keys_released = true;
-                self.c.ungrab_key(0, self.root, ModMask::ANY)?;
+                // Every modifier, every key: a grab left behind here would be
+                // answered by the window manager instead of the lock screen
+                // after the unlock, which looks like a dead keyboard.
+                for extra in [0u16, 8, 16, 24] {
+                    self.c.ungrab_key(0, self.root, ModMask::from(extra))?;
+                }
             } else {
                 self.keys_released = false;
                 self.grab()?;

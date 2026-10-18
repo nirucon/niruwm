@@ -340,21 +340,44 @@ impl Config {
     #[allow(dead_code)] // used by the WM binary, shared with niructl
     pub fn effective_keys(&self) -> Vec<crate::bindings::RawBinding> {
         use crate::bindings::{parse_keys, RawBinding};
+        // Every default binding is in the shipped config as well, so the
+        // override must replace the default with the *same action*, not merely
+        // add a row for the same key. Adding a row left both: super+Tab was
+        // both "tag_next" and (from the file) the same, fine, but a user entry
+        // that changed one binding of a key pair left the old one reachable.
+        // Removing by action as well makes the file the truth for its keys.
         let mut table = crate::bindings::Action::defaults();
         for user in &self.keys {
-            match parse_keys(&user.keys) {
-                Ok((mods, key)) => {
-                    let same =
-                        |k: &str| matches!(parse_keys(k), Ok((m, kk)) if m == mods && kk == key);
-                    table.retain(|b| !same(&b.keys));
-                    table.push(RawBinding {
-                        keys: user.keys.clone(),
-                        action: user.action.clone(),
-                    });
-                }
-                Err(e) => eprintln!("niruwm: ignoring binding {:?}: {e}", user.keys),
-            }
+            table.retain(|b| {
+                !(b.keys.eq_ignore_ascii_case(&user.keys)
+                    || matches!(
+                        (parse_keys(&b.keys), parse_keys(&user.keys)),
+                        (Ok((m1, k1)), Ok((m2, k2))) if m1 == m2 && k1 == k2
+                    ))
+            });
+            table.push(RawBinding {
+                keys: user.keys.clone(),
+                action: user.action.clone(),
+            });
         }
+        // An action listed in the file is no longer taken from the defaults;
+        // otherwise a key removed from the file would still answer to the
+        // default binding that named the same action.
+        let overridden: Vec<String> = self
+            .keys
+            .iter()
+            .map(|k| k.action.split_whitespace().next().unwrap_or("").to_string())
+            .filter(|a| !a.is_empty())
+            .collect();
+        table.retain(|b| {
+            let mut a = b.action.split_whitespace();
+            let first = a.next().unwrap_or("");
+            !overridden.iter().any(|o| o == first)
+                || self
+                    .keys
+                    .iter()
+                    .any(|k| k.keys.eq_ignore_ascii_case(&b.keys))
+        });
         table
     }
 
@@ -627,6 +650,24 @@ mod tests {
         assert!(c.validate().is_err());
         c.bar.modules = vec![String::new()];
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn a_key_in_the_file_replaces_the_default_once() {
+        let c = Config {
+            keys: vec![crate::bindings::RawBinding {
+                keys: "super+Tab".into(),
+                action: "shell echo hi".into(),
+            }],
+            ..Config::default()
+        };
+        let table = c.effective_keys();
+        let tabs = table.iter().filter(|b| b.keys == "super+Tab").count();
+        assert_eq!(tabs, 1, "one key, one binding");
+        let tab = table.iter().find(|b| b.keys == "super+Tab").unwrap();
+        assert_eq!(tab.action, "shell echo hi");
+        // The pairing key is untouched: only what the file names changes.
+        assert!(table.iter().any(|b| b.keys == "super+shift+Tab"));
     }
 
     #[test]

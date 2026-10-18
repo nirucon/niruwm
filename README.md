@@ -175,7 +175,7 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.16.0. Works for a normal session on one or several screens.
+Version 0.16.2. Works for a normal session on one or several screens.
 
 The default terminal is kitty; when it is not installed, Super+Enter starts the
 first of alacritty, foot and xterm that is. A binding whose program is missing

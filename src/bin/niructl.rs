@@ -27,7 +27,7 @@ use x11rb::{
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
 theme NAME | themes | monitors | reload | quit | \
-save-session | clear-session";
+save | save-session | clear-session";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -180,6 +180,8 @@ fn run() -> Result<()> {
             },
         ),
         "reload" => (4, 0),
+        // Save now: the same action as Super+Shift+W and the session end.
+        "save" => (6, 0),
         "quit" => (5, 0),
         // Remember what is open, or start clean next time. Sent to the window
         // manager so the session file describes the real screens and tags.
