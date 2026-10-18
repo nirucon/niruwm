@@ -77,6 +77,13 @@ pub struct Bar {
     pub cell_width: u16,
     /// Separator drawn between the status groups.
     pub separator: String,
+    /// Battery segment in the bar. Read by NIRUBAR; declared here so the
+    /// window manager accepts the shared file.
+    pub battery: bool,
+    /// Network icon in the bar. Read by NIRUBAR.
+    pub network: bool,
+    /// Nerd Font glyphs in the bar. Read by NIRUBAR.
+    pub icons: bool,
 }
 
 impl Default for Config {
@@ -108,6 +115,9 @@ impl Default for Bar {
             title_max: 60,
             cell_width: 30,
             separator: "|".into(),
+            battery: true,
+            network: true,
+            icons: true,
         }
     }
 }
@@ -259,6 +269,26 @@ mod tests {
         assert!(c.bar.enabled);
         assert!(!c.bar.title, "the bar defaults to tags and clock only");
         assert_eq!(c.bar.cell_width, 30);
+    }
+
+    #[test]
+    fn accepts_every_bar_key() {
+        // The bar's own settings must parse here, or `niruwm --check-config`
+        // rejects a file the bar just wrote. This drifted once: battery,
+        // network and icons were added to NIRUBAR only.
+        let shared = r#"
+[bar]
+enabled = true
+title = false
+title_max = 60
+cell_width = 30
+separator = "|"
+battery = true
+network = true
+icons = true
+"#;
+        let c: Config = toml::from_str(shared).expect("every bar key must parse");
+        assert!(c.bar.battery && c.bar.network && c.bar.icons);
     }
 
     #[test]

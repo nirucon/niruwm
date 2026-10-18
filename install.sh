@@ -162,13 +162,80 @@ build_local() {
 
 # Create missing files only. An existing configuration is never rewritten, so
 # installing NIRUBAR and NIRUWM in either order cannot clobber the other.
+# Append sections that a new version introduced. Existing values are never
+# touched: a missing [wallpaper] block looked like a broken wallpaper feature
+# when in fact the setting had simply not been added to an older file.
+add_missing_sections() {
+  file="$1"
+  example="$2"
+  added=""
+  for section in wallpaper bar; do
+    grep -q "^\[$section\]" "$file" && continue
+    # Copy the block from the example: from its header to the next header.
+    # Stop at the next section header. Comment blocks that introduce the next
+    # section are dropped so the appended text stays with its own settings.
+    block="$(awk -v s="[$section]" '
+      $0 == s {found=1; print; next}
+      found && /^\[/ {exit}
+      found && /^[[:space:]]*# ──/ {exit}
+      found {lines[++n] = $0}
+      END {
+        # Trim trailing comment lines that belong to the next section.
+        while (n > 0 && lines[n] ~ /^[[:space:]]*(#|$)/) n--
+        for (i = 1; i <= n; i++) print lines[i]
+      }
+    ' "$example")"
+    [ -n "$block" ] || continue
+    {
+      printf '\n# Added by the NIRUWM installer; values are defaults.\n'
+      printf '%s\n' "$block"
+    } >> "$file"
+    added="$added $section"
+  done
+  [ -n "$added" ] && say "Added missing settings to $file:$added"
+}
+
+# Add keys that a new version introduced inside a section that already exists.
+# The [bar] section gained battery, network and icons in 0.3.0; without them the
+# defaults apply, but the file no longer documents what can be changed.
+add_missing_keys() {
+  file="$1"
+  changed=""
+  add_key() {
+    section="$1"; key="$2"; value="$3"
+    grep -q "^[[:space:]]*${key}[[:space:]]*=" "$file" && return 0
+    # Insert after the last non-empty line of the section, or at the end.
+    awk -v s="[$section]" -v line="$key = $value" '
+      {text[NR]=$0}
+      $0 == s {inside=1; last=NR; next}
+      inside && /^\[/ {inside=0}
+      inside && NF {last=NR}
+      END {
+        if (last == 0) { exit 1 }
+        for (i=1; i<=NR; i++) {
+          print text[i]
+          if (i == last) print line
+        }
+      }
+    ' "$file" > "$file.tmp" && mv "$file.tmp" "$file" || rm -f "$file.tmp"
+    changed="$changed $section.$key"
+  }
+  add_key bar battery true
+  add_key bar network true
+  add_key bar icons true
+  [ -n "$changed" ] && say "Added settings to $file:$changed"
+}
+
 install_config() {
   mkdir -p "$CONFDIR/themes"
+  example="$(dirname "$0")/config.example.toml"
   if [ ! -e "$CONFDIR/config.toml" ]; then
-    install -m 0644 "$(dirname "$0")/config.example.toml" "$CONFDIR/config.toml"
+    install -m 0644 "$example" "$CONFDIR/config.toml"
     say "Created $CONFDIR/config.toml"
   else
     say "Keeping existing $CONFDIR/config.toml"
+    add_missing_sections "$CONFDIR/config.toml" "$example"
+    add_missing_keys "$CONFDIR/config.toml"
   fi
   for t in "$(dirname "$0")"/themes/*.toml; do
     [ -f "$t" ] || continue
