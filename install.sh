@@ -220,9 +220,16 @@ add_missing_keys() {
     ' "$file" > "$file.tmp" && mv "$file.tmp" "$file" || rm -f "$file.tmp"
     changed="$changed $section.$key"
   }
+  # 0.3.0
   add_key bar battery true
   add_key bar network true
   add_key bar icons true
+  # 0.5.0
+  add_key bar modules '["workspaces", "network", "battery", "clock"]'
+  add_key bar tags '["1", "2", "3", "4", "5", "6", "7", "8", "9"]'
+  add_key bar date_format '"%Y-%m-%d"'
+  add_key bar time_format '"%H:%M"'
+  add_key bar popups true
   [ -n "$changed" ] && say "Added settings to $file:$changed"
 }
 
