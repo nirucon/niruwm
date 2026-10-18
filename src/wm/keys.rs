@@ -106,17 +106,14 @@ impl Wm {
     pub(super) fn dispatch(&mut self, action: Action) -> Result<bool> {
         let focused = self.focus;
         match action {
-            Action::Terminal => {
-                let cmd = self.cfg.terminal.clone();
-                self.start(&cmd);
-            }
+            Action::Terminal => self.start_terminal(self.cfg.terminal.clone()),
             Action::TerminalAlt => {
                 let cmd = if self.cfg.terminal_alt.is_empty() {
                     self.cfg.terminal.clone()
                 } else {
                     self.cfg.terminal_alt.clone()
                 };
-                self.start(&cmd);
+                self.start_terminal(cmd);
             }
             Action::Browser => {
                 let cmd = if self.browser_present() {
@@ -356,6 +353,28 @@ impl Wm {
         let cmd = self.cfg.scratchpad.command.clone();
         self.start(&cmd);
         Ok(())
+    }
+
+    /// Start the configured terminal, or the first one that is installed.
+    ///
+    /// The default is kitty, which a minimal machine often does not have. A
+    /// terminal is the way out of every other problem, so it must open when
+    /// any of the usual ones exists; the notification from `start` still names
+    /// what was tried if none does.
+    fn start_terminal(&mut self, cmd: Vec<String>) {
+        let first = cmd.first().cloned().unwrap_or_default();
+        if self.command_present(&first) {
+            self.start(&cmd);
+            return;
+        }
+        for alternative in ["kitty", "alacritty", "foot", "xterm"] {
+            if self.command_present(alternative) {
+                eprintln!("niruwm: {first} is not installed, starting {alternative}");
+                self.start(&[alternative.to_string()]);
+                return;
+            }
+        }
+        self.start(&cmd);
     }
 
     /// Lock the screen. Preference order: nirulock, NIRUPI's wrapper, slock.

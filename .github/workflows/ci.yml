@@ -133,7 +133,10 @@ jobs:
       - name: Replay scripts
         shell: sh
         run: |
-          printf 'theme = "niru-noir"\nterminal = ["xterm"]\n' > /tmp/niru/.config/niruwm/config.toml
+          {
+            printf 'theme = "niru-noir"\nterminal = ["xterm"]\n'
+            printf '\n[scratchpad]\ncommand = ["xterm", "-class", "scratchpad"]\n'
+          } > /tmp/niru/.config/niruwm/config.toml
           Xvfb :77 -screen 0 1000x700x24 -nolisten tcp &
           sleep 2
           DISPLAY=:77 HOME=/tmp/niru PATH=/tmp/niru/bin:$PATH sh -c '
