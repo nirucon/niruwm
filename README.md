@@ -170,6 +170,14 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 Version 0.14.0. Works for a normal session on one or several screens.
 
+The default terminal is kitty; when it is not installed, Super+Enter starts the
+first of alacritty, foot and xterm that is. A binding whose program is missing
+now sends a notification naming it instead of failing silently.
+
+Building from source needs Rust 1.75 or newer. The released binaries run on
+Debian bookworm; its cargo 1.63 cannot build them, so use a newer toolchain
+there (rustup, or the nirulock package's instructions).
+
 Missing: swallow, more than one workspace visible at a time, a graphical
 monitor arrangement editor.
 
