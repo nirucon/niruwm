@@ -35,6 +35,14 @@ pub struct Config {
     pub scratchpad: ScratchpadConfig,
     /// Window rules, applied when a window is first managed.
     pub rules: Vec<Rule>,
+    /// Settings NIRUBAR reads from the same file. It refuses unknown fields as
+    /// strictly as this program does, so every setting either program knows
+    /// has to be accepted here, or the shared file is a config the other one
+    /// refuses: 0.14.0 shipped a bar setting this program did not know, and
+    /// the whole session failed to start. `{bar}` marks fields that belong to
+    /// the bar alone; the window manager ignores them.
+    pub weather_latitude: f64,
+    pub weather_longitude: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -211,6 +219,15 @@ pub struct Bar {
     pub network: bool,
     /// Nerd Font glyphs in the bar. Read by NIRUBAR.
     pub icons: bool,
+    /// Seconds before the focused window's title is shown. Read by NIRUBAR.
+    pub title_delay_seconds: u32,
+    /// Width of the `pulse` graph in the bar's panel. Read by NIRUBAR.
+    pub graph_width: usize,
+    /// Bar settings a newer NIRUBAR could add. Accepted, so updating one
+    /// program never stops the other from starting.
+    #[serde(flatten)]
+    #[allow(dead_code)] // deliberately unread; accepting it is the point
+    pub extra: std::collections::HashMap<String, toml::Value>,
 }
 
 impl Default for Config {
@@ -233,6 +250,8 @@ impl Default for Config {
             monitors: MonitorsConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             rules: Vec::new(),
+            weather_latitude: 0.0,
+            weather_longitude: 0.0,
         }
     }
 }
@@ -264,6 +283,9 @@ impl Default for Bar {
             battery: true,
             network: true,
             icons: true,
+            title_delay_seconds: 0,
+            graph_width: 24,
+            extra: std::collections::HashMap::new(),
         }
     }
 }
@@ -401,21 +423,12 @@ impl Config {
             return Err("bar.tags has more than nine entries".into());
         }
         for m in &self.bar.modules {
-            if ![
-                "workspaces",
-                "network",
-                "battery",
-                "clock",
-                "volume",
-                "media",
-                "updates",
-            ]
-            .contains(&m.as_str())
-            {
-                return Err(format!(
-                    "unknown bar module {m:?}; use workspaces, network, battery, volume, media, updates or clock"
-                )
-                .into());
+            // The bar owns this list; the window manager only has to accept
+            // it. Keeping its own copy meant every new bar module, `pulse` in
+            // 0.14.0, was a config the window manager refused, and a session
+            // that did not start. Anything a bar module resembles passes.
+            if m.is_empty() || !m.chars().all(|c| c.is_ascii_lowercase() || c == '_') {
+                return Err(format!("unknown bar module {m:?}").into());
             }
         }
         if self.bar.date_format.is_empty() || self.bar.time_format.is_empty() {
@@ -600,9 +613,15 @@ mod tests {
     }
 
     #[test]
-    fn a_truly_unknown_module_is_rejected() {
+    fn only_shaped_module_names_are_accepted() {
+        // The bar decides which names exist; the window manager only refuses
+        // something that cannot be a module name at all.
         let mut c = Config::default();
-        c.bar.modules = vec!["nonsense".to_string()];
+        c.bar.modules = vec!["nonsense_future_module".to_string()];
+        assert!(c.validate().is_ok());
+        c.bar.modules = vec!["/etc/passwd".to_string()];
+        assert!(c.validate().is_err());
+        c.bar.modules = vec![String::new()];
         assert!(c.validate().is_err());
     }
 

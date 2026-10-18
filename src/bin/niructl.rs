@@ -253,19 +253,26 @@ fn parse_tag(args: &[String]) -> Result<u32> {
 /// masks on the root and X may deliver one message once per matching mask;
 /// a duplicate `quit` left the process stuck in its event loop. Addressing the
 /// manager directly is unambiguous: one message, one recipient.
+///
+/// When there is no window manager (a bar on its own, a session still
+/// starting), the message goes to the root window instead. The bar listens
+/// there for the two commands that concern it, `reload` and `theme`, and
+/// ignores the rest. Without this a bar without a window manager could not be
+/// told to reload, and said "no window manager is running" for a command it
+/// was the one to carry out.
 fn send(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
     atom: Atom,
     data: [u32; 5],
 ) -> Result<()> {
-    let check = property_u32(c, root, atom_named(c, "_NET_SUPPORTING_WM_CHECK")?)
-        .ok_or("no window manager is running")?;
+    let check = property_u32(c, root, atom_named(c, "_NET_SUPPORTING_WM_CHECK")?);
+    let target = check.unwrap_or(root);
     c.send_event(
         false,
-        check,
+        target,
         EventMask::NO_EVENT,
-        ClientMessageEvent::new(32, check, atom, data),
+        ClientMessageEvent::new(32, target, atom, data),
     )?;
     // Round-trip before returning. Without this the process could exit with
     // the request still buffered in the X connection, and the command was
