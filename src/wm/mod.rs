@@ -434,9 +434,35 @@ impl Wm {
                         let _ = child.wait();
                     });
                 }
-                Err(e) => eprintln!("niruwm: cannot start {cmd}: {e}"),
+                Err(e) => {
+                    eprintln!("niruwm: cannot start {cmd}: {e}");
+                    Self::missing_program(cmd, &e);
+                }
             }
         }
+    }
+
+    /// Tell the person when a binding failed, not only the log.
+    ///
+    /// A keyboard shortcut that does nothing looks like a broken window
+    /// manager. The name of the missing program, in a notification, is the
+    /// difference between "this desktop is broken" and "install kitty".
+    fn missing_program(cmd: &str, e: &std::io::Error) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return;
+        }
+        // The command name comes from the config; strip anything that could
+        // end the shell string early.
+        let cmd: String = cmd
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || "-_./".contains(*c))
+            .collect();
+        let body = format!("{cmd} is not installed; the key needs it");
+        Self::spawn_detached(&[
+            "sh".into(),
+            "-c".into(),
+            format!("notify-send -a NIRUWM 'Missing program' '{body}' 2>/dev/null || true"),
+        ]);
     }
 
     /// Start a detached program without waiting for it at all.

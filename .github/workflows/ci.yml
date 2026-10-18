@@ -100,7 +100,8 @@ jobs:
           if [ "$modern" = 1 ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
             echo "building both from source"
             git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
-            ( cd /tmp/nirubar-src && cargo build --release --locked )
+            ( cd /tmp/nirubar-src && cargo build --release --locked ) ||
+              { echo "stage: cannot build nirubar"; exit 1; }
             cp /tmp/nirubar-src/target/release/nirubar /tmp/niru/bin/
             cargo build --release --locked
             cp target/release/niruwm target/release/niructl target/release/niruidle /tmp/niru/bin/
@@ -112,7 +113,8 @@ jobs:
             # job builds. An old distro toolchain is old, not incapable.
             echo "toolchain too old for the release binaries; building from source"
             git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
-            ( cd /tmp/nirubar-src && cargo build --release --locked )
+            ( cd /tmp/nirubar-src && cargo build --release --locked ) ||
+              { echo "stage: cannot build nirubar"; exit 1; }
             cp /tmp/nirubar-src/target/release/nirubar /tmp/niru/bin/
             cargo build --release --locked
             cp target/release/niruwm target/release/niructl target/release/niruidle /tmp/niru/bin/
