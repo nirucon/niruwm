@@ -1,0 +1,14 @@
+# A session that starts, opens a terminal, switches workspace, closes it.
+expect wm NIRUWM
+key super+Return
+wait 1200
+expect clients 1
+key super+3
+wait 400
+expect tag 3
+key super+1
+wait 400
+expect tag 1
+key super+q
+wait 800
+expect clients 0

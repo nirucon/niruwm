@@ -198,6 +198,8 @@ pub struct Bar {
     pub popups: bool,
     /// Characters kept from the media title.
     pub media_width: usize,
+    /// Minutes between package update checks.
+    pub update_check_minutes: u32,
     /// Seconds before an open panel closes itself. 0 keeps it until dismissed.
     pub popup_timeout_seconds: u32,
     /// Battery segment in the bar. Read by NIRUBAR; declared here so the
@@ -254,6 +256,7 @@ impl Default for Bar {
             time_format: "%H:%M".into(),
             popups: true,
             media_width: 32,
+            update_check_minutes: 30,
             popup_timeout_seconds: 4,
             battery: true,
             network: true,
@@ -402,11 +405,12 @@ impl Config {
                 "clock",
                 "volume",
                 "media",
+                "updates",
             ]
             .contains(&m.as_str())
             {
                 return Err(format!(
-                    "unknown bar module {m:?}; use workspaces, network, battery, volume, media or clock"
+                    "unknown bar module {m:?}; use workspaces, network, battery, volume, media, updates or clock"
                 )
                 .into());
             }
@@ -569,6 +573,34 @@ mod tests {
             ..Default::default()
         };
         assert!(!cfg.matches_class("kitty Kitty"));
+    }
+
+    #[test]
+    fn every_module_named_in_the_error_is_accepted() {
+        // The error message lists the valid modules. If the list and the
+        // message disagree, a valid module is rejected with a message that
+        // names it as valid, which is exactly what happened with `updates`.
+        for module in [
+            "workspaces",
+            "network",
+            "battery",
+            "clock",
+            "volume",
+            "media",
+            "updates",
+        ] {
+            let mut c = Config::default();
+            c.bar.modules = vec![module.to_string()];
+            c.validate()
+                .unwrap_or_else(|e| panic!("{module} should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn a_truly_unknown_module_is_rejected() {
+        let mut c = Config::default();
+        c.bar.modules = vec!["nonsense".to_string()];
+        assert!(c.validate().is_err());
     }
 
     #[test]

@@ -76,13 +76,25 @@ impl Wm {
                     }
                 }
                 Event::ConfigureRequest(e) => self.configure_request(e)?,
+                // Pointer enters empty desktop of a screen: focus that screen.
+                Event::EnterNotify(e) if e.event == self.root => {
+                    let (px, py) = self.pointer_position_now();
+                    self.focus_screen_at(px, py)?;
+                }
                 Event::EnterNotify(e) => {
-                    if self.clients.iter().any(|c| {
-                        c.win == e.event
-                            && c.tag == self.active_tag()
-                            && c.monitor == self.focused_monitor
-                    }) {
-                        self.set_focus(e.event)?;
+                    // Pointer enters a window: focus it and the screen it is on.
+                    if let Some(c) = self.clients.iter().find(|c| c.win == e.event) {
+                        let (monitor, tag) = (c.monitor, c.tag);
+                        // Moving onto another screen makes that screen the
+                        // focused one. Without this the keyboard stayed on the
+                        // screen the pointer left, which is the opposite of
+                        // focus-follows-mouse.
+                        if monitor != self.focused_monitor {
+                            self.focused_monitor = monitor;
+                        }
+                        if tag == self.active_tag() {
+                            self.set_focus(e.event)?;
+                        }
                     }
                 }
                 Event::KeyPress(e) => return self.key(e),

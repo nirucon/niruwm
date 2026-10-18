@@ -297,6 +297,38 @@ impl Wm {
             .cloned()
     }
 
+    /// Pointer position, queried fresh (used by focus-follows-mouse).
+    pub(crate) fn pointer_position_now(&self) -> (i16, i16) {
+        self.pointer_position()
+    }
+
+    /// Focus whichever screen the pointer is over.
+    ///
+    /// Moving the mouse across a screen boundary changes the focused screen
+    /// even when the pointer lands on empty desktop rather than a window.
+    pub(crate) fn focus_screen_at(&mut self, x: i16, y: i16) -> Result<()> {
+        if self.monitors.len() < 2 {
+            return Ok(());
+        }
+        let target = crate::monitor::monitor_at(&self.monitors, x, y);
+        if target == self.focused_monitor {
+            return Ok(());
+        }
+        self.focused_monitor = target;
+        // Focus a window on that screen when there is one, so typing has a
+        // destination. An empty screen keeps the pointer focus.
+        let active = self.monitors[target].active as u32;
+        let win = self
+            .clients
+            .iter()
+            .find(|c| c.monitor == target && c.tag == active)
+            .map(|c| c.win);
+        match win {
+            Some(w) => self.set_focus(w),
+            None => Ok(()),
+        }
+    }
+
     /// Pointer position in root coordinates, or the focused screen's centre.
     fn pointer_position(&self) -> (i16, i16) {
         if let Ok(cookie) = self.c.query_pointer(self.root) {

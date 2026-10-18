@@ -96,7 +96,7 @@ enabled = true
 # media, clock. Remove one to hide it. A font without the glyphs falls back to
 # plain text. `volume` and `media` need wpctl (or amixer) and playerctl; they
 # simply show nothing when those are missing.
-modules = ["workspaces", "media", "volume", "network", "battery", "clock"]
+modules = ["workspaces", "media", "volume", "network", "updates", "battery", "clock"]
 # Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
 # the rest keep their number. Glyphs and words both work.
 #   tags = ["web", "code", "chat", "", "", "", "", "", ""]
@@ -122,6 +122,9 @@ popups = true
 popup_timeout_seconds = 4
 # Characters kept from the media title before an ellipsis.
 media_width = 32
+# Minutes between package update checks. The result is cached in
+# ~/.cache/nirubar/updates so the bar never runs a package query per redraw.
+update_check_minutes = 30
 
 # ── Key bindings ────────────────────────────────────────────────────────────
 # Every default binding is listed below, so changing one is a single edit.

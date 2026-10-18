@@ -121,6 +121,22 @@ jobs:
         shell: sh
         run: sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
 
+      - name: Replay scripts
+        shell: sh
+        run: |
+          printf 'theme = "niru-noir"\nterminal = ["xterm"]\n\n[scratchpad]\ncommand = ["xterm", "-class", "scratchpad"]\n' \
+            > /tmp/niru/.config/niruwm/config.toml
+          Xvfb :77 -screen 0 1000x700x24 -nolisten tcp &
+          sleep 2
+          DISPLAY=:77 HOME=/tmp/niru PATH=/tmp/niru/bin:$PATH sh -c '
+            niruwm & sleep 2
+            for f in tests/replay/*.txt; do
+              echo "--- $f ---"
+              niruwm --replay "$f" || exit 1
+              niructl tag 1 >/dev/null 2>&1 || true
+              sleep 1
+            done
+          '
       - name: Keyboard smoke test
         shell: sh
         run: sh tests/keyboard-smoke.sh /tmp/niru/bin /tmp/niru

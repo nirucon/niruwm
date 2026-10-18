@@ -3,6 +3,7 @@ mod config;
 mod doctor;
 mod layout;
 mod monitor;
+mod replay;
 mod wallpaper;
 mod wm;
 use config::{Config, Theme};
@@ -25,6 +26,33 @@ fn main() {
             }
         }
     }
+    if arg == "--replay" {
+        let Some(path) = std::env::args().nth(2) else {
+            eprintln!("Usage: niruwm --replay FILE");
+            std::process::exit(2)
+        };
+        let script = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("niruwm: {path}: {e}");
+                std::process::exit(1)
+            }
+        };
+        match replay::run(&script) {
+            Ok(0) => {
+                println!("replay: all steps passed");
+                return;
+            }
+            Ok(n) => {
+                eprintln!("replay: {n} step(s) failed");
+                std::process::exit(1)
+            }
+            Err(e) => {
+                eprintln!("niruwm: {e}");
+                std::process::exit(1)
+            }
+        }
+    }
     if arg == "--dump-config" {
         match config::dump() {
             Ok(text) => print!("{text}"),
@@ -43,7 +71,7 @@ fn main() {
         return;
     }
     if !arg.is_empty() {
-        eprintln!("Usage: niruwm [--version|--check-config|--doctor|--dump-config]");
+        eprintln!("Usage: niruwm [--version|--check-config|--doctor|--dump-config|--replay FILE]");
         std::process::exit(2)
     }
     if let Err(e) = Wm::new().and_then(|mut w| w.run()) {

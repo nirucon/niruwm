@@ -1,0 +1,8 @@
+# The scratchpad opens on Super+Shift+S, and a plain terminal still tiles.
+expect wm NIRUWM
+key super+Return
+wait 1200
+expect clients 1
+key super+Shift+s
+wait 1500
+expect clients 2

@@ -129,6 +129,28 @@ fn spawn(program: &str) -> Option<u32> {
         .map(|c| c.id())
 }
 
+/// Start the locker without waiting for it.
+///
+/// The lock screen blocks until a password is accepted. Waiting here stopped
+/// the ladder at that step, so the display never turned off after locking.
+/// A timeout still runs, so a misbehaving locker cannot own the keyboard
+/// forever.
+fn lock_in_background(program: &str, minutes: u64) {
+    let mut cmd = Command::new("timeout");
+    if minutes > 0 {
+        cmd.arg(format!("{}m", minutes));
+    } else {
+        // `timeout 0` means "no limit" in coreutils, which is what we want.
+        cmd.arg("0");
+    }
+    let _ = cmd
+        .arg(program)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
 /// Run a program and wait for it: the locker blocks until the password is
 /// accepted, which is exactly what the ladder needs.
 ///
@@ -136,6 +158,7 @@ fn spawn(program: &str) -> Option<u32> {
 /// without a timeout a bug in the locker would leave the machine locked with
 /// no way in except ssh. Five minutes is long enough for any password and
 /// short enough to always recover.
+#[allow(dead_code)] // kept for callers that do want to wait
 fn lock_with_timeout(program: &str, minutes: u64) {
     if minutes > 0 {
         let _ = Command::new("timeout")
@@ -273,7 +296,10 @@ fn main() {
                     "niruidle: idle {idle}s: lock (timeout {} min)",
                     settings.lock_timeout
                 );
-                lock_with_timeout(l, settings.lock_timeout);
+                // Run the locker in the background. Waiting for it froze the
+                // whole ladder until someone unlocked, so the display could
+                // never be turned off while the screen was locked.
+                lock_in_background(l, settings.lock_timeout);
             }
             locked = true;
         }

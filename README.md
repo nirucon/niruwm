@@ -141,6 +141,20 @@ floating = true
 The hardware media keys are bound by NIRUWM itself, so they work with no
 daemon. They need `wpctl` (or `amixer`) for volume and `playerctl` for playback.
 
+`niruwm --replay FILE` runs a scripted session: key presses, expectations about
+client and workspace counts. It is how a bug gets reproduced without a second
+machine.
+
+```text
+expect wm NIRUWM
+key super+Return
+wait 1200
+expect clients 1
+key super+3
+wait 400
+expect tag 3
+```
+
 `niruwm --dump-config` prints every value in effect, including the full key
 table, so you can see what the programs are really using.
 
@@ -154,7 +168,7 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.8.0. Works for a normal session on one or several screens.
+Version 0.10.0. Works for a normal session on one or several screens.
 
 Missing: swallow, more than one workspace visible at a time, a graphical
 monitor arrangement editor.
