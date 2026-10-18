@@ -87,6 +87,32 @@ TAG=$(xprop -root _NET_CURRENT_DESKTOP 2>/dev/null | awk '{print $NF}')
 [ "$TAG" = "0" ] || fail "return to tag 1 failed"
 ok "returned to tag 1"
 
+# Restart must replace the binary process, not merely reload settings. The
+# request is acknowledged by the WM, and exactly one bar must remain.
+OLD_BAR=$(pgrep -x nirubar)
+niructl restart-bar || fail "bar restart was not acknowledged"
+i=0
+while [ "$i" -lt 100 ]; do
+  BARID=$(xwininfo -root -tree | awk '/NIRUBAR/{print $1; exit}')
+  NEW_BAR=$(pgrep -x nirubar || true)
+  if [ -n "$BARID" ] && [ -n "$NEW_BAR" ] && [ "$NEW_BAR" != "$OLD_BAR" ]; then break; fi
+  i=$((i + 1)); sleep 0.05
+done
+[ -n "$BARID" ] && [ "$NEW_BAR" != "$OLD_BAR" ] || fail "restart did not replace the bar process"
+[ "$(pgrep -x nirubar | wc -l)" -eq 1 ] || fail "duplicate bars after restart"
+ok "bar restarted by its owner"
+
+# A crash is recovered by the same owner, without a second session supervisor.
+kill "$(pgrep -x nirubar)"
+i=0
+while [ "$i" -lt 300 ]; do
+  BARID=$(xwininfo -root -tree | awk '/NIRUBAR/{print $1; exit}')
+  [ -z "$BARID" ] || break
+  i=$((i + 1)); sleep 0.05
+done
+[ -n "$BARID" ] || fail "WM did not recover a dead bar"
+ok "bar recovered after exit"
+
 # ── 6. Clean logout ────────────────────────────────────────────────────────
 niructl quit || fail "niructl quit failed"
 

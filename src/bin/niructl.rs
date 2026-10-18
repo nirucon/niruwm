@@ -26,7 +26,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
-theme NAME | themes | monitors | reload | quit | \
+theme NAME | themes | monitors | reload | restart-bar | quit | \
 save | save-session | clear-session";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -151,6 +151,27 @@ fn run() -> Result<()> {
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
     let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
+
+    if cmd == "restart-bar" {
+        let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
+            .ok_or("no window manager is running")?;
+        if property_u32(&c, owner, atom("_NIRUWM_BAR_CONTROL")?) != Some(1) {
+            return Err(
+                "this running WM cannot restart bars; log out/in to activate the updated session"
+                    .into(),
+            );
+        }
+        let serial = std::process::id();
+        send(&c, root, atom(CMD_ATOM)?, [8, serial, 0, 0, 0])?;
+        c.flush()?;
+        for _ in 0..100 {
+            if property_u32(&c, root, atom("_NIRUWM_BAR_RESTART_SERIAL")?) == Some(serial) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        return Err("window manager did not acknowledge bar restart".into());
+    }
 
     if cmd == "status" {
         let tag = property_u32(&c, root, atom("_NET_CURRENT_DESKTOP")?).unwrap_or(0);

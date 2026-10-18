@@ -11,23 +11,23 @@
 set -eu
 
 SELF_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-PATH="$HOME/.local/bin:$SELF_DIR:$PATH"
+PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
+
+case "${1:-}" in
+  --version) printf '%s\n' 'NIRUWM session 0.16.3'; exit 0 ;;
+  --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
+esac
 
 log() { printf '[niruwm] %s\n' "$*" >&2; }
 
 [ -n "${DISPLAY:-}" ] || { log "DISPLAY is unset; launch from SDDM or startx"; exit 1; }
 
 WM="$SELF_DIR/niruwm"
-for candidate in "$HOME/.local/bin/niruwm" "$SELF_DIR/niruwm"; do
+for candidate in "$SELF_DIR/niruwm" "$HOME/.local/bin/niruwm"; do
   [ -x "$candidate" ] && { WM="$candidate"; break; }
 done
 [ -x "$WM" ] || { log "niruwm binary not found"; exit 127; }
-
-BAR=""
-for candidate in "$SELF_DIR/nirubar" "$HOME/.local/bin/nirubar"; do
-  [ -x "$candidate" ] && { BAR="$candidate"; break; }
-done
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 NM_CONF="$CONFIG_HOME/niruwm/session.conf"
@@ -44,6 +44,9 @@ START_PICOM="${START_PICOM:-1}"
 START_IDLE="${START_IDLE:-1}"
 
 # ── Session bus ──────────────────────────────────────────────────────────────
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- "$0" "$@"
+fi
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-launch >/dev/null 2>&1; then
   eval "$(dbus-launch --sh-syntax)"
 fi
@@ -117,7 +120,6 @@ cleanup() {
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
-  [ -n "${BAR_PID:-}" ] && kill "$BAR_PID" 2>/dev/null || :
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -173,20 +175,10 @@ if [ -x "$HOME/.local/bin/nirupi-autostart.sh" ]; then
   ) >/dev/null 2>&1 &
 fi
 
-# ── Start the bar, then the window manager ─────────────────────────────────
-if [ -n "$BAR" ]; then
-  "$BAR" >/dev/null 2>&1 & BAR_PID=$!
-  # Tell the WM that the bar is already owned by this session; otherwise it
-  # would start a second instance, fail the singleton lock and leave a zombie.
-  NIRUWM_SESSION_BAR=1
-  export NIRUWM_SESSION_BAR
-  # Give the bar a moment to claim its strut so the WM sees the reserved area.
-  sleep 0.2
-fi
+# The WM owns every bar, including restart and logout cleanup.
 
-# NIRUWM runs in the foreground but is NOT exec'd: an `exec` replaces this
-# shell, so the EXIT trap (which kills the bar and helpers) would never run
-# and NIRUBAR would survive logout. The shell waits for the WM and cleans up.
+# The shell waits for the WM and cleans up session helpers. The WM cleans up
+# its own bars before returning.
 # The manager's own words go to the session log even when the display
 # manager throws stderr away. A session that stops without a reason is what a
 # blank screen with only the pointer looks like; this is the one place a
@@ -208,17 +200,5 @@ STATUS=$?
 if [ "$STATUS" -ne 0 ] && [ "$WM_LOG" != /dev/null ]; then
   log "niruwm exited with status $STATUS; see $WM_LOG"
 fi
-# WM is gone; stop the bar explicitly before the EXIT trap runs so that the
-# X connection is closed in a defined order. The wait is bounded: a bar that
-# ignores SIGTERM must not keep the login session alive.
-if [ -n "${BAR_PID:-}" ]; then
-  kill "$BAR_PID" 2>/dev/null || :
-  i=0
-  while kill -0 "$BAR_PID" 2>/dev/null && [ "$i" -lt 30 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  kill -KILL "$BAR_PID" 2>/dev/null || :
-  wait "$BAR_PID" 2>/dev/null || :
-fi
+# The WM has stopped its bars; the EXIT trap cleans up session helpers.
 exit "$STATUS"

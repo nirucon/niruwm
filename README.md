@@ -175,7 +175,11 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.16.2. Works for a normal session on one or several screens.
+Version 0.16.3. Works for a normal session on one or several screens.
+
+The window manager owns the bars and cleans them up on logout. After updating
+the bar binary, `niructl restart-bar` replaces the running bars and waits for
+the window manager's acknowledgement. `niructl reload` reloads settings.
 
 The default terminal is kitty; when it is not installed, Super+Enter starts the
 first of alacritty, foot and xterm that is. A binding whose program is missing

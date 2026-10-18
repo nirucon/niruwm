@@ -172,6 +172,8 @@ impl Wm {
             "WM_STATE",
             "WM_TAKE_FOCUS",
             "_NIRUWM_COMMAND",
+            "_NIRUWM_BAR_CONTROL",
+            "_NIRUWM_BAR_RESTART_SERIAL",
             "_NIRUWM_QUIT",
             "_NIRUWM_LOCK",
         ] {
@@ -273,6 +275,12 @@ impl Wm {
             AtomEnum::WINDOW.into(),
             &[check],
         )?;
+        self.prop(
+            check,
+            "_NIRUWM_BAR_CONTROL",
+            AtomEnum::CARDINAL.into(),
+            &[1],
+        )?;
         self.c.change_property8(
             PropMode::REPLACE,
             check,
@@ -317,9 +325,6 @@ impl Wm {
     /// A bar is tied to one screen's geometry, so a hotplug needs new bars
     /// rather than moved ones: the width and the strut both change.
     pub(crate) fn restart_bars_if_owning(&mut self) {
-        if std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
-            return;
-        }
         self.start_bar();
     }
 
@@ -370,19 +375,13 @@ impl Wm {
         self.arrange()
     }
 
-    /// Start the bar from PATH unless a session script already did.
-    ///
-    /// `niruwm-session` starts the bar before the WM so the strut exists
-    /// before the first window is tiled, and sets `NIRUWM_SESSION_BAR`.
-    /// Running `niruwm` directly (nested tests, tty start) still gets a bar.
+    /// The WM alone owns bars in session and standalone launches.
     fn start_bar(&mut self) {
+        self.stop_bars();
+        self.last_bar_start = std::time::Instant::now();
         if !self.cfg.bar.enabled {
             return;
         }
-        if std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
-            return;
-        }
-        self.stop_bars();
         // One bar per monitor. Each is told where it belongs, so it covers that
         // screen only and its workspace cells describe that screen.
         for m in &self.monitors {
@@ -413,14 +412,14 @@ impl Wm {
     /// paced: at most one attempt every ten seconds, and the attempts are
     /// logged, so a bar that cannot start cannot turn into a loop.
     pub(crate) fn restart_bars(&mut self) {
-        if !self.cfg.bar.enabled || std::env::var_os("NIRUWM_SESSION_BAR").is_some() {
+        if !self.cfg.bar.enabled {
             return;
         }
         let now = std::time::Instant::now();
         if now.duration_since(self.last_bar_start).as_secs() < 10 {
             return;
         }
-        let mut dead = false;
+        let mut dead = self.bars.is_empty();
         for child in &mut self.bars {
             if let Ok(Some(status)) = child.try_wait() {
                 eprintln!("niruwm: the bar exited ({status}); starting it again");
@@ -453,12 +452,12 @@ impl Wm {
             }
         };
         let old_height = self.cfg.bar_height;
+        let old_enabled = self.cfg.bar.enabled;
         self.cfg = cfg;
         self.theme = theme;
         self.resolve_bindings()?;
         self.grab()?;
-        if self.cfg.bar_height != old_height {
-            std::env::remove_var("NIRUWM_SESSION_BAR");
+        if self.cfg.bar_height != old_height || self.cfg.bar.enabled != old_enabled {
             self.start_bar();
         }
         self.update_borders()?;

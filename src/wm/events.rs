@@ -185,6 +185,18 @@ impl Wm {
     fn client_message(&mut self, e: ClientMessageEvent) -> Result<bool> {
         let d = e.data.as_data32();
         if e.type_ == self.atom("_NIRUWM_COMMAND") {
+            if d[0] == 8 {
+                self.start_bar();
+                self.c.change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atom("_NIRUWM_BAR_RESTART_SERIAL"),
+                    AtomEnum::CARDINAL,
+                    &[d[1]],
+                )?;
+                self.c.flush()?;
+                return Ok(true);
+            }
             // The control channel speaks the same actions as the key table,
             // so `niructl` and a binding can never drift apart.
             // The protocol carries zero-based indices (as EWMH does), while
