@@ -137,6 +137,11 @@ jobs:
           sleep 2
           DISPLAY=:77 HOME=/tmp/niru PATH=/tmp/niru/bin:$PATH sh -c '
             niruwm & sleep 2
+            # The window manager must come from the binaries staged above
+            # (built from this commit), never from a release of an older
+            # version that happens to be in PATH. 0.13.0 replayed against an
+            # older window manager and failed a step that works in this one.
+            echo "replaying against $(command -v niruwm) $(niruwm --version)"
             for f in tests/replay/*.txt; do
               echo "--- $f ---"
               niruwm --replay "$f" || exit 1

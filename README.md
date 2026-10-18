@@ -168,7 +168,7 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.13.1. Works for a normal session on one or several screens.
+Version 0.14.0. Works for a normal session on one or several screens.
 
 Missing: swallow, more than one workspace visible at a time, a graphical
 monitor arrangement editor.

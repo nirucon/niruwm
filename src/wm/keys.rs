@@ -363,9 +363,23 @@ impl Wm {
     /// Never fails silently: if nothing is installed the user gets a message
     /// instead of a key that appears broken.
     fn lock_screen(&mut self) {
-        for candidate in ["nirulock", "nirupi-lock.sh", "slock"] {
-            if self.command_present(candidate) || self.helper_present(candidate) {
-                self.start(&[candidate.to_string()]);
+        // Absolute paths first. A session started by a display manager does
+        // not always have `~/.local/bin` in PATH, and a bare name then fell
+        // through to slock, which does not speak the NIRU lock protocol.
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates = [
+            format!("{home}/.local/bin/nirulock"),
+            format!("{home}/.local/bin/nirupi-lock.sh"),
+            "slock".to_string(),
+        ];
+        for candidate in candidates {
+            let present = if candidate.contains('/') {
+                std::path::Path::new(&candidate).is_file()
+            } else {
+                self.command_present(&candidate)
+            };
+            if present {
+                self.start(std::slice::from_ref(&candidate));
                 return;
             }
         }
