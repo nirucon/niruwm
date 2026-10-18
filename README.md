@@ -138,6 +138,9 @@ workspace = 2
 floating = true
 ```
 
+The hardware media keys are bound by NIRUWM itself, so they work with no
+daemon. They need `wpctl` (or `amixer`) for volume and `playerctl` for playback.
+
 `niruwm --dump-config` prints every value in effect, including the full key
 table, so you can see what the programs are really using.
 
@@ -151,7 +154,7 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.7.0. Works for a normal session on one or several screens.
+Version 0.8.0. Works for a normal session on one or several screens.
 
 Missing: swallow, more than one workspace visible at a time, a graphical
 monitor arrangement editor.

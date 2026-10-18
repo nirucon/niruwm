@@ -92,9 +92,11 @@ workspaces = 9
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
 enabled = true
-# Modules to show, in order. Available: workspaces, network, battery, clock.
-# Remove one to hide it. A font without the glyphs falls back to plain text.
-modules = ["workspaces", "network", "battery", "clock"]
+# Modules to show, in order. Available: workspaces, network, battery, volume,
+# media, clock. Remove one to hide it. A font without the glyphs falls back to
+# plain text. `volume` and `media` need wpctl (or amixer) and playerctl; they
+# simply show nothing when those are missing.
+modules = ["workspaces", "media", "volume", "network", "battery", "clock"]
 # Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
 # the rest keep their number. Glyphs and words both work.
 #   tags = ["web", "code", "chat", "", "", "", "", "", ""]
@@ -118,6 +120,8 @@ icons = true
 popups = true
 # Seconds before an open panel closes itself. 0 waits for a click or Escape.
 popup_timeout_seconds = 8
+# Characters kept from the media title before an ellipsis.
+media_width = 32
 
 # ── Key bindings ────────────────────────────────────────────────────────────
 # Every default binding is listed below, so changing one is a single edit.

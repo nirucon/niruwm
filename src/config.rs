@@ -196,6 +196,8 @@ pub struct Bar {
     pub time_format: String,
     /// Open a detail panel when a module is clicked.
     pub popups: bool,
+    /// Characters kept from the media title.
+    pub media_width: usize,
     /// Seconds before an open panel closes itself. 0 keeps it until dismissed.
     pub popup_timeout_seconds: u32,
     /// Battery segment in the bar. Read by NIRUBAR; declared here so the
@@ -251,6 +253,7 @@ impl Default for Bar {
             date_format: "%Y-%m-%d".into(),
             time_format: "%H:%M".into(),
             popups: true,
+            media_width: 32,
             popup_timeout_seconds: 8,
             battery: true,
             network: true,
@@ -340,6 +343,9 @@ impl Config {
         if self.bar.title_max > 512 {
             return Err("bar.title_max must be at most 512".into());
         }
+        if self.bar.media_width > 200 {
+            return Err("bar.media_width must be at most 200".into());
+        }
         if !["random", "fixed", "single"].contains(&self.wallpaper.mode.as_str()) {
             return Err("wallpaper.mode must be random, fixed or single".into());
         }
@@ -389,9 +395,18 @@ impl Config {
             return Err("bar.tags has more than nine entries".into());
         }
         for m in &self.bar.modules {
-            if !["workspaces", "network", "battery", "clock"].contains(&m.as_str()) {
+            if ![
+                "workspaces",
+                "network",
+                "battery",
+                "clock",
+                "volume",
+                "media",
+            ]
+            .contains(&m.as_str())
+            {
                 return Err(format!(
-                    "unknown bar module {m:?}; use workspaces, network, battery or clock"
+                    "unknown bar module {m:?}; use workspaces, network, battery, volume, media or clock"
                 )
                 .into());
             }

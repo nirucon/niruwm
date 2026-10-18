@@ -138,6 +138,25 @@ impl Wm {
             }
             Action::Lock => self.lock_screen(),
             Action::Scratchpad => self.toggle_scratchpad()?,
+            Action::MediaKey(name) => {
+                // Volume and playback are handled by the same code the bar
+                // reads, so the two can never disagree about the volume.
+                let program = match name.as_str() {
+                    n if n.contains("Volume") => "wpctl",
+                    n if n.contains("Mute")
+                        || n.contains("Play")
+                        || n.contains("Next")
+                        || n.contains("Prev")
+                        || n.contains("Pause") =>
+                    {
+                        "playerctl"
+                    }
+                    _ => "",
+                };
+                if !program.is_empty() {
+                    self.media_key(&name);
+                }
+            }
             Action::WindowSwitcher => {
                 if self.helper_present("nirupi-window.sh") {
                     self.shell("$HOME/.local/bin/nirupi-window.sh");
@@ -237,6 +256,50 @@ impl Wm {
     /// that stays open must not block the event loop.
     fn shell(&self, cmd: &str) {
         Self::spawn_detached(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
+    }
+
+    /// Run one media key.
+    ///
+    /// NIRUWM does the work itself instead of shelling out to a helper, so the
+    /// keys work with nothing installed beyond `wpctl` or `playerctl`.
+    fn media_key(&mut self, name: &str) {
+        let cmd: Option<(&str, Vec<String>)> = match name {
+            "XF86AudioRaiseVolume" => Some((
+                "sh",
+                vec![
+                    "-c".into(),
+                    "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null || amixer -q set Master 5%+ unmute 2>/dev/null"
+                        .into(),
+                ],
+            )),
+            "XF86AudioLowerVolume" => Some((
+                "sh",
+                vec![
+                    "-c".into(),
+                    "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null"
+                        .into(),
+                ],
+            )),
+            "XF86AudioMute" => Some((
+                "sh",
+                vec![
+                    "-c".into(),
+                    "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null"
+                        .into(),
+                ],
+            )),
+            "XF86AudioPlay" | "XF86AudioPause" => {
+                Some(("playerctl", vec!["play-pause".into()]))
+            }
+            "XF86AudioNext" => Some(("playerctl", vec!["next".into()])),
+            "XF86AudioPrev" => Some(("playerctl", vec!["previous".into()])),
+            _ => None,
+        };
+        if let Some((program, args)) = cmd {
+            let mut full = vec![program.to_string()];
+            full.extend(args);
+            Self::spawn_detached(&full);
+        }
     }
 
     /// Show or hide the scratchpad.

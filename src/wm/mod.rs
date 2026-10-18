@@ -65,6 +65,9 @@ pub(crate) struct Wm {
     /// Scratchpad window and whether it is currently shown.
     pub(crate) scratchpad: Option<Window>,
     pub(crate) scratchpad_shown: bool,
+    /// True while a lock screen owns the keyboard. The WM releases its key
+    /// grabs so every key reaches the lock, then takes them back.
+    pub(crate) keys_released: bool,
 }
 
 impl Wm {
@@ -158,6 +161,7 @@ impl Wm {
             "WM_TAKE_FOCUS",
             "_NIRUWM_COMMAND",
             "_NIRUWM_QUIT",
+            "_NIRUWM_LOCK",
         ] {
             atoms.insert(n, c.intern_atom(false, n.as_bytes())?.reply()?.atom);
         }
@@ -186,6 +190,7 @@ impl Wm {
             monitor_cfg,
             scratchpad: None,
             scratchpad_shown: false,
+            keys_released: false,
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
         wm.focused_monitor = crate::monitor::primary(&monitors, &wm.monitor_cfg);

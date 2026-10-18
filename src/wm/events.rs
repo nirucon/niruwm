@@ -196,6 +196,17 @@ impl Wm {
                 }
             }
             self.arrange()?;
+        } else if e.type_ == self.atom("_NIRUWM_LOCK") {
+            // A lock screen has taken the keyboard and asks for the key grabs
+            // to be released. d[0] = 1 means "locked", 0 means "unlocked".
+            if d[0] == 1 {
+                self.keys_released = true;
+                self.c.ungrab_key(0, self.root, ModMask::ANY)?;
+            } else {
+                self.keys_released = false;
+                self.grab()?;
+            }
+            self.c.flush()?;
         } else if e.type_ == self.atom("_NET_CURRENT_DESKTOP") && d[0] < 9 {
             // From NIRUBAR's clickable workspaces or an external pager.
             self.view_tag(d[0])?;

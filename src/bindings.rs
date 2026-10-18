@@ -53,6 +53,8 @@ pub enum Action {
     SwapNext,
     /// Show or hide the scratchpad window.
     Scratchpad,
+    /// A hardware media key: volume, mute or playback.
+    MediaKey(String),
     SwapPrev,
 }
 
@@ -367,6 +369,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "focusmon" => Action::FocusMonitor(arg()?.parse().unwrap_or(1)),
         "tagmon" => Action::TagMonitor(arg()?.parse().unwrap_or(1)),
         "scratchpad" => Action::Scratchpad,
+        // Hardware keys. The X names are what `keysym_named` resolves.
+        "media_key" => Action::MediaKey(arg()?.to_string()),
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {
