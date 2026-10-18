@@ -15,9 +15,9 @@
 //! `xidlehook`, `xprintidle` or shell glue.
 
 use std::{
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use x11rb::{
     connection::{Connection, RequestConnection as _},
@@ -36,7 +36,7 @@ struct Settings {
     lock_after: u64,
     /// Minutes after locking before the display is turned off.
     dpms_after: u64,
-    /// Safety net: give up waiting for a password after this long.
+    /// Deprecated compatibility input; never used to terminate a locker.
     lock_timeout: u64,
 }
 
@@ -62,7 +62,7 @@ fn load_settings() -> Settings {
         screen: 15,
         lock_after: 15,
         dpms_after: 15,
-        lock_timeout: 5,
+        lock_timeout: 0,
     };
     let Ok(text) = std::fs::read_to_string(config_path()) else {
         return s;
@@ -91,16 +91,22 @@ fn load_settings() -> Settings {
 
 /// First program in PATH that exists.
 fn first_available(candidates: &[String]) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = |path: &std::path::Path| {
+        path.metadata()
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
     candidates
         .iter()
         .find(|c| {
             if c.contains('/') {
-                std::path::Path::new(c).is_file()
+                executable(std::path::Path::new(c))
             } else {
                 std::env::var("PATH")
                     .map(|p| {
                         p.split(':')
-                            .any(|d| std::path::Path::new(d).join(c).is_file())
+                            .any(|d| executable(&std::path::Path::new(d).join(c)))
                     })
                     .unwrap_or(false)
             }
@@ -110,78 +116,37 @@ fn first_available(candidates: &[String]) -> Option<String> {
 
 fn lockers() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
-    // Absolute paths first, for the same reason `first_available` takes them:
-    // a session started from a display manager does not always have
-    // ~/.local/bin in PATH, and a bare "nirulock" was then skipped while
-    // slock from /usr/local/bin was found. That made slock the lock screen,
-    // and slock does not know the NIRU lock protocol.
+    // Honour the session's selected prefix in PATH, then the ordinary user
+    // installation, before trying a compatible X11 fallback locker.
     vec![
-        format!("{home}/.local/bin/nirulock"),
         "nirulock".into(),
+        format!("{home}/.local/bin/nirulock"),
         format!("{home}/.local/bin/nirupi-lock.sh"),
         "slock".into(),
-        "swaylock".into(),
     ]
 }
 
-/// Start a program and return its pid, discarding its output.
-fn spawn(program: &str) -> Option<u32> {
+/// Retain ownership so completed children are reaped and PID reuse is harmless.
+fn spawn(program: &str) -> Option<Child> {
     Command::new(program)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .spawn()
+        .map_err(|e| eprintln!("niruidle: cannot start {program}: {e}"))
         .ok()
-        .map(|c| c.id())
 }
 
-/// Start the locker without waiting for it.
-///
-/// The lock screen blocks until a password is accepted. Waiting here stopped
-/// the ladder at that step, so the display never turned off after locking.
-/// A timeout still runs, so a misbehaving locker cannot own the keyboard
-/// forever.
-fn lock_in_background(program: &str, minutes: u64) {
-    let mut cmd = Command::new("timeout");
-    if minutes > 0 {
-        cmd.arg(format!("{}m", minutes));
-    } else {
-        // `timeout 0` means "no limit" in coreutils, which is what we want.
-        cmd.arg("0");
-    }
-    let _ = cmd
-        .arg(program)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-}
-
-/// Run a program and wait for it: the locker blocks until the password is
-/// accepted, which is exactly what the ladder needs.
-///
-/// A lock timeout is set first. Nirulock ignores SIGTERM on purpose, so
-/// without a timeout a bug in the locker would leave the machine locked with
-/// no way in except ssh. Five minutes is long enough for any password and
-/// short enough to always recover.
-#[allow(dead_code)] // kept for callers that do want to wait
-fn lock_with_timeout(program: &str, minutes: u64) {
-    if minutes > 0 {
-        let _ = Command::new("timeout")
-            .arg(format!("{}m", minutes))
-            .arg(program)
-            .status();
-    } else {
-        let _ = Command::new(program).status();
+fn stop_saver(child: &mut Option<Child>) {
+    if let Some(mut child) = child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
-#[allow(dead_code)]
-fn run_blocking(program: &str) -> bool {
-    Command::new(program)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+fn reap(child: &mut Option<Child>) -> Option<std::process::ExitStatus> {
+    let status = child.as_mut()?.try_wait().ok()??;
+    *child = None;
+    Some(status)
 }
 
 fn xset_dpms(force: &str) {
@@ -205,7 +170,7 @@ fn main() {
     let settings = load_settings();
     if arg == "--config" {
         println!(
-            "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking\nlock gives up after {} min",
+            "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking\nlegacy lock_timeout_minutes: {} (ignored; never terminate a locker)",
             settings.screen, settings.lock_after, settings.dpms_after, settings.lock_timeout
         );
         return;
@@ -232,9 +197,16 @@ fn main() {
     let locker = first_available(&lockers());
     let saver = first_available(&["niruscreensaver".to_string()]);
 
-    let screen_at = settings.screen * 60;
-    let lock_at = (settings.screen + settings.lock_after) * 60;
-    let dpms_at = (settings.screen + settings.lock_after + settings.dpms_after) * 60;
+    let screen_at = settings.screen.saturating_mul(60);
+    let lock_at = settings
+        .screen
+        .saturating_add(settings.lock_after)
+        .saturating_mul(60);
+    let dpms_at = settings
+        .screen
+        .saturating_add(settings.lock_after)
+        .saturating_add(settings.dpms_after)
+        .saturating_mul(60);
 
     eprintln!(
         "niruidle: screen after {} min, lock {} min later, display off {} min after that{}{}",
@@ -253,71 +225,109 @@ fn main() {
         },
     );
 
-    let mut saver_pid: Option<u32> = None;
-    let mut locked = false;
+    let mut saver_child = None;
+    let mut locker_child = None;
+    let mut blanked = false;
     let mut display_off = false;
+    let mut retry_lock_at = Instant::now();
 
     loop {
+        reap(&mut saver_child);
+        if let Some(status) = reap(&mut locker_child) {
+            if status.success() {
+                let _ = conn.force_screen_saver(ScreenSaver::RESET);
+                let _ = conn.flush();
+            } else {
+                eprintln!("niruidle: locker exited unsuccessfully: {status}");
+                retry_lock_at = Instant::now() + POLL;
+            }
+        }
         let idle = idle_seconds(&conn, root).unwrap_or(0);
+        let locked = locker_child.is_some();
 
         // Any activity below the first step resets the whole ladder.
-        if idle < screen_at {
-            if let Some(pid) = saver_pid.take() {
-                let _ = Command::new("kill").arg(pid.to_string()).status();
-            }
+        if idle < screen_at.max(1) {
+            stop_saver(&mut saver_child);
+            blanked = false;
             if display_off {
                 xset_dpms("on");
                 display_off = false;
             }
-            locked = false;
         }
 
         // 1. Screensaver.
-        if saver_pid.is_none() && !locked && settings.screen > 0 && idle >= screen_at {
+        if saver_child.is_none()
+            && !blanked
+            && !locked
+            && settings.screen > 0
+            && idle >= screen_at
+            && (settings.lock_after == 0 || idle < lock_at)
+        {
             match &saver {
                 Some(s) => {
                     eprintln!("niruidle: idle {idle}s: screensaver");
-                    saver_pid = spawn(s);
+                    saver_child = spawn(s);
                 }
                 None => {
                     eprintln!("niruidle: idle {idle}s: blank");
                     xset_dpms("off");
-                    saver_pid = Some(0);
+                    blanked = true;
+                    display_off = true;
                 }
             }
         }
 
-        // 2. Lock. Run it in the foreground: this process waits until the
-        //    password is accepted, then the idle counter is already low again.
-        if !locked && settings.lock_after > 0 && idle >= lock_at {
-            if let Some(pid) = saver_pid.take() {
-                if pid != 0 {
-                    let _ = Command::new("kill").arg(pid.to_string()).status();
-                    // Give it a moment to release the screen.
-                    thread::sleep(Duration::from_millis(300));
-                }
-            }
+        // Track a nonblocking child, never a timeout wrapper. Input activity
+        // cannot mark a still-running locker as unlocked or spawn another one.
+        if !locked && settings.lock_after > 0 && idle >= lock_at && Instant::now() >= retry_lock_at
+        {
+            stop_saver(&mut saver_child);
             if let Some(l) = &locker {
-                eprintln!(
-                    "niruidle: idle {idle}s: lock (timeout {} min)",
-                    settings.lock_timeout
-                );
-                // Run the locker in the background. Waiting for it froze the
-                // whole ladder until someone unlocked, so the display could
-                // never be turned off while the screen was locked.
-                lock_in_background(l, settings.lock_timeout);
+                eprintln!("niruidle: idle {idle}s: lock");
+                locker_child = spawn(l);
+                retry_lock_at = Instant::now() + POLL;
             }
-            locked = true;
         }
 
         // 3. Display off, only while locked: an unlocked machine going dark
         //    would be a surprise.
-        if !display_off && settings.dpms_after > 0 && locked && idle >= dpms_at {
+        if !display_off && settings.dpms_after > 0 && locker_child.is_some() && idle >= dpms_at {
             eprintln!("niruidle: idle {idle}s: display off");
             xset_dpms("off");
             display_off = true;
         }
 
         thread::sleep(POLL);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saver_is_waited_and_cannot_leave_a_zombie() {
+        let mut child = Some(Command::new("sleep").arg("60").spawn().unwrap());
+        let pid = child.as_ref().unwrap().id();
+        stop_saver(&mut child);
+        assert!(child.is_none());
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        stop_saver(&mut child); // No fake PID/sentinel is ever sent a signal.
+    }
+
+    #[test]
+    fn completed_child_status_is_reaped_once() {
+        let mut child = Some(Command::new("sh").args(["-c", "exit 7"]).spawn().unwrap());
+        let end = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = reap(&mut child) {
+                break status;
+            }
+            assert!(Instant::now() < end);
+            thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status.code(), Some(7));
+        assert!(child.is_none());
+        assert!(reap(&mut child).is_none());
     }
 }

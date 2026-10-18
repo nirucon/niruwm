@@ -175,7 +175,12 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.16.3. Works for a normal session on one or several screens.
+Version 0.16.4. Works for a normal session on one or several screens.
+
+This is a personal WM for the author's own use; others are welcome to try it.
+[Roadmap and continuation notes](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
+The idle daemon owns/reaps its children and never terminates a locker on a timer.
+Log out/in after updating to replace an already running idle daemon.
 
 The window manager owns the bars and cleans them up on logout. After updating
 the bar binary, `niructl restart-bar` replaces the running bars and waits for
