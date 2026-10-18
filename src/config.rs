@@ -47,6 +47,32 @@ pub struct ScratchpadConfig {
     pub height: f32,
 }
 
+impl ScratchpadConfig {
+    /// True when a window with this `WM_CLASS` is the scratchpad.
+    ///
+    /// Only the value of `--class` (or `-class`) counts. A command without one
+    /// never matches, so ordinary windows of the same program stay tiled.
+    pub fn matches_class(&self, wm_class: &str) -> bool {
+        let mut args = self.command.iter().peekable();
+        while let Some(arg) = args.next() {
+            let is_class_flag = matches!(
+                arg.as_str(),
+                "--class" | "-class" | "--app-id" | "-name" | "--name"
+            );
+            if is_class_flag {
+                if let Some(name) = args.peek() {
+                    let lower = wm_class.to_ascii_lowercase();
+                    let needle = name.to_ascii_lowercase();
+                    if !needle.is_empty() && lower.contains(&needle) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
 impl Default for ScratchpadConfig {
     fn default() -> Self {
         Self {
@@ -338,6 +364,21 @@ impl Config {
                 return Err("rules entries need a class".into());
             }
         }
+        // A scratchpad without a class would either never appear or, worse,
+        // capture every window of its program.
+        let has_class = self.scratchpad.matches_class("probe");
+        let names_a_class = self.scratchpad.command.iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--class" | "-class" | "--app-id" | "-name" | "--name"
+            )
+        });
+        if !has_class && !names_a_class {
+            return Err(
+                "scratchpad.command needs a window class, for example [\"kitty\", \"--class\", \"scratchpad\"]"
+                    .into(),
+            );
+        }
         if !["fill", "fit", "stretch", "center"].contains(&self.wallpaper.scale.as_str()) {
             return Err("wallpaper.scale must be fill, fit, stretch or center".into());
         }
@@ -494,6 +535,25 @@ mod tests {
         assert!(c.bar.enabled);
         assert!(!c.bar.show_title, "the bar defaults to tags and clock only");
         assert_eq!(c.bar.cell_width, 30);
+    }
+
+    #[test]
+    fn only_the_scratchpad_class_matches() {
+        let cfg = ScratchpadConfig::default();
+        // A kitty marked with --class scratchpad is the scratchpad.
+        assert!(cfg.matches_class("scratchpad Scratchpad"));
+        // A plain kitty is not.
+        assert!(!cfg.matches_class("kitty Kitty"));
+        assert!(!cfg.matches_class("org.gnome.Terminal"));
+    }
+
+    #[test]
+    fn a_command_without_a_class_never_matches() {
+        let cfg = ScratchpadConfig {
+            command: vec!["kitty".into()],
+            ..Default::default()
+        };
+        assert!(!cfg.matches_class("kitty Kitty"));
     }
 
     #[test]

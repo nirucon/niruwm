@@ -89,13 +89,11 @@ impl Wm {
         let rule = self.rule_for(w);
         // A window whose class matches the scratchpad command becomes the
         // scratchpad, floating and centred, instead of being tiled.
+        // The scratchpad is recognised by the class named in its command, not
+        // by the program. Matching every argument made *every* kitty window a
+        // scratchpad, because "kitty" was one of them.
         let class = self.window_class(w);
-        let is_scratchpad = self
-            .cfg
-            .scratchpad
-            .command
-            .iter()
-            .any(|arg| !arg.starts_with('-') && Self::is_class_match(&class, arg));
+        let is_scratchpad = self.cfg.scratchpad.matches_class(&class);
         if is_scratchpad {
             self.scratchpad = Some(w);
             self.scratchpad_shown = true;
@@ -566,12 +564,6 @@ impl Wm {
     }
 
     /// Keep a floating rectangle inside the usable area.
-    /// True when `arg` names this window's class, ignoring case.
-    fn is_class_match(class: &str, arg: &str) -> bool {
-        let needle = arg.to_ascii_lowercase();
-        needle.len() > 2 && class.to_ascii_lowercase().contains(&needle)
-    }
-
     fn clamp(&self, r: Rect, area: Rect) -> Rect {
         let w = r.w.min(area.w).max(60);
         let h = r.h.min(area.h).max(40);
