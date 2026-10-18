@@ -14,6 +14,9 @@ mod layout;
 #[path = "../monitor.rs"]
 #[allow(dead_code)]
 mod monitor;
+#[path = "../session_state.rs"]
+#[allow(dead_code)] // niructl reads the list, it never writes one
+mod session_state;
 
 use config::{Config, Result, Theme};
 use x11rb::{
@@ -23,11 +26,17 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
-theme NAME | themes | monitors | reload | quit";
+theme NAME | themes | monitors | reload | quit | \
+save-session | clear-session";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
 fn offline(cmd: &str) -> Result<()> {
+    // The session file is a plain list, so these work without a window
+    // manager too: useful from the console before starting a session.
+    if cmd == "save-session" || cmd == "clear-session" {
+        return session_from_file(cmd);
+    }
     if cmd == "layouts" {
         // Print the layouts in the order Super+Ctrl+period cycles them, with
         // the key that selects each one directly.
@@ -172,6 +181,10 @@ fn run() -> Result<()> {
         ),
         "reload" => (4, 0),
         "quit" => (5, 0),
+        // Remember what is open, or start clean next time. Sent to the window
+        // manager so the session file describes the real screens and tags.
+        "save-session" => (6, 0),
+        "clear-session" => (7, 0),
         "theme" => {
             let name = args.get(1).ok_or(USAGE)?;
             Theme::load(name)?;
@@ -235,6 +248,36 @@ fn wait_applied(
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     Err("window manager did not apply the command".into())
+}
+
+/// Read the saved session, or forget it, without a window manager.
+///
+/// Saving needs the window manager (it knows screens and workspaces), so this
+/// only reports and clears: the honest half of the pair when there is nothing
+/// running to describe.
+fn session_from_file(cmd: &str) -> Result<()> {
+    let path = crate::session_state::path();
+    if cmd == "clear-session" {
+        crate::session_state::clear()?;
+        println!("saved session cleared: {}", path.display());
+        return Ok(());
+    }
+    let entries = crate::session_state::load();
+    if entries.is_empty() {
+        println!("no saved session ({})", path.display());
+        return Ok(());
+    }
+    println!("{} window(s) saved in {}", entries.len(), path.display());
+    for e in entries {
+        println!(
+            "  screen {}  workspace {}  {}{}",
+            e.monitor + 1,
+            e.tag + 1,
+            e.program.join(" "),
+            if e.floating { "  (floating)" } else { "" }
+        );
+    }
+    Ok(())
 }
 
 fn parse_tag(args: &[String]) -> Result<u32> {

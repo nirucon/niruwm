@@ -171,6 +171,13 @@ action = "launcher"
 keys = "super+shift+p"
 action = "launcher_unified"
 
+# Remember every open window (workspace, screen, floating) so the next login
+# can start them again. Logging out saves too. Needs `restore_session = true`
+# at the top of the file to bring them back.
+[[keys]]
+keys = "super+shift+w"
+action = "save_session"
+
 [[keys]]
 keys = "super+w"
 action = "window_switcher"

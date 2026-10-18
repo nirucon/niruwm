@@ -91,6 +91,13 @@ Cycle with Super+Ctrl+period and Super+Ctrl+comma, or list them with
 
 ## Keys
 
+**Sessions.** With `restore_session = true` at the top of the config, the
+programs open when a session ends are started again at the next login, on the
+same workspace and screen. `Super+Shift+W` (`niructl save-session`) saves on
+demand; `niructl clear-session` starts clean next time. A program that is no
+longer installed is named in a notification and skipped. `niructl
+save-session` without a window manager lists the saved windows instead.
+
 `Super` is the Windows key. Every binding is in the config; the defaults follow
 NIRUPI's dwm.
 
@@ -168,7 +175,7 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.15.0. Works for a normal session on one or several screens.
+Version 0.16.0. Works for a normal session on one or several screens.
 
 The default terminal is kitty; when it is not installed, Super+Enter starts the
 first of alacritty, foot and xterm that is. A binding whose program is missing

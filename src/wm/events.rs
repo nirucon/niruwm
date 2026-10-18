@@ -200,6 +200,8 @@ impl Wm {
                 })),
                 4 => Some(Action::Reload),
                 5 => Some(Action::Quit),
+                6 => Some(Action::SaveSession),
+                7 => Some(Action::ClearSession),
                 _ => None,
             };
             if let Some(action) = action {

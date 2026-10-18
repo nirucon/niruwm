@@ -213,8 +213,26 @@ impl Wm {
                     self.close(w)?;
                 }
             }
-            Action::Quit => return Ok(false),
+            Action::Quit => {
+                // The session ends: what was open is what should come back.
+                if let Err(e) = self.save_session() {
+                    eprintln!("niruwm: could not save the session: {e}");
+                }
+                return Ok(false);
+            }
             Action::Reload => self.reload()?,
+            Action::SaveSession => {
+                if let Err(e) = self.save_session() {
+                    eprintln!("niruwm: could not save the session: {e}");
+                }
+            }
+            Action::ClearSession => {
+                if let Err(e) = crate::session_state::clear() {
+                    eprintln!("niruwm: could not clear the session: {e}");
+                } else {
+                    eprintln!("niruwm: saved session cleared");
+                }
+            }
             Action::Theme(name) => {
                 let mut cfg = self.cfg.clone();
                 cfg.theme = name;
@@ -301,6 +319,89 @@ impl Wm {
             full.extend(args);
             Self::spawn_detached(&full);
         }
+    }
+
+    /// Write the open windows to the session file.
+    ///
+    /// One entry per window, in the order they were mapped, so the next login
+    /// starts them in the order they appear: a browser before the editor that
+    /// the editor remembered being next to.
+    pub(crate) fn save_session(&self) -> Result<()> {
+        let mut entries = Vec::new();
+        for c in &self.clients {
+            if self.hidden.contains(&c.win) && c.win == self.scratchpad.unwrap_or(0) {
+                // A scratchpad is part of the window manager, not a session.
+                continue;
+            }
+            let Some(pid) = c.pid else { continue };
+            let Some(program) = command_line(pid) else {
+                continue;
+            };
+            entries.push(crate::session_state::Entry {
+                program,
+                tag: c.tag,
+                monitor: c.monitor,
+                floating: c.floating,
+            });
+        }
+        crate::session_state::save(&entries)?;
+        eprintln!("niruwm: session saved: {} window(s)", entries.len());
+        Ok(())
+    }
+
+    /// Start the programs a saved session describes.
+    ///
+    /// Every entry becomes an ordinary window: it is tiled on its workspace
+    /// like anything else, and if the program is gone the user gets one
+    /// notification, not a session that fails to start.
+    pub(crate) fn restore_session(&mut self) -> Result<()> {
+        let entries = crate::session_state::load();
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut missing: Vec<String> = Vec::new();
+        for e in crate::session_state::ordered(&entries) {
+            let Some((program, args)) = e.program.split_first() else {
+                continue;
+            };
+            let path = std::path::Path::new(program);
+            let present = if program.contains('/') {
+                path.is_file()
+            } else {
+                which(program)
+            };
+            if !present {
+                missing.push(program.clone());
+                continue;
+            }
+            // Tag and screen are where the program lands. `manage` places a
+            // new window on the active workspace, so the view moves there
+            // first and stays on the last one: the user starts on a screen
+            // that has a window, not an empty one.
+            let screen = e.monitor.min(self.monitors.len().saturating_sub(1));
+            if let Some(m) = self.monitors.get_mut(screen) {
+                m.active = e.tag as usize;
+            }
+            self.focused_monitor = screen;
+            self.start(&e.program);
+            let _ = args;
+        }
+        if !missing.is_empty() {
+            eprintln!(
+                "niruwm: session: {} program(s) are not installed: {}",
+                missing.len(),
+                missing.join(", ")
+            );
+            let list = missing.join(", ");
+            Self::spawn_detached(&[
+                "sh".into(),
+                "-c".into(),
+                format!(
+                    "notify-send -a NIRUWM 'Session partly restored' 'Not installed: {list}' 2>/dev/null || true"
+                ),
+            ]);
+        }
+        Ok(())
     }
 
     /// Show or hide the scratchpad.
@@ -546,6 +647,33 @@ pub fn keysym_named(name: &str) -> Option<u32> {
         }
     };
     Some(v)
+}
+
+/// The full command line of a process, from `/proc`.
+///
+/// The session has to start the exact program that was running: a browser
+/// started with a profile argument must come back with it. `/proc/PID/cmdline`
+/// is NUL separated and keeps the arguments as they were.
+fn command_line(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let parts: Vec<String> = raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).to_string())
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    // A program started through a shell wrapper reports the wrapper. Names
+    // that cannot be restarted usefully are skipped rather than saved.
+    let first = parts[0].rsplit('/').next().unwrap_or("");
+    if matches!(
+        first,
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "python" | "python3" | "perl"
+    ) {
+        return None;
+    }
+    Some(parts)
 }
 
 #[cfg(test)]

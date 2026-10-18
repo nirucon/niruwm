@@ -40,6 +40,10 @@ pub enum Action {
     Close,
     Quit,
     Reload,
+    /// Write the open windows to the session file.
+    SaveSession,
+    /// Forget the saved session; the next login starts empty.
+    ClearSession,
     Theme(String),
     ToggleGaps,
     /// Nudge or resize the focused floating window by (dx, dy).
@@ -196,7 +200,10 @@ impl Action {
         add("super+shift+l", "shell nirupi-keyboard.sh");
         add("super+shift+t", "shell nirupi-touchpad.sh");
         add("super+v", "shell clip-menu.sh");
+        // Super+S belongs to NIRUPI (its ssh helper) and stays that way for
+        // compatibility; the session is saved with Super+Shift+W instead.
         add("super+s", "shell nirupi-ssh.sh");
+        add("super+shift+w", "save_session");
         add("super+g", "toggle_gaps");
         add("super+ctrl+shift+b", "shell nirupi-barmode.sh");
         add("super+shift+Print", "shell flameshot gui");
@@ -341,6 +348,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "browser" => Action::Browser,
         "launcher" => Action::Launcher,
         "launcher_unified" => Action::LauncherUnified,
+        "save_session" => Action::SaveSession,
+        "clear_session" => Action::ClearSession,
         "window_switcher" => Action::WindowSwitcher,
         // Lock with the best available locker: NIRUWM's own nirulock when
         // installed, then NIRUPI's wrapper, then slock.

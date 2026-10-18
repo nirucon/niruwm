@@ -36,6 +36,12 @@ pub(crate) struct Client {
     /// Set for windows that asked for WM_TAKE_FOCUS; focus is then delivered
     /// as a message rather than with SetInputFocus.
     take_focus: bool,
+    /// The process that asked to be opened, for the session file.
+    ///
+    /// X11 has no "what program is this window"; `_NET_WM_PID` is set by
+    /// toolkits and is what every desktop reads to answer the question.
+    /// Without it, a saved session could not say what to start again.
+    pid: Option<u32>,
 }
 
 pub(crate) struct Wm {
@@ -222,6 +228,13 @@ impl Wm {
         // not stop the session, so it is reported and ignored.
         if let Err(e) = wm.wallpaper.apply() {
             eprintln!("niruwm: wallpaper: {e}");
+        }
+        // Bring back what was open last time, when the user asked for it. A
+        // failure here costs comfort, never the session.
+        if wm.cfg.restore_session {
+            if let Err(e) = wm.restore_session() {
+                eprintln!("niruwm: could not restore the session: {e}");
+            }
         }
         Ok(wm)
     }

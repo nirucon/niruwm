@@ -5,6 +5,7 @@ mod keyboard;
 mod layout;
 mod monitor;
 mod replay;
+mod session_state;
 mod wallpaper;
 mod wm;
 use config::{Config, Theme};

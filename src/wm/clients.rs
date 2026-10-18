@@ -132,6 +132,7 @@ impl Wm {
                 h: g.height,
             },
             take_focus,
+            pid: self.values(w, "_NET_WM_PID").first().copied(),
         });
 
         if is_scratchpad {

@@ -43,6 +43,9 @@ pub struct Config {
     /// the bar alone; the window manager ignores them.
     pub weather_latitude: f64,
     pub weather_longitude: f64,
+    /// Start the programs that were open when the last session ended.
+    /// Read by NIRUWM only; NIRUBAR accepts it because the file is shared.
+    pub restore_session: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -252,6 +255,7 @@ impl Default for Config {
             rules: Vec::new(),
             weather_latitude: 0.0,
             weather_longitude: 0.0,
+            restore_session: false,
         }
     }
 }
