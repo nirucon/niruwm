@@ -192,7 +192,13 @@ add_missing_sections() {
     } >> "$file"
     added="$added $section"
   done
-  [ -n "$added" ] && say "Added missing settings to $file:$added"
+  # A function's status is its last command. Without the explicit `return 0`
+  # a run that added nothing returned 1 and, under `set -e`, killed the
+  # installer right after "Keeping existing config".
+  if [ -n "$added" ]; then
+    say "Added missing settings to $file:$added"
+  fi
+  return 0
 }
 
 # Add keys that a new version introduced inside a section that already exists.
@@ -230,7 +236,10 @@ add_missing_keys() {
   add_key bar date_format '"%Y-%m-%d"'
   add_key bar time_format '"%H:%M"'
   add_key bar popups true
-  [ -n "$changed" ] && say "Added settings to $file:$changed"
+  if [ -n "$changed" ]; then
+    say "Added settings to $file:$changed"
+  fi
+  return 0
 }
 
 install_config() {
