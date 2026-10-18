@@ -253,7 +253,10 @@ impl Wm {
         };
         c.fullscreen = fullscreen;
         let full = self.atom("_NET_WM_STATE_FULLSCREEN");
-        let state: &[u32] = if fullscreen { &[full] } else { &[] };
+        // A bound local, not a `&[full]` inside the `if`: rustc 1.75, the
+        // declared baseline, rejects the latter.
+        let states: [u32; 1] = [full];
+        let state: &[u32] = if fullscreen { &states } else { &[] };
         self.prop(e.window, "_NET_WM_STATE", AtomEnum::ATOM.into(), state)?;
         self.arrange()
     }

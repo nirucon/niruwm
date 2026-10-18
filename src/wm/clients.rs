@@ -800,7 +800,11 @@ impl Wm {
             let f = c.fullscreen;
             let tag = c.tag;
             let full = self.atom("_NET_WM_STATE_FULLSCREEN");
-            let state: &[u32] = if f { &[full] } else { &[] };
+            // Bound to a local: a temporary array in the `if` lives only for
+            // the statement, which rustc 1.75 rejects and later versions
+            // accept. The suite's declared baseline must compile.
+            let states: [u32; 1] = [full];
+            let state: &[u32] = if f { &states } else { &[] };
             self.prop(w, "_NET_WM_STATE", AtomEnum::ATOM.into(), state)?;
             if f {
                 self.c
