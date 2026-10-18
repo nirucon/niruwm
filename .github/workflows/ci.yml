@@ -26,6 +26,18 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Build pinned bar and collect static test artifacts
+        run: |
+          git clone --depth 1 --branch "v$(cat nirubar-version)" https://github.com/nirucon/nirubar /tmp/nirubar-build
+          cargo build --manifest-path /tmp/nirubar-build/Cargo.toml --release --locked --target x86_64-unknown-linux-musl
+          mkdir -p /tmp/ci-bin
+          cp target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} /tmp/ci-bin/
+          cp /tmp/nirubar-build/target/x86_64-unknown-linux-musl/release/nirubar /tmp/ci-bin/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: session-binaries
+          path: /tmp/ci-bin/*
+          retention-days: 3
 
       - name: Shellcheck
         run: |
@@ -34,6 +46,7 @@ jobs:
             /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh
 
   session:
+    needs: verify
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -41,10 +54,10 @@ jobs:
         include:
           - distro: debian
             image: debian:bookworm-slim
-            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl wget git cargo rustc gcc xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
+            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
             image: archlinux:base
-            setup: pacman -Syu --noconfirm --needed ca-certificates curl git rust gcc xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
+            setup: pacman -Syu --noconfirm --needed ca-certificates curl git xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
           - distro: void
             image: voidlinux/voidlinux:latest
             setup: |
@@ -55,8 +68,7 @@ jobs:
                 done
               done
               xbps-install -Suy xbps && xbps-install -Suy
-              xbps-install -Sy ca-certificates curl git rust cargo gcc xorg-server-xvfb xprop || true
-              xbps-install -Sy xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
+              xbps-install -Sy ca-certificates curl git xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
     container: ${{ matrix.image }}
     steps:
       # Void ships no libstdc++ by default, and the runner's Node needs it
@@ -78,72 +90,18 @@ jobs:
         shell: sh
         run: ${{ matrix.setup }}
 
-      # Both programs are built from source where the toolchain allows it.
-      # Debian bookworm ships Rust 1.63, which cannot build these crates, so it
-      # gets its binaries from the *current* release. The version is read from
-      # Cargo.toml rather than hardcoded, so a release never has to exist at a
-      # URL this file guessed.
+      - uses: actions/download-artifact@v4
+        with:
+          name: session-binaries
+          path: /tmp/niru/bin
+
+      # Test this commit's static artifacts, never a release that may not exist
+      # yet or a different bar version guessed from the WM's version number.
       - name: Stage the binaries
         shell: sh
         run: |
           set -eu
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          modern=0
-          if command -v cargo >/dev/null 2>&1 &&
-             cargo --version | awk '{print $2}' | awk -F. '$2 >= 75 {ok=1} END {exit !ok}'; then
-            modern=1
-          fi
-          # Building is the default. A cargo older than 1.75 cannot build the
-          # suite at all: 1.63 refuses the version-4 lock file before reading
-          # a line of code. The release binaries are built against bookworm
-          # and run there, so when a release exists for the version in
-          # Cargo.toml, that is what the smoke tests exercise on such a
-          # system. Without one, the job says so and stops, which is honest.
-          built=0
-          if [ "$modern" = 1 ]; then
-            echo "building both from source"
-            git clone --depth 1 --branch main https://github.com/nirucon/nirubar /tmp/nirubar-src
-            ( cd /tmp/nirubar-src && cargo build --release --locked ) ||
-              { echo "stage: cannot build nirubar"; exit 1; }
-            cp /tmp/nirubar-src/target/release/nirubar /tmp/niru/bin/
-            cargo build --release --locked
-            cp target/release/niruwm target/release/niructl target/release/niruidle /tmp/niru/bin/
-            built=1
-          fi
-          if [ "$built" = 0 ]; then
-            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
-            url="https://github.com/nirucon/niruwm/releases/download/v$version"
-            echo "cargo here cannot build; trying the v$version release binaries"
-            fetched=1
-            for b in niruwm niructl niruidle; do
-              if command -v curl >/dev/null 2>&1; then
-                curl -fsSL -o "/tmp/niru/bin/$b" "$url/$b" || fetched=0
-              else
-                wget -qO "/tmp/niru/bin/$b" "$url/$b" || fetched=0
-              fi
-              chmod +x "/tmp/niru/bin/$b"
-            done
-            if [ "$fetched" = 1 ] &&
-              [ "$(/tmp/niru/bin/niruwm --version 2>/dev/null | awk '{print $2}')" = "$version" ]; then
-              for b in nirubar; do
-                if command -v curl >/dev/null 2>&1; then
-                  curl -fsSL -o "/tmp/niru/bin/$b" "https://github.com/nirucon/nirubar/releases/download/v$version/$b" || fetched=0
-                else
-                  wget -qO "/tmp/niru/bin/$b" "https://github.com/nirucon/nirubar/releases/download/v$version/$b" || fetched=0
-                fi
-                chmod +x "/tmp/niru/bin/$b"
-              done
-            else
-              fetched=0
-            fi
-            if [ "$fetched" = 0 ]; then
-              echo "stage: this cargo cannot build the suite and v$version has no release" >&2
-              echo "stage: a tag's CI cannot download the release it is publishing;" >&2
-              echo "stage: use a newer cargo (rustup) to build here." >&2
-              exit 1
-            fi
-            echo "testing the v$version release binaries"
-          fi
           cp session/niruwm-session /tmp/niru/bin/
           chmod +x /tmp/niru/bin/*
           cp config.example.toml /tmp/niru/.config/niruwm/config.toml
