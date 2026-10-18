@@ -110,7 +110,13 @@ fn first_available(candidates: &[String]) -> Option<String> {
 
 fn lockers() -> Vec<String> {
     let home = std::env::var("HOME").unwrap_or_default();
+    // Absolute paths first, for the same reason `first_available` takes them:
+    // a session started from a display manager does not always have
+    // ~/.local/bin in PATH, and a bare "nirulock" was then skipped while
+    // slock from /usr/local/bin was found. That made slock the lock screen,
+    // and slock does not know the NIRU lock protocol.
     vec![
+        format!("{home}/.local/bin/nirulock"),
         "nirulock".into(),
         format!("{home}/.local/bin/nirupi-lock.sh"),
         "slock".into(),

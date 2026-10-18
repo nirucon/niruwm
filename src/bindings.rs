@@ -209,6 +209,18 @@ impl Action {
             "shell maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
         );
 
+        // ── Hardware media keys ──────────────────────────────────────────
+        // Bound without a modifier, as they are on a laptop keyboard. They
+        // only fire when the key exists, so a keyboard without them is
+        // unaffected. These went missing in a merge and did nothing.
+        add("XF86AudioRaiseVolume", "media_key XF86AudioRaiseVolume");
+        add("XF86AudioLowerVolume", "media_key XF86AudioLowerVolume");
+        add("XF86AudioMute", "media_key XF86AudioMute");
+        add("XF86AudioPlay", "media_key XF86AudioPlay");
+        add("XF86AudioPause", "media_key XF86AudioPause");
+        add("XF86AudioNext", "media_key XF86AudioNext");
+        add("XF86AudioPrev", "media_key XF86AudioPrev");
+
         // ── Layouts ─────────────────────────────────────────────────────────
         add("super+t", "layout tile");
         add("super+y", "layout left");

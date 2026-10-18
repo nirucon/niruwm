@@ -266,33 +266,10 @@ impl Wm {
     /// keys work with nothing installed beyond `wpctl` or `playerctl`.
     fn media_key(&mut self, name: &str) {
         let cmd: Option<(&str, Vec<String>)> = match name {
-            "XF86AudioRaiseVolume" => Some((
-                "sh",
-                vec![
-                    "-c".into(),
-                    "wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null || amixer -q set Master 5%+ unmute 2>/dev/null"
-                        .into(),
-                ],
-            )),
-            "XF86AudioLowerVolume" => Some((
-                "sh",
-                vec![
-                    "-c".into(),
-                    "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null"
-                        .into(),
-                ],
-            )),
-            "XF86AudioMute" => Some((
-                "sh",
-                vec![
-                    "-c".into(),
-                    "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null"
-                        .into(),
-                ],
-            )),
-            "XF86AudioPlay" | "XF86AudioPause" => {
-                Some(("playerctl", vec!["play-pause".into()]))
-            }
+            "XF86AudioRaiseVolume" => Some(("sh", vec!["-c".into(), VOLUME_UP.to_string()])),
+            "XF86AudioLowerVolume" => Some(("sh", vec!["-c".into(), VOLUME_DOWN.to_string()])),
+            "XF86AudioMute" => Some(("sh", vec!["-c".into(), VOLUME_MUTE.to_string()])),
+            "XF86AudioPlay" | "XF86AudioPause" => Some(("playerctl", vec!["play-pause".into()])),
             "XF86AudioNext" => Some(("playerctl", vec!["next".into()])),
             "XF86AudioPrev" => Some(("playerctl", vec!["previous".into()])),
             _ => None,
@@ -410,6 +387,31 @@ pub(crate) fn tag_index(n: u32) -> u32 {
     }
 }
 
+/// Volume key commands.
+///
+/// They change the volume and then show the result, because a key that only
+/// changes something you cannot see is not feedback. `notify-send` reaches
+/// whatever notification daemon is running (dunst, NIRUPI's, or the desktop's),
+/// and silence is acceptable when none is.
+const VOLUME_UP: &str = r#"wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null
+wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null || amixer -q set Master 5%+ unmute 2>/dev/null
+v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | awk '{printf "%d", $2*100}')
+[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*/\1/p' | head -1)
+[ -n "$v" ] && notify-send -a NIRU -h int:value:"$v" -t 1500 "Volume" "${v}%" 2>/dev/null
+exit 0"#;
+
+const VOLUME_DOWN: &str = r#"wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null
+v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | awk '{printf "%d", $2*100}')
+[ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*/\1/p' | head -1)
+[ -n "$v" ] && notify-send -a NIRU -h int:value:"$v" -t 1500 "Volume" "${v}%" 2>/dev/null
+exit 0"#;
+
+const VOLUME_MUTE: &str = r#"wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null
+muted=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -c MUTED)
+if [ "$muted" = 1 ]; then msg="Muted"; else msg="Unmuted"; fi
+notify-send -a NIRU -t 1500 "Volume" "$msg" 2>/dev/null
+exit 0"#;
+
 /// Look up a program in PATH without spawning anything.
 pub(crate) fn which(name: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
@@ -446,6 +448,21 @@ fn keysym_named(name: &str) -> Option<u32> {
         "Print" => 0xff61,
         "BackSpace" => 0xff08,
         "Delete" => 0xffff,
+        // Hardware keys, from XF86keysym.h. Without these the names resolved
+        // to None and every media key was skipped when the table was built,
+        // so the keys did nothing at all.
+        "XF86AudioMute" => 0x1008ff12,
+        "XF86AudioLowerVolume" => 0x1008ff11,
+        "XF86AudioRaiseVolume" => 0x1008ff13,
+        "XF86AudioPlay" => 0x1008ff14,
+        "XF86AudioStop" => 0x1008ff15,
+        "XF86AudioPrev" => 0x1008ff16,
+        "XF86AudioNext" => 0x1008ff17,
+        "XF86AudioPause" => 0x1008ff31,
+        "XF86AudioMicMute" => 0x1008ffb2,
+        "XF86MonBrightnessUp" => 0x1008ff02,
+        "XF86MonBrightnessDown" => 0x1008ff03,
+        "XF86Display" => 0x1008ff59,
         _ => {
             if name.chars().count() == 1 {
                 let c = name.chars().next()?;
@@ -476,6 +493,23 @@ mod tests {
         assert_eq!(keysym_named("F5"), Some(0xffbe + 4));
         assert_eq!(keysym_named("Print"), Some(0xff61));
         assert_eq!(keysym_named("nonsense"), None);
+    }
+
+    #[test]
+    fn every_media_key_has_a_keysym() {
+        // The default table binds these by name. A missing keysym silently
+        // dropped the binding, which is how the media keys once did nothing.
+        for name in [
+            "XF86AudioMute",
+            "XF86AudioLowerVolume",
+            "XF86AudioRaiseVolume",
+            "XF86AudioPlay",
+            "XF86AudioPause",
+            "XF86AudioNext",
+            "XF86AudioPrev",
+        ] {
+            assert!(keysym_named(name).is_some(), "{name} has no keysym");
+        }
     }
 
     #[test]
