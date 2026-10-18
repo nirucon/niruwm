@@ -9,31 +9,28 @@ support promise. Early software, used at your own risk.
 
 ## What it is
 
-- dwm style workspaces, layouts, gaps and keybindings.
-- Niru Noir colours: dark background, light text, no decoration.
-- A separate bar process showing clickable workspaces, the date and the time,
-  plus a battery and network indicator when the machine has them.
-- X11 only. One screen for now.
+dwm style workspaces and layouts, Niru Noir colours, and a bar in a separate
+process. X11 only, one screen for now.
+
+Companions with the same look, each optional:
+
+- [nirubar](https://github.com/nirucon/nirubar), the status bar
+- [niruscreensaver](https://github.com/nirucon/niruscreensaver), the idle screen
+- [nirulock](https://github.com/nirucon/nirulock), the lock screen
 
 ## How it works
 
 A session script starts the bar, then the window manager, then your
-applications. It works on its own, and reuses the helpers from
-[NIRUPI](https://github.com/nirucon/nirupi) when they are installed. Logging
-out stops everything it started.
+applications. `niruidle` runs the idle ladder: screensaver, then lock, then
+display off. Everything works on its own, and NIRUPI's helpers are used when
+they are installed. Logging out stops everything it started.
 
-The programs share one config file, `~/.config/niruwm/config.toml`, so
-installing or removing either of them is safe.
-
-Optional companions with the same look:
-
-- [niruscreensaver](https://github.com/nirucon/niruscreensaver), the idle screen
-- [nirulock](https://github.com/nirucon/nirulock), the lock screen
+NIRUWM never starts in a NIRUPI DWM session, and NIRUPI never starts a NIRU
+program.
 
 ## Install
 
-You need an X11 session and a monospace font. No Rust or compiler: the
-installer downloads static binaries.
+You need an X11 session and a monospace font. No Rust or compiler.
 
 ```sh
 git clone https://github.com/nirucon/niruwm
@@ -41,109 +38,89 @@ cd niruwm
 ./install.sh --register-session   # adds NIRUWM to SDDM (sudo for that file only)
 ```
 
-Log out, pick **NIRUWM** in SDDM, and log in.
-
-To build from source (Rust 1.75 or newer):
-
-```sh
-./install.sh --build --register-session
-```
+Log out, pick **NIRUWM** in SDDM, and log in. To build from source (Rust 1.75+):
+`./install.sh --build --register-session`.
 
 Other commands:
 
 ```sh
 ./install.sh --check      # verify what is installed
 ./install.sh --uninstall  # remove NIRUWM only
+niruwm --doctor           # what is installed, what a binding needs
 ```
 
-NIRUWM never modifies a NIRUPI installation. It does not write to `dwm`,
-`dwm-status.sh`, `nirupi-session`, `~/.xinitrc` or NIRUPI's manifests, so you
-can switch between both sessions in SDDM.
+## Layouts
 
-### Checking your machine
+| Name | Keys | What it does |
+| --- | --- | --- |
+| `tile` | Super+T | master left, stack right |
+| `left` | Super+Y | master right, stack left |
+| `monocle` | Super+M | one window fills the screen |
+| `centered` | Super+C | master in the middle, stack either side |
+| `centeredfloat` | Super+U | master centred, the rest floating |
+| `fibonacci` | Super+Ctrl+E | spiral split |
+| `floating` | Super+F | nothing tiled |
 
-```sh
-niruwm --doctor
-```
+Cycle with Super+Ctrl+period and Super+Ctrl+comma, or list them with
+`niructl layouts`.
 
-Lists the programs the default bindings use, whether each is present, and the
-package name on Arch, Debian and Void. Nothing is changed.
+## Themes
+
+`niru-noir`, `niru-nord`, `niru-satie`, `niru-carl-larsson`. Choose one with
+`niructl theme NAME`, or set `theme` in the config. Put your own in
+`~/.config/niruwm/themes/NAME.toml`. List them with `niructl themes`.
 
 ## Keys
 
-`Super` is the Windows key. The defaults follow NIRUPI's dwm.
+`Super` is the Windows key. Every binding is in the config; the defaults follow
+NIRUPI's dwm.
 
 | Keys | Action |
 | --- | --- |
-| `Super+Enter` | terminal |
-| `Super+B` | browser |
-| `Super+P` | application launcher |
-| `Super+1` … `9` | switch workspace |
-| `Super+Shift+1` … `9` | move window to workspace |
-| `Super+J` / `Super+K` | focus next / previous window |
-| `Super+T` / `Super+M` | tile / monocle |
-| `Super+Q` | close window |
-| `Super+R` | reload configuration |
-| `Super+Escape` | lock the screen |
-| `Super+Ctrl+Shift+Q` | quit to SDDM |
-
-Every binding can be changed in `config.toml`; see `config.example.toml`.
+| Super+Enter | terminal |
+| Super+B | browser |
+| Super+P | application launcher |
+| Super+1 .. 9 | switch workspace |
+| Super+Shift+1 .. 9 | move window to workspace |
+| Super+J / Super+K | focus next / previous |
+| Super+T / Super+M | tile / monocle |
+| Super+Q | close window |
+| Super+Escape | lock the screen |
+| Super+R | reload the configuration |
+| Super+Ctrl+Shift+Q | quit to SDDM |
 
 ## Settings
 
-`~/.config/niruwm/config.toml`:
+`~/.config/niruwm/config.toml`, shared with NIRUBAR and documented inline in
+`config.example.toml`. It covers appearance, programs, wallpaper, the bar and
+every key binding.
 
 ```toml
 theme = "niru-noir"
 gap = 8
-border_width = 2
-bar_height = 28
-master_ratio = 0.55
-
-terminal = ["kitty"]
-terminal_alt = []
-browser = ["brave"]
-launcher = ["rofi", "-show", "drun"]
 
 [wallpaper]
-# NIRUWM only owns the wallpaper when this is true. Leave it false if
-# NIRUPI's wallrotate.sh should keep managing the background.
 enabled = false
 dir = "~/Pictures/Wallpapers"
-mode = "random"          # random, fixed or single
-file = ""
+mode = "random"      # random, fixed, single
 rotation_minutes = 10
-
-[bar]
-enabled = true
-title = false
-cell_width = 30
-
-[[keys]]
-keys = "super+ctrl+Return"
-action = "start alacritty"
+scale = "fill"       # fill, fit, stretch, center
 ```
 
-Session options live in `~/.config/niruwm/session.conf`:
+Session options live in `~/.config/niruwm/session.conf` (`KEYBOARD_LAYOUT`,
+`START_DUNST`, `START_PICOM`, `START_IDLE`). Idle times live in
+`~/.config/niruui/screensaver.toml`.
 
-```sh
-KEYBOARD_LAYOUT=se
-START_DUNST=1
-START_PICOM=1
-START_IDLE=1
-```
+**Reload after editing:** `niructl reload`, or Super+R. That reloads the window
+manager, the bar and the theme. An invalid file leaves the previous settings in
+place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.3.0. Works for a normal session on one laptop screen: start from
-SDDM, open and tile windows, switch workspaces, close windows, log out.
+Version 0.5.0. Works for a normal laptop session on one screen.
 
-Missing:
-
-- multiple monitors (the whole X screen is used)
-- window rules, swallow, scratchpad
-- more than one workspace visible at a time
-- a bar with media, updates or popups
+Missing: multiple monitors, window rules, swallow, scratchpad, more than one
+workspace visible at a time.
 
 ## Build needs
 

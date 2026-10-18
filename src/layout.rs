@@ -85,6 +85,34 @@ pub enum Layout {
 }
 
 impl Layout {
+    /// Short name used in the config and on the command line.
+    #[allow(dead_code)] // printed by niructl and used by the WM
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Tile => "tile",
+            Layout::Left => "left",
+            Layout::Monocle => "monocle",
+            Layout::Centered => "centered",
+            Layout::CenteredFloat => "centeredfloat",
+            Layout::Fibonacci => "fibonacci",
+            Layout::Floating => "floating",
+        }
+    }
+
+    /// One line of explanation, shown by `niructl layouts`.
+    #[allow(dead_code)]
+    pub fn describe(self) -> &'static str {
+        match self {
+            Layout::Tile => "master left, stack right (the default)",
+            Layout::Left => "master right, stack left",
+            Layout::Monocle => "one window fills the screen, the rest behind it",
+            Layout::Centered => "master in the middle, stack either side",
+            Layout::CenteredFloat => "master centred at 70% height, the rest floating",
+            Layout::Fibonacci => "spiral split, each window half of the rest",
+            Layout::Floating => "nothing is tiled, windows keep their own size",
+        }
+    }
+
     pub fn all() -> &'static [Layout] {
         &[
             Layout::Tile,

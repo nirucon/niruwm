@@ -8,6 +8,9 @@
 mod bindings;
 #[path = "../config.rs"]
 mod config;
+#[path = "../layout.rs"]
+#[allow(dead_code)] // niructl prints the layout names
+mod layout;
 
 use config::{Config, Result, Theme};
 use x11rb::{connection::Connection, protocol::xproto::*, wrapper::ConnectionExt as _};
@@ -26,6 +29,65 @@ fn run() -> Result<()> {
     let root = c.setup().roots[s].root;
     let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
 
+    if cmd == "layouts" {
+        // Print the layouts in the order Super+Ctrl+period cycles them, with
+        // the key that selects each one directly.
+        let keys = [
+            ("tile", "Super+T"),
+            ("left", "Super+Y"),
+            ("monocle", "Super+M"),
+            ("centered", "Super+C"),
+            ("centeredfloat", "Super+U"),
+            ("fibonacci", "Super+Ctrl+E"),
+            ("floating", "Super+F"),
+        ];
+        println!("NIRUWM layouts, in cycling order:");
+        for l in layout::Layout::all() {
+            let key = keys
+                .iter()
+                .find(|(n, _)| *n == l.name())
+                .map(|(_, k)| *k)
+                .unwrap_or("-");
+            println!("  {:<14} {:<12} {}", l.name(), key, l.describe());
+        }
+        println!();
+        println!("Change with the key above, or: niructl layout NAME");
+        println!("Cycle with Super+Ctrl+period and Super+Ctrl+comma.");
+        return Ok(());
+    }
+    if cmd == "themes" {
+        let dir = config::directory().join("themes");
+        println!("NIRUWM themes:");
+        for name in config::Theme::builtin() {
+            let t = Theme::load(name)?;
+            println!("  {:<18} {}", name, t.name);
+        }
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let mut extra: Vec<String> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) == Some("toml") {
+                        p.file_stem().map(|s| s.to_string_lossy().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .filter(|n| !config::Theme::builtin().contains(&n.as_str()))
+                .collect();
+            extra.sort();
+            if !extra.is_empty() {
+                println!();
+                println!("Your own themes in {}:", dir.display());
+                for name in extra {
+                    println!("  {name}");
+                }
+            }
+        }
+        println!();
+        println!("Select with: niructl theme NAME   (or set theme in config.toml)");
+        return Ok(());
+    }
     if cmd == "status" {
         let tag = property_u32(&c, root, atom("_NET_CURRENT_DESKTOP")?).unwrap_or(0);
         let wm = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?).is_some();

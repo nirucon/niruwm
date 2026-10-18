@@ -1,59 +1,401 @@
 # NIRUWM + NIRUBAR shared configuration.
+#
 # Location: ~/.config/niruwm/config.toml (or $XDG_CONFIG_HOME/niruwm/).
-# Both programs read this file. Unknown keys are rejected so typos are visible;
-# the installer creates it once and never overwrites your edits.
+# Both programs read this file and ignore nothing: a key this file does not
+# describe is rejected, so a typo is visible instead of silent.
+#
+# ── Reloading ───────────────────────────────────────────────────────────────
+# After editing, press Super+R, or run:
+#
+#     niructl reload
+#
+# That reloads the window manager, the bar and the theme. If the file is
+# invalid the previous settings stay in effect and niruwm prints the error to
+# the session log. Check a file without applying it with:
+#
+#     niruwm --check-config
+#     nirubar --check-config
+#
+# Restart the session only for session.conf changes.
+
+# ── Appearance ──────────────────────────────────────────────────────────────
+# Theme name. Built in: niru-noir, niru-nord, niru-satie, niru-carl-larsson.
+# List them with: niructl theme      (or read ~/.local/share/niruwm/themes/)
 theme = "niru-noir"
+# ── Layouts ─────────────────────────────────────────────────────────────────
+# One of: tile, left, monocle, centered, centeredfloat, fibonacci, floating.
+# Change at runtime with Super+T/Y/M/C/U/F, cycle with Super+Ctrl+period.
+# List them all with: niructl layouts
+# Space between windows, in pixels.
 gap = 8
+# Border around each window, in pixels. 0 draws no borders.
 border_width = 2
+# Height of the bar, in pixels. The bar reserves exactly this much.
 bar_height = 28
+# Share of the screen width given to the master column (0.1 to 0.9).
 master_ratio = 0.55
 
+# ── Programs ────────────────────────────────────────────────────────────────
+# Commands are argument lists, never passed through a shell.
 terminal = ["kitty"]
-# Optional second terminal on Super+Shift+Enter (NIRUPI uses alacritty).
+# Bound to Super+Shift+Enter. Empty means the terminal above.
 terminal_alt = []
+# Super+B starts this, unless NIRUPI's nirupi-browser exists.
 browser = ["brave"]
-
+# Super+P.
 launcher = ["rofi", "-show", "drun"]
 
+# ── Font ────────────────────────────────────────────────────────────────────
 font_size = 15.0
 # font_path = "/path/to/your/monospace.ttf"
 
+# ── Wallpaper ───────────────────────────────────────────────────────────────
+# NIRUWM sets and rotates the wallpaper only when enabled = true. Leave it
+# false when NIRUPI's wallrotate.sh owns the background, or two programs will
+# fight over it.
 [wallpaper]
-# NIRUWM only owns the wallpaper when this is true. Leave it false when
-# NIRUPI's wallrotate.sh should keep managing the background.
 enabled = false
+# Directory to draw from. Images: jpg, jpeg, png, webp, bmp.
 dir = "~/Pictures/Wallpapers"
-# random = new picture each rotation, fixed = one picture kept,
-# single = always the file below.
+# random = a new picture each rotation
+# fixed  = one picture, chosen once and kept
+# single = always `file`
 mode = "random"
 file = ""
+# Minutes between changes. 0 disables rotation.
 rotation_minutes = 10
+# How a picture fills the screen: fill (crop), fit (letterbox), stretch, center.
+scale = "fill"
+# Rotate through these files instead of the whole directory. Empty = the
+# directory, for example:
+#   files = ["~/Pictures/one.jpg", "~/Pictures/two.png"]
+files = []
+# Pick a fresh picture at login, even in `fixed` mode.
+shuffle_on_start = true
 
+# ── Bar ─────────────────────────────────────────────────────────────────────
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
 enabled = true
-# Keep it minimal: workspace tags, Swedish date and hh:mm.
-# Set title = true to show the focused window title between them.
-title = false
-title_max = 60
+# Modules to show, in order. Available: workspaces, network, battery, clock.
+# Remove one to hide it. A font without the glyphs falls back to plain text.
+modules = ["workspaces", "network", "battery", "clock"]
+# Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
+# the rest keep their number. Glyphs and words both work.
+#   tags = ["web", "code", "chat", "", "", "", "", "", ""]
+#   tags = ["\u{f269}", "\u{f121}", "\u{f086}", "", "", "", "", "", ""]
+tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
 # Width of one workspace cell, in pixels.
 cell_width = 30
+# Show the focused window title between the workspaces and the status.
+title = false
+title_max = 60
+# Date and time.
+show_date = true
+show_time = true
+date_format = "%Y-%m-%d"
+time_format = "%H:%M"
+# Separator between status modules.
 separator = "|"
+# Use Nerd Font glyphs for battery and network. Falls back per glyph.
+icons = true
+# Clicking a module opens a small panel with more detail.
+popups = true
 
-# ── Key bindings ─────────────────────────────────────────────────────────────
-# Leave this empty to use the built-in table, which follows NIRUPI DWM.
-# An entry with the same keys as a default replaces that default; new keys are
-# added. Keys: super, shift, ctrl, alt. Names: Return, space, Tab, Escape,
-# Left/Right/Up/Down, Print, comma, period, F1..F35, or a single character.
+# ── Key bindings ────────────────────────────────────────────────────────────
+# Every default binding is listed below, so changing one is a single edit.
+# An entry with the same keys replaces the default; a new keys entry adds a
+# binding. Remove a whole entry to disable that binding.
 #
-# [[keys]]
-# keys = "super+Return"
-# action = "terminal"
+# Modifiers: super, shift, ctrl, alt.
+# Keys: Return, space, Tab, Escape, Left/Right/Up/Down, Print, comma, period,
+#       slash, minus, equal, backtick, F1..F35, or a single character.
 #
-# [[keys]]
-# keys = "super+shift+c"
-# action = "start google-chrome-stable"
-#
-# [[keys]]
-# keys = "super+ctrl+s"
-# action = "shell maim -s ~/Pictures/$(date +%s).png"
+# Actions:
+#   terminal, terminal_alt, browser, launcher, launcher_unified,
+#   window_switcher, lock, start CMD, shell CMD,
+#   focus_next, focus_prev, move_next, move_prev,
+#   tag N, movetotag N, toggletag N, togglemovetotag N, tag_next, tag_prev,
+#   layout tile|left|monocle|centered|centeredfloat|floating|fibonacci,
+#   layout_next, layout_prev,
+#   inc_master, dec_master, inc_master_ratio, dec_master_ratio,
+#   toggle_float, toggle_fullscreen, swap_next, swap_prev,
+#   move_float left|right|up|down, resize_float dx dy,
+#   close, quit, reload, toggle_gaps, theme NAME,
+#   focusmon N, tagmon N   (multi-monitor, reserved)
+
+[[keys]]
+keys = "super+Return"
+action = "terminal"
+
+[[keys]]
+keys = "super+shift+Return"
+action = "terminal_alt"
+
+[[keys]]
+keys = "super+b"
+action = "browser"
+
+[[keys]]
+keys = "super+p"
+action = "launcher"
+
+[[keys]]
+keys = "super+shift+p"
+action = "launcher_unified"
+
+[[keys]]
+keys = "super+w"
+action = "window_switcher"
+
+[[keys]]
+keys = "super+Escape"
+action = "lock"
+
+[[keys]]
+keys = "super+shift+q"
+action = "shell nirupi-power.sh"
+
+[[keys]]
+keys = "super+q"
+action = "close"
+
+[[keys]]
+keys = "super+ctrl+shift+q"
+action = "quit"
+
+[[keys]]
+keys = "super+r"
+action = "reload"
+
+# Workspaces: show, move, toggle.
+[[keys]]
+keys = "super+1"
+action = "tag 1"
+
+[[keys]]
+keys = "super+2"
+action = "tag 2"
+
+[[keys]]
+keys = "super+3"
+action = "tag 3"
+
+[[keys]]
+keys = "super+4"
+action = "tag 4"
+
+[[keys]]
+keys = "super+5"
+action = "tag 5"
+
+[[keys]]
+keys = "super+6"
+action = "tag 6"
+
+[[keys]]
+keys = "super+7"
+action = "tag 7"
+
+[[keys]]
+keys = "super+8"
+action = "tag 8"
+
+[[keys]]
+keys = "super+9"
+action = "tag 9"
+
+[[keys]]
+keys = "super+0"
+action = "tag 10"
+
+[[keys]]
+keys = "super+shift+1"
+action = "movetotag 1"
+
+[[keys]]
+keys = "super+shift+2"
+action = "movetotag 2"
+
+[[keys]]
+keys = "super+shift+3"
+action = "movetotag 3"
+
+[[keys]]
+keys = "super+shift+4"
+action = "movetotag 4"
+
+[[keys]]
+keys = "super+shift+5"
+action = "movetotag 5"
+
+[[keys]]
+keys = "super+shift+6"
+action = "movetotag 6"
+
+[[keys]]
+keys = "super+shift+7"
+action = "movetotag 7"
+
+[[keys]]
+keys = "super+shift+8"
+action = "movetotag 8"
+
+[[keys]]
+keys = "super+shift+9"
+action = "movetotag 9"
+
+[[keys]]
+keys = "super+Tab"
+action = "tag_next"
+
+[[keys]]
+keys = "super+shift+Tab"
+action = "tag_prev"
+
+# Focus and stacking.
+[[keys]]
+keys = "super+j"
+action = "focus_next"
+
+[[keys]]
+keys = "super+k"
+action = "focus_prev"
+
+[[keys]]
+keys = "super+Right"
+action = "focus_next"
+
+[[keys]]
+keys = "super+Down"
+action = "focus_next"
+
+[[keys]]
+keys = "super+Left"
+action = "focus_prev"
+
+[[keys]]
+keys = "super+Up"
+action = "focus_prev"
+
+[[keys]]
+keys = "super+shift+Right"
+action = "move_next"
+
+[[keys]]
+keys = "super+shift+Left"
+action = "move_prev"
+
+# Layouts.
+#   tile          master left, stack right
+#   left          master right, stack left
+#   monocle       one window fills the screen, others behind it
+#   centered      master in the middle, stack either side
+#   centeredfloat master centred at 70% height, others floating
+#   fibonacci     spiral split
+#   floating      nothing tiled, windows keep their own size
+[[keys]]
+keys = "super+t"
+action = "layout tile"
+
+[[keys]]
+keys = "super+y"
+action = "layout left"
+
+[[keys]]
+keys = "super+m"
+action = "layout monocle"
+
+[[keys]]
+keys = "super+c"
+action = "layout centered"
+
+[[keys]]
+keys = "super+u"
+action = "layout centeredfloat"
+
+[[keys]]
+keys = "super+f"
+action = "layout floating"
+
+[[keys]]
+keys = "super+ctrl+e"
+action = "layout fibonacci"
+
+[[keys]]
+keys = "super+ctrl+comma"
+action = "layout_prev"
+
+[[keys]]
+keys = "super+ctrl+period"
+action = "layout_next"
+
+[[keys]]
+keys = "super+h"
+action = "dec_master_ratio"
+
+[[keys]]
+keys = "super+l"
+action = "inc_master_ratio"
+
+[[keys]]
+keys = "super+i"
+action = "inc_master"
+
+[[keys]]
+keys = "super+d"
+action = "dec_master"
+
+# Windows.
+[[keys]]
+keys = "super+shift+space"
+action = "toggle_float"
+
+[[keys]]
+keys = "super+shift+e"
+action = "toggle_fullscreen"
+
+[[keys]]
+keys = "super+g"
+action = "toggle_gaps"
+
+[[keys]]
+keys = "super+ctrl+Left"
+action = "move_float left"
+
+[[keys]]
+keys = "super+ctrl+Right"
+action = "move_float right"
+
+[[keys]]
+keys = "super+ctrl+Up"
+action = "move_float up"
+
+[[keys]]
+keys = "super+ctrl+Down"
+action = "move_float down"
+
+# NIRUPI helpers, active when those programs are installed.
+[[keys]]
+keys = "super+shift+f"
+action = "start pcmanfm"
+
+[[keys]]
+keys = "super+v"
+action = "shell clip-menu.sh"
+
+[[keys]]
+keys = "super+ctrl+t"
+action = "shell nirupi theme menu"
+
+[[keys]]
+keys = "super+shift+Print"
+action = "shell flameshot gui"
+
+[[keys]]
+keys = "super+Print"
+action = "shell maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""
+
+[[keys]]
+keys = "Print"
+action = "shell maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""

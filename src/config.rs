@@ -48,6 +48,14 @@ pub struct WallpaperConfig {
     pub file: String,
     /// Minutes between changes. 0 disables rotation.
     pub rotation_minutes: u32,
+    /// How the picture fills the screen: `fill` (crop), `fit` (letterbox),
+    /// `stretch` or `center` (no scaling).
+    pub scale: String,
+    /// A specific list of files to rotate through. Empty means every image in
+    /// `dir`. Paths may use ~.
+    pub files: Vec<String>,
+    /// Pick a new picture every time the session starts, even in `fixed` mode.
+    pub shuffle_on_start: bool,
 }
 
 impl Default for WallpaperConfig {
@@ -58,6 +66,9 @@ impl Default for WallpaperConfig {
             mode: "random".into(),
             file: String::new(),
             rotation_minutes: 10,
+            scale: "fill".into(),
+            files: Vec::new(),
+            shuffle_on_start: true,
         }
     }
 }
@@ -70,13 +81,26 @@ pub struct Bar {
     pub enabled: bool,
     /// Show a short hint of the focused window's title between the tags and
     /// the clock. `false` keeps the bar minimal: tags and clock only.
-    pub title: bool,
+    /// Written as `title` in older configs; `show_title` is preferred.
+    #[serde(alias = "title")]
+    pub show_title: bool,
     /// Maximum number of characters kept from the window title.
     pub title_max: usize,
     /// Width reserved per workspace cell, in pixels.
     pub cell_width: u16,
     /// Separator drawn between the status groups.
     pub separator: String,
+    /// Modules to show, in order: workspaces, network, battery, clock.
+    pub modules: Vec<String>,
+    /// Workspace labels shown instead of 1..9.
+    pub tags: Vec<String>,
+    /// Show the date, the time, or both.
+    pub show_date: bool,
+    pub show_time: bool,
+    pub date_format: String,
+    pub time_format: String,
+    /// Open a detail panel when a module is clicked.
+    pub popups: bool,
     /// Battery segment in the bar. Read by NIRUBAR; declared here so the
     /// window manager accepts the shared file.
     pub battery: bool,
@@ -111,10 +135,22 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             enabled: true,
-            title: false,
+            show_title: false,
             title_max: 60,
             cell_width: 30,
             separator: "|".into(),
+            modules: vec![
+                "workspaces".into(),
+                "network".into(),
+                "battery".into(),
+                "clock".into(),
+            ],
+            tags: (1..=9).map(|n| n.to_string()).collect(),
+            show_date: true,
+            show_time: true,
+            date_format: "%Y-%m-%d".into(),
+            time_format: "%H:%M".into(),
+            popups: true,
             battery: true,
             network: true,
             icons: true,
@@ -206,8 +242,25 @@ impl Config {
         if !["random", "fixed", "single"].contains(&self.wallpaper.mode.as_str()) {
             return Err("wallpaper.mode must be random, fixed or single".into());
         }
+        if !["fill", "fit", "stretch", "center"].contains(&self.wallpaper.scale.as_str()) {
+            return Err("wallpaper.scale must be fill, fit, stretch or center".into());
+        }
         if self.wallpaper.rotation_minutes > 100_000 {
             return Err("wallpaper.rotation_minutes is too large".into());
+        }
+        if self.bar.tags.len() > 9 {
+            return Err("bar.tags has more than nine entries".into());
+        }
+        for m in &self.bar.modules {
+            if !["workspaces", "network", "battery", "clock"].contains(&m.as_str()) {
+                return Err(format!(
+                    "unknown bar module {m:?}; use workspaces, network, battery or clock"
+                )
+                .into());
+            }
+        }
+        if self.bar.date_format.is_empty() || self.bar.time_format.is_empty() {
+            return Err("bar.date_format and bar.time_format must not be empty".into());
         }
         Ok(())
     }
@@ -233,10 +286,19 @@ impl Theme {
         {
             return Err("Invalid theme name".into());
         }
-        let text = if name == "niru-noir" {
-            include_str!("../themes/niru-noir.toml").to_string()
-        } else {
-            fs::read_to_string(directory().join("themes").join(format!("{name}.toml")))?
+        // Built-in themes are compiled in, so the four that ship always work
+        // even before the installer has copied anything. A file of the same
+        // name in ~/.config/niruwm/themes takes precedence, so a user can
+        // tweak a built-in one.
+        let user_file = directory().join("themes").join(format!("{name}.toml"));
+        let text = match (name, user_file.exists()) {
+            ("niru-noir", false) => include_str!("../themes/niru-noir.toml").to_string(),
+            ("niru-nord", false) => include_str!("../themes/niru-nord.toml").to_string(),
+            ("niru-satie", false) => include_str!("../themes/niru-satie.toml").to_string(),
+            ("niru-carl-larsson", false) => {
+                include_str!("../themes/niru-carl-larsson.toml").to_string()
+            }
+            _ => fs::read_to_string(&user_file)?,
         };
         let theme: Self = toml::from_str(&text)?;
         for s in [
@@ -249,6 +311,12 @@ impl Theme {
             Self::pixel(s)?;
         }
         Ok(theme)
+    }
+
+    /// The four themes that ship with the programs.
+    #[allow(dead_code)] // listed by niructl
+    pub fn builtin() -> &'static [&'static str] {
+        &["niru-noir", "niru-nord", "niru-satie", "niru-carl-larsson"]
     }
 
     pub fn pixel(s: &str) -> Result<u32> {
@@ -267,7 +335,7 @@ mod tests {
     fn defaults_are_minimal() {
         let c = Config::default();
         assert!(c.bar.enabled);
-        assert!(!c.bar.title, "the bar defaults to tags and clock only");
+        assert!(!c.bar.show_title, "the bar defaults to tags and clock only");
         assert_eq!(c.bar.cell_width, 30);
     }
 
@@ -304,7 +372,7 @@ title = true
 cell_width = 34
 "#;
         let c: Config = toml::from_str(shared).expect("shared config must parse");
-        assert!(c.bar.title);
+        assert!(c.bar.show_title);
         assert_eq!(c.bar.cell_width, 34);
         assert_eq!(c.terminal, vec!["kitty"]);
     }
@@ -312,9 +380,29 @@ cell_width = 34
     #[test]
     fn partial_config_falls_back_to_defaults() {
         let c: Config = toml::from_str("[bar]\ntitle = true\n").unwrap();
-        assert!(c.bar.title);
+        assert!(c.bar.show_title);
         assert_eq!(c.bar.cell_width, 30);
         assert_eq!(c.gap, 8);
+    }
+
+    #[test]
+    fn all_builtin_themes_load() {
+        for name in Theme::builtin() {
+            let t = Theme::load(name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(!t.name.is_empty());
+        }
+    }
+
+    #[test]
+    fn themes_differ_in_background() {
+        let mut seen = std::collections::HashSet::new();
+        for name in Theme::builtin() {
+            let t = Theme::load(name).unwrap();
+            assert!(
+                seen.insert(t.background.clone()),
+                "{name} reuses another theme's background"
+            );
+        }
     }
 
     #[test]

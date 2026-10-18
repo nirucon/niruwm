@@ -27,12 +27,26 @@ fn which(name: &str) -> bool {
         .any(|dir| Path::new(dir).join(name).is_file())
 }
 
-const SETTERS: &[(&str, &[&str])] = &[
-    ("feh", &["--bg-fill"]),
-    ("hsetroot", &["-fill"]),
-    ("nitrogen", &["--set-scaled"]),
-    ("xwallpaper", &["--zoom"]),
-];
+/// Which flag each tool uses for a given `[wallpaper] scale`.
+fn setter_args(tool: &str, scale: &str) -> &'static [&'static str] {
+    match (tool, scale) {
+        ("feh", "fill") => &["--bg-fill"],
+        ("feh", "fit") => &["--bg-max"],
+        ("feh", "stretch") => &["--bg-scale"],
+        ("feh", _) => &["--bg-center"],
+        ("hsetroot", "fill") => &["-fill"],
+        ("hsetroot", "fit") => &["-full"],
+        ("hsetroot", _) => &["-center"],
+        ("nitrogen", _) => &["--set-scaled"],
+        ("xwallpaper", "fill") => &["--zoom"],
+        ("xwallpaper", "fit") => &["--maximize"],
+        ("xwallpaper", _) => &["--center"],
+        _ => &[],
+    }
+}
+
+/// Tools in order of preference; the first that works wins.
+const TOOLS: &[&str] = &["feh", "hsetroot", "nitrogen", "xwallpaper"];
 
 pub struct Wallpaper {
     dir: PathBuf,
@@ -41,6 +55,10 @@ pub struct Wallpaper {
     last_change: Instant,
     rotation: Duration,
     pub enabled: bool,
+    /// `fill`, `fit`, `stretch` or `center`.
+    scale: String,
+    /// Explicit file list; empty means "every image in dir".
+    files: Vec<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +91,8 @@ impl Wallpaper {
             last_change: Instant::now(),
             rotation: Duration::from_secs(u64::from(cfg.rotation_minutes) * 60),
             enabled: cfg.enabled,
+            scale: cfg.scale.clone(),
+            files: cfg.files.iter().map(|f| expand_home(f)).collect(),
         }
     }
 
@@ -94,7 +114,7 @@ impl Wallpaper {
             Mode::Random => self.pick(),
         };
         if let Some(path) = &chosen {
-            set_image(path);
+            set_image(path, &self.scale);
         }
         self.last_change = Instant::now();
         Ok(chosen)
@@ -121,6 +141,14 @@ impl Wallpaper {
     }
 
     fn pick(&self) -> Option<PathBuf> {
+        // An explicit list wins over the directory.
+        if !self.files.is_empty() {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as usize)
+                .unwrap_or(0);
+            return Some(self.files[seed % self.files.len()].clone());
+        }
         let mut files: Vec<PathBuf> = fs::read_dir(&self.dir)
             .ok()?
             .flatten()
@@ -162,11 +190,12 @@ fn expand_home(p: &str) -> PathBuf {
 }
 
 /// Set an image with the first available tool, falling back to a solid colour.
-fn set_image(path: &Path) {
-    for (tool, args) in SETTERS {
+fn set_image(path: &Path, scale: &str) {
+    for tool in TOOLS {
         if !which(tool) {
             continue;
         }
+        let args = setter_args(tool, scale);
         let mut cmd = vec![tool.to_string()];
         cmd.extend(args.iter().map(|s| s.to_string()));
         cmd.push(path.display().to_string());
@@ -212,6 +241,8 @@ mod tests {
             last_change: Instant::now(),
             rotation: Duration::from_secs(600),
             enabled: true,
+            scale: "fill".into(),
+            files: Vec::new(),
         };
         let picked = w.pick().expect("at least one image");
         assert!(picked.extension().is_some());
@@ -228,6 +259,8 @@ mod tests {
             last_change: Instant::now(),
             rotation: Duration::from_secs(600),
             enabled: true,
+            scale: "fill".into(),
+            files: Vec::new(),
         };
         assert_eq!(w.pick(), None);
     }
@@ -243,6 +276,8 @@ mod tests {
             last_change: Instant::now(),
             rotation: Duration::from_secs(600),
             enabled: false,
+            scale: "fill".into(),
+            files: Vec::new(),
         };
         assert_eq!(w.apply().unwrap(), None);
         assert!(!w.tick());
@@ -259,6 +294,8 @@ mod tests {
             last_change: Instant::now(),
             rotation: Duration::from_secs(600),
             enabled: true,
+            scale: "fill".into(),
+            files: Vec::new(),
         };
         assert!(!w.tick(), "must not rotate before the interval");
     }
