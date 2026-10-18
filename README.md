@@ -9,8 +9,8 @@ support promise. Early software, used at your own risk.
 
 ## What it is
 
-dwm style workspaces and layouts, Niru Noir colours, and a bar in a separate
-process. X11 only, one screen for now.
+dwm style workspaces and layouts, Niru colours, and a bar in a separate process.
+X11. One or several screens; each screen keeps its own workspaces.
 
 Companions with the same look, each optional:
 
@@ -47,6 +47,25 @@ Other commands:
 ./install.sh --check      # verify what is installed
 ./install.sh --uninstall  # remove NIRUWM only
 niruwm --doctor           # what is installed, what a binding needs
+```
+
+## Screens
+
+Every connected screen gets its own nine workspaces, like dwm. Plug a screen in
+or out and NIRUWM follows: windows move to a remaining screen and each screen
+keeps the workspace it was showing.
+
+`Super+,` and `Super+.` move focus between screens, `Super+Shift+,` and
+`Super+Shift+.` move the focused window. `niructl monitors` lists the screens.
+
+```toml
+[monitors]
+workspaces = 9
+
+[[monitors.profiles]]
+name = "HDMI-1"
+workspaces = ["web", "code", "chat"]
+primary = true
 ```
 
 ## Layouts
@@ -107,6 +126,21 @@ rotation_minutes = 10
 scale = "fill"       # fill, fit, stretch, center
 ```
 
+```toml
+[scratchpad]
+command = ["kitty", "--class", "scratchpad"]
+width = 0.6
+height = 0.6
+
+[[rules]]
+class = "firefox"
+workspace = 2
+floating = true
+```
+
+`niruwm --dump-config` prints every value in effect, including the full key
+table, so you can see what the programs are really using.
+
 Session options live in `~/.config/niruwm/session.conf` (`KEYBOARD_LAYOUT`,
 `START_DUNST`, `START_PICOM`, `START_IDLE`). Idle times live in
 `~/.config/niruui/screensaver.toml`.
@@ -117,10 +151,10 @@ place and prints the error. Check without applying: `niruwm --check-config`.
 
 ## Status
 
-Version 0.5.0. Works for a normal laptop session on one screen.
+Version 0.6.0. Works for a normal session on one or several screens.
 
-Missing: multiple monitors, window rules, swallow, scratchpad, more than one
-workspace visible at a time.
+Missing: swallow, more than one workspace visible at a time, a graphical
+monitor arrangement editor.
 
 ## Build needs
 

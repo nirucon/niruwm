@@ -31,6 +31,75 @@ pub struct Config {
     /// used. Entries replace a default binding with the same keys.
     pub keys: Vec<crate::bindings::RawBinding>,
     pub wallpaper: WallpaperConfig,
+    pub monitors: MonitorsConfig,
+    pub scratchpad: ScratchpadConfig,
+    /// Window rules, applied when a window is first managed.
+    pub rules: Vec<Rule>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScratchpadConfig {
+    /// Command that provides the scratchpad window.
+    pub command: Vec<String>,
+    /// Size as a share of the screen.
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for ScratchpadConfig {
+    fn default() -> Self {
+        Self {
+            command: vec!["kitty".into(), "--class".into(), "scratchpad".into()],
+            width: 0.6,
+            height: 0.6,
+        }
+    }
+}
+
+/// One window rule.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    /// Substring matched against the window class or instance name.
+    pub class: String,
+    /// Workspace index (0-based) to open on. Omitted means "current".
+    #[allow(dead_code)] // read by niruwm, not by niructl
+    pub workspace: Option<u32>,
+    /// Open floating instead of tiled.
+    #[allow(dead_code)]
+    pub floating: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MonitorsConfig {
+    /// Workspaces per screen when a screen has no profile below.
+    pub workspaces: usize,
+    /// Per-screen overrides, matched by RandR output name.
+    pub profiles: Vec<MonitorProfile>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MonitorProfile {
+    /// RandR output name, for example `eDP-1` or `HDMI-1`.
+    pub name: String,
+    /// Workspace labels this screen shows instead of 1..9.
+    pub workspaces: Vec<String>,
+    /// When true, this screen receives focus at login and opens new windows
+    /// when the pointer is outside every screen.
+    #[allow(dead_code)] // read by niruwm, not by niructl
+    pub primary: bool,
+}
+
+impl Default for MonitorsConfig {
+    fn default() -> Self {
+        Self {
+            workspaces: 9,
+            profiles: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -101,6 +170,8 @@ pub struct Bar {
     pub time_format: String,
     /// Open a detail panel when a module is clicked.
     pub popups: bool,
+    /// Seconds before an open panel closes itself. 0 keeps it until dismissed.
+    pub popup_timeout_seconds: u32,
     /// Battery segment in the bar. Read by NIRUBAR; declared here so the
     /// window manager accepts the shared file.
     pub battery: bool,
@@ -127,6 +198,9 @@ impl Default for Config {
             bar: Bar::default(),
             keys: Vec::new(),
             wallpaper: WallpaperConfig::default(),
+            monitors: MonitorsConfig::default(),
+            scratchpad: ScratchpadConfig::default(),
+            rules: Vec::new(),
         }
     }
 }
@@ -151,6 +225,7 @@ impl Default for Bar {
             date_format: "%Y-%m-%d".into(),
             time_format: "%H:%M".into(),
             popups: true,
+            popup_timeout_seconds: 8,
             battery: true,
             network: true,
             icons: true,
@@ -242,6 +317,27 @@ impl Config {
         if !["random", "fixed", "single"].contains(&self.wallpaper.mode.as_str()) {
             return Err("wallpaper.mode must be random, fixed or single".into());
         }
+        if self.monitors.workspaces == 0 || self.monitors.workspaces > 32 {
+            return Err("monitors.workspaces must be between 1 and 32".into());
+        }
+        for p in &self.monitors.profiles {
+            if p.name.is_empty() || p.workspaces.is_empty() {
+                return Err("monitors.profiles entries need a name and workspaces".into());
+            }
+        }
+        if !(0.1..=0.95).contains(&self.scratchpad.width)
+            || !(0.1..=0.95).contains(&self.scratchpad.height)
+        {
+            return Err("scratchpad.width and height must be between 0.1 and 0.95".into());
+        }
+        if self.scratchpad.command.is_empty() {
+            return Err("scratchpad.command must not be empty".into());
+        }
+        for r in &self.rules {
+            if r.class.is_empty() {
+                return Err("rules entries need a class".into());
+            }
+        }
         if !["fill", "fit", "stretch", "center"].contains(&self.wallpaper.scale.as_str()) {
             return Err("wallpaper.scale must be fill, fit, stretch or center".into());
         }
@@ -327,6 +423,67 @@ impl Theme {
     }
 }
 
+/// Write the effective configuration to stdout.
+///
+/// People ask "what is actually in effect?" when a value comes from the
+/// built-in defaults rather than from their file. This prints the merged result
+/// with a comment for the built-in themes and the current theme name.
+#[allow(dead_code)] // used by niruwm --dump-config
+pub fn dump() -> Result<String> {
+    let c = Config::load()?;
+    let mut out = String::from("# NIRUWM effective configuration\n");
+    out.push_str("# Every value below is what the programs are using now.\n");
+    out.push_str("# Reload after editing the real file with: niructl reload\n\n");
+    out.push_str(&format!("theme = {:?}\n", c.theme));
+    out.push_str(&format!("gap = {}\n", c.gap));
+    out.push_str(&format!("border_width = {}\n", c.border_width));
+    out.push_str(&format!("bar_height = {}\n", c.bar_height));
+    out.push_str(&format!("master_ratio = {}\n", c.master_ratio));
+    out.push_str(&format!("terminal = {:?}\n", c.terminal));
+    out.push_str(&format!("browser = {:?}\n", c.browser));
+    out.push_str(&format!("launcher = {:?}\n", c.launcher));
+    out.push_str(&format!("font_size = {}\n\n", c.font_size));
+    out.push_str("[monitors]\n");
+    out.push_str(&format!("workspaces = {}\n", c.monitors.workspaces));
+    for p in &c.monitors.profiles {
+        out.push_str(&format!(
+            "# profile {}: {:?} primary={}\n",
+            p.name, p.workspaces, p.primary
+        ));
+    }
+    out.push_str("\n[wallpaper]\n");
+    out.push_str(&format!("enabled = {}\n", c.wallpaper.enabled));
+    out.push_str(&format!("dir = {:?}\n", c.wallpaper.dir));
+    out.push_str(&format!("mode = {:?}\n", c.wallpaper.mode));
+    out.push_str(&format!("scale = {:?}\n", c.wallpaper.scale));
+    out.push_str(&format!(
+        "rotation_minutes = {}\n",
+        c.wallpaper.rotation_minutes
+    ));
+    out.push_str("\n[bar]\n");
+    out.push_str(&format!("modules = {:?}\n", c.bar.modules));
+    out.push_str(&format!("tags = {:?}\n", c.bar.tags));
+    out.push_str(&format!("date_format = {:?}\n", c.bar.date_format));
+    out.push_str(&format!("time_format = {:?}\n", c.bar.time_format));
+    out.push_str(&format!("icons = {}\n", c.bar.icons));
+    out.push_str(&format!("popups = {}\n", c.bar.popups));
+    out.push_str(&format!(
+        "popup_timeout_seconds = {}\n\n",
+        c.bar.popup_timeout_seconds
+    ));
+    out.push_str(&format!(
+        "# {} key bindings in effect\n",
+        c.effective_keys().len()
+    ));
+    for k in c.effective_keys() {
+        out.push_str(&format!(
+            "[[keys]]\nkeys = {:?}\naction = {:?}\n\n",
+            k.keys, k.action
+        ));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,6 +494,14 @@ mod tests {
         assert!(c.bar.enabled);
         assert!(!c.bar.show_title, "the bar defaults to tags and clock only");
         assert_eq!(c.bar.cell_width, 30);
+    }
+
+    #[test]
+    fn accepts_the_full_bar_section_from_the_example() {
+        // Parse the shipped example file: if the bar gains a key here first,
+        // this test fails instead of leaving NIRUWM unable to start.
+        let example = include_str!("../config.example.toml");
+        toml::from_str::<Config>(example).expect("config.example.toml must parse in NIRUWM");
     }
 
     #[test]

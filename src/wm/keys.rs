@@ -137,6 +137,7 @@ impl Wm {
                 }
             }
             Action::Lock => self.lock_screen(),
+            Action::Scratchpad => self.toggle_scratchpad()?,
             Action::WindowSwitcher => {
                 if self.helper_present("nirupi-window.sh") {
                     self.shell("$HOME/.local/bin/nirupi-window.sh");
@@ -222,10 +223,8 @@ impl Wm {
             }
             Action::SwapNext => self.swap(1)?,
             Action::SwapPrev => self.swap(-1)?,
-            Action::FocusMonitor(_) | Action::TagMonitor(_) => {
-                // Single-monitor build: the action is accepted but has no
-                // second screen to move to yet.
-            }
+            Action::FocusMonitor(d) => self.focus_monitor(d)?,
+            Action::TagMonitor(d) => self.move_to_monitor(d)?,
         }
         self.arrange()?;
         Ok(true)
@@ -238,6 +237,67 @@ impl Wm {
     /// that stays open must not block the event loop.
     fn shell(&self, cmd: &str) {
         Self::spawn_detached(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
+    }
+
+    /// Show or hide the scratchpad.
+    ///
+    /// The scratchpad is a single floating window, kept alive between uses and
+    /// placed over the focused screen. Starting it the first time runs the
+    /// configured command; afterwards the same window is shown and hidden, which
+    /// is what makes it feel instant.
+    pub(crate) fn toggle_scratchpad(&mut self) -> Result<()> {
+        if let Some(w) = self.scratchpad {
+            if self.clients.iter().any(|c| c.win == w) {
+                if self.scratchpad_shown {
+                    let tag = self.active_tag();
+                    let monitor = self.focused_monitor;
+                    if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                        c.floating = false;
+                        c.tag = tag;
+                        c.monitor = monitor;
+                    }
+                    self.hidden.insert(w);
+                    *self.pending_unmaps.entry(w).or_default() += 1;
+                    self.c.unmap_window(w)?;
+                    self.scratchpad_shown = false;
+                } else {
+                    let screen = self
+                        .monitors
+                        .get(self.focused_monitor)
+                        .map(|m| m.rect)
+                        .unwrap_or_else(|| self.work_area());
+                    let w_px = (f32::from(screen.w) * self.cfg.scratchpad.width) as u16;
+                    let h_px = (f32::from(screen.h) * self.cfg.scratchpad.height) as u16;
+                    let geom = Rect {
+                        x: screen.x + ((screen.w - w_px) / 2) as i16,
+                        y: screen.y + ((screen.h - h_px) / 2) as i16,
+                        w: w_px,
+                        h: h_px,
+                    };
+                    let tag = self.active_tag();
+                    let monitor = self.focused_monitor;
+                    if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                        c.floating = true;
+                        c.geom = geom;
+                        c.tag = tag;
+                        c.monitor = monitor;
+                    }
+                    self.hidden.remove(&w);
+                    self.c.map_window(w)?;
+                    self.set_focus(w)?;
+                    self.scratchpad_shown = true;
+                }
+                return self.arrange();
+            }
+            // The window was closed by the application.
+            self.scratchpad = None;
+            self.scratchpad_shown = false;
+        }
+        // First use: start the command. The window becomes the scratchpad when
+        // it appears, because `manage` checks for it below.
+        let cmd = self.cfg.scratchpad.command.clone();
+        self.start(&cmd);
+        Ok(())
     }
 
     /// Lock the screen. Preference order: nirulock, NIRUPI's wrapper, slock.

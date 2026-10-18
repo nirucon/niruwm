@@ -1,10 +1,12 @@
 mod clients;
 mod events;
 mod keys;
+mod randr;
 
 use crate::bindings::Binding;
 use crate::config::{Config, Result, Theme};
 use crate::layout::{Layout, Rect};
+use crate::monitor::{Monitor, MonitorConfig};
 use crate::wallpaper::Wallpaper;
 use std::{
     collections::{HashMap, HashSet},
@@ -20,6 +22,8 @@ use x11rb::{
 #[derive(Clone)]
 pub(crate) struct Client {
     win: Window,
+    /// Which screen the window belongs to.
+    monitor: usize,
     tag: u32,
     floating: bool,
     fullscreen: bool,
@@ -51,6 +55,16 @@ pub(crate) struct Wm {
     pub(crate) nmaster: usize,
     /// Wallpaper owner. Only active when `[wallpaper] enabled = true`.
     pub(crate) wallpaper: Wallpaper,
+    /// Connected screens. A window belongs to the screen it was opened on.
+    pub(crate) monitors: Vec<Monitor>,
+    /// True when more than one screen is active.
+    pub(crate) multi_monitor: bool,
+    /// Which screen has the input focus.
+    pub(crate) focused_monitor: usize,
+    pub(crate) monitor_cfg: MonitorConfig,
+    /// Scratchpad window and whether it is currently shown.
+    pub(crate) scratchpad: Option<Window>,
+    pub(crate) scratchpad_shown: bool,
 }
 
 impl Wm {
@@ -68,6 +82,21 @@ impl Wm {
         let cfg = Config::load()?;
         let theme = Theme::load(&cfg.theme)?;
         let wallpaper = Wallpaper::new(&cfg.wallpaper);
+        let monitor_cfg = MonitorConfig {
+            workspaces: cfg.monitors.workspaces,
+            named: cfg
+                .monitors
+                .profiles
+                .iter()
+                .map(|p| (p.name.clone(), p.workspaces.clone()))
+                .collect(),
+            primary: cfg
+                .monitors
+                .profiles
+                .iter()
+                .find(|p| p.primary)
+                .map(|p| p.name.clone()),
+        };
         let (c, s) = x11rb::connect(None)?;
         let root = c.setup().roots[s].root;
         let screen_w = c.setup().roots[s].width_in_pixels;
@@ -91,7 +120,10 @@ impl Wm {
             ),
         )?
         .check()
-        .map_err(|_| "Another window manager is already running on this display")?;
+        .map_err(|e| {
+            eprintln!("niruwm: cannot take over the display: {e:?}");
+            "Another window manager is already running on this display"
+        })?;
 
         let mut atoms = HashMap::new();
         for n in [
@@ -148,7 +180,17 @@ impl Wm {
             bindings: Vec::new(),
             nmaster: 1,
             wallpaper,
+            monitors: Vec::new(),
+            multi_monitor: false,
+            focused_monitor: 0,
+            monitor_cfg,
+            scratchpad: None,
+            scratchpad_shown: false,
         };
+        let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
+        wm.focused_monitor = crate::monitor::primary(&monitors, &wm.monitor_cfg);
+        wm.monitors = monitors;
+        wm.multi_monitor = multi;
         wm.announce()?;
         wm.resolve_bindings()?;
         wm.grab()?;
@@ -240,6 +282,56 @@ impl Wm {
             b"1\x002\x003\x004\x005\x006\x007\x008\x009\x00",
         )?;
         Ok(())
+    }
+
+    /// Re-read the screens after a hotplug or resolution change.
+    ///
+    /// Windows on a screen that disappeared move to the first remaining one,
+    /// and each surviving screen keeps its active workspace.
+    pub(crate) fn refresh_monitors(&mut self) -> Result<()> {
+        let (monitors, multi) = randr::refresh(
+            &self.c,
+            self.root,
+            self.screen_w,
+            self.screen_h,
+            &self.monitor_cfg,
+            &self.monitors,
+        );
+        let count = monitors.len().max(1);
+        for c in self.clients.iter_mut() {
+            if c.monitor >= count {
+                c.monitor = count - 1;
+                if let Some(m) = monitors.get(c.monitor) {
+                    c.tag = m.active as u32;
+                }
+            } else if let Some(m) = monitors.get(c.monitor) {
+                // The screen may now have fewer workspaces than before.
+                if (c.tag as usize) >= m.workspaces.len() {
+                    c.tag = m.active as u32;
+                }
+            }
+        }
+        if self.focused_monitor >= count {
+            self.focused_monitor = count - 1;
+        }
+        self.monitors = monitors;
+        self.multi_monitor = multi;
+        // Focus followed the pointer at login; after a hotplug a window is
+        // more useful than an empty screen.
+        let active = self
+            .monitors
+            .get(self.focused_monitor)
+            .map(|m| m.active as u32)
+            .unwrap_or(0);
+        let target = self
+            .clients
+            .iter()
+            .find(|c| c.monitor == self.focused_monitor && c.tag == active);
+        if let Some(c) = target {
+            let w = c.win;
+            self.set_focus(w)?;
+        }
+        self.arrange()
     }
 
     /// Start the bar from PATH unless a session script already did.

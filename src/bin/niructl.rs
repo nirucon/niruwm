@@ -11,12 +11,19 @@ mod config;
 #[path = "../layout.rs"]
 #[allow(dead_code)] // niructl prints the layout names
 mod layout;
+#[path = "../monitor.rs"]
+#[allow(dead_code)]
+mod monitor;
 
 use config::{Config, Result, Theme};
-use x11rb::{connection::Connection, protocol::xproto::*, wrapper::ConnectionExt as _};
+use x11rb::{
+    connection::{Connection, RequestConnection as _},
+    protocol::{randr::ConnectionExt as _, xproto::*},
+    wrapper::ConnectionExt as _,
+};
 
-const USAGE: &str =
-    "Usage: niructl status | tag N | movetotag N | layout NAME | reload | theme NAME | quit";
+const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
+theme NAME | themes | monitors | reload | quit";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -45,6 +52,45 @@ fn offline(cmd: &str) -> Result<()> {
         println!();
         println!("Change with the key above, or: niructl layout NAME");
         println!("Cycle with Super+Ctrl+period and Super+Ctrl+comma.");
+        return Ok(());
+    }
+    if cmd == "monitors" {
+        // Read RandR directly so this works without querying the WM.
+        let (c, s) = x11rb::connect(None)?;
+        let root = c.setup().roots[s].root;
+        c.extension_information(x11rb::protocol::randr::X11_EXTENSION_NAME)
+            .ok()
+            .flatten()
+            .ok_or("this X server has no RandR extension")?;
+        let resources = c.randr_get_screen_resources_current(root)?.reply()?;
+        let mut found = 0;
+        println!("NIRUWM monitors:");
+        for output in resources.outputs {
+            let info = c
+                .randr_get_output_info(output, resources.config_timestamp)?
+                .reply()?;
+            if info.connection != x11rb::protocol::randr::Connection::CONNECTED {
+                continue;
+            }
+            let name = String::from_utf8_lossy(&info.name).to_string();
+            if info.crtc == 0 {
+                println!("  {name:<12} connected, no mode");
+                continue;
+            }
+            let crtc = c
+                .randr_get_crtc_info(info.crtc, resources.config_timestamp)?
+                .reply()?;
+            found += 1;
+            println!(
+                "  {name:<12} {}x{}+{}+{}",
+                crtc.width, crtc.height, crtc.x, crtc.y
+            );
+        }
+        if found == 0 {
+            println!("  (no active output; the whole screen is one monitor)");
+        }
+        println!();
+        println!("Each screen gets its own workspaces. Override one in [monitors].");
         return Ok(());
     }
     if cmd == "themes" {

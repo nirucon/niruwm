@@ -73,6 +73,21 @@ files = []
 # Pick a fresh picture at login, even in `fixed` mode.
 shuffle_on_start = true
 
+# ── Monitors ────────────────────────────────────────────────────────────────
+# Automatic by default: every connected screen gets its own nine workspaces,
+# like dwm. Plug a screen in or out and NIRUWM follows.
+#
+# `profiles` overrides one screen by its RandR name (see `xrandr --listmonitors`
+# or `niructl monitors`). Use it when a screen should have named workspaces, a
+# different count, or be the one that holds focus at login.
+[monitors]
+workspaces = 9
+
+# [[monitors.profiles]]
+# name = "HDMI-1"
+# workspaces = ["web", "code", "chat"]
+# primary = true
+
 # ── Bar ─────────────────────────────────────────────────────────────────────
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
@@ -101,6 +116,8 @@ separator = "|"
 icons = true
 # Clicking a module opens a small panel with more detail.
 popups = true
+# Seconds before an open panel closes itself. 0 waits for a click or Escape.
+popup_timeout_seconds = 8
 
 # ── Key bindings ────────────────────────────────────────────────────────────
 # Every default binding is listed below, so changing one is a single edit.

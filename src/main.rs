@@ -2,6 +2,7 @@ mod bindings;
 mod config;
 mod doctor;
 mod layout;
+mod monitor;
 mod wallpaper;
 mod wm;
 use config::{Config, Theme};
@@ -24,6 +25,16 @@ fn main() {
             }
         }
     }
+    if arg == "--dump-config" {
+        match config::dump() {
+            Ok(text) => print!("{text}"),
+            Err(e) => {
+                eprintln!("niruwm: {e}");
+                std::process::exit(1)
+            }
+        }
+        return;
+    }
     if arg == "--doctor" {
         if let Err(e) = doctor::run() {
             eprintln!("niruwm: {e}");
@@ -32,7 +43,7 @@ fn main() {
         return;
     }
     if !arg.is_empty() {
-        eprintln!("Usage: niruwm [--version|--check-config|--doctor]");
+        eprintln!("Usage: niruwm [--version|--check-config|--doctor|--dump-config]");
         std::process::exit(2)
     }
     if let Err(e) = Wm::new().and_then(|mut w| w.run()) {

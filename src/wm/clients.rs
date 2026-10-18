@@ -53,7 +53,7 @@ impl Wm {
 
         // Dialogs, utilities, splash screens and transients float above the
         // tile layout, like dwm's `isfloating` rules.
-        let floating = transient.is_some()
+        let dialog_floating = transient.is_some()
             || types.iter().any(|t| {
                 [
                     self.atom("_NET_WM_WINDOW_TYPE_DIALOG"),
@@ -66,10 +66,6 @@ impl Wm {
         // Follow the client's own desktop when it asks for one (session
         // restore, `wmctrl -i -t`, applications started with a tag override).
         let requested_tag = self.values(w, "_NET_WM_DESKTOP").first().copied();
-        let tag = match requested_tag {
-            Some(t) if t < 9 => t,
-            _ => self.tag,
-        };
 
         let border = self.cfg.border_width;
         // Border width is applied here once; `arrange()` only changes geometry.
@@ -86,8 +82,48 @@ impl Wm {
         self.c.change_save_set(SetMode::INSERT, w)?;
 
         let take_focus = self.has_protocol(w, "WM_TAKE_FOCUS");
+        // A new window belongs to the screen under the pointer, or to the
+        // focused screen when the pointer is outside every screen.
+        // A rule may pin this window to a workspace, before the pointer
+        // decides the screen.
+        let rule = self.rule_for(w);
+        // A window whose class matches the scratchpad command becomes the
+        // scratchpad, floating and centred, instead of being tiled.
+        let class = self.window_class(w);
+        let is_scratchpad = self
+            .cfg
+            .scratchpad
+            .command
+            .iter()
+            .any(|arg| !arg.starts_with('-') && Self::is_class_match(&class, arg));
+        if is_scratchpad {
+            self.scratchpad = Some(w);
+            self.scratchpad_shown = true;
+        }
+        let floating = dialog_floating
+            || is_scratchpad
+            || rule.as_ref().and_then(|r| r.floating).unwrap_or(false);
+        let tag = match requested_tag {
+            Some(t) if t < 9 => t,
+            _ => rule
+                .as_ref()
+                .and_then(|r| r.workspace)
+                .unwrap_or_else(|| self.active_tag()),
+        };
+        let (px, py) = self.pointer_position();
+        let monitor = if self.monitors.is_empty() {
+            0
+        } else {
+            let by_pointer = crate::monitor::monitor_at(&self.monitors, px, py);
+            if self.monitors.get(by_pointer).is_some() {
+                by_pointer
+            } else {
+                self.focused_monitor
+            }
+        };
         self.clients.push(Client {
             win: w,
+            monitor,
             tag,
             floating,
             fullscreen: false,
@@ -100,6 +136,23 @@ impl Wm {
             take_focus,
         });
 
+        if is_scratchpad {
+            let screen = self
+                .monitors
+                .get(monitor)
+                .map(|m| m.rect)
+                .unwrap_or_else(|| self.work_area());
+            let w_px = (f32::from(screen.w) * self.cfg.scratchpad.width) as u16;
+            let h_px = (f32::from(screen.h) * self.cfg.scratchpad.height) as u16;
+            if let Some(c) = self.clients.last_mut() {
+                c.geom = Rect {
+                    x: screen.x + ((screen.w - w_px) / 2) as i16,
+                    y: screen.y + ((screen.h - h_px) / 2) as i16,
+                    w: w_px,
+                    h: h_px,
+                };
+            }
+        }
         self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
         self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
         // Keep floating windows centred if the client asked for a 1x1 size
@@ -116,13 +169,17 @@ impl Wm {
             }
         }
         self.c.map_window(w)?;
-        if tag == self.tag {
+        if tag == self.active_tag() {
             self.set_focus(w)?;
         }
         self.arrange()
     }
 
     pub(crate) fn unmanage(&mut self, w: Window) {
+        if self.scratchpad == Some(w) {
+            self.scratchpad = None;
+            self.scratchpad_shown = false;
+        }
         if let Some(pos) = self.clients.iter().position(|c| c.win == w) {
             self.clients.remove(pos);
         }
@@ -219,6 +276,45 @@ impl Wm {
     }
 
     /// Area available to tiled clients: the screen minus the bar's strut.
+    /// WM_CLASS for a window as one string, e.g. "kitty Scratchpad".
+    pub(crate) fn window_class(&self, w: Window) -> String {
+        self.c
+            .get_property(false, w, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|r| String::from_utf8_lossy(&r.value).to_string())
+            .unwrap_or_default()
+    }
+
+    /// The first rule whose class matches this window.
+    fn rule_for(&self, w: Window) -> Option<crate::config::Rule> {
+        if self.cfg.rules.is_empty() {
+            return None;
+        }
+        let class = self.window_class(w);
+        self.cfg
+            .rules
+            .iter()
+            .find(|rule| class.contains(&rule.class))
+            .cloned()
+    }
+
+    /// Pointer position in root coordinates, or the focused screen's centre.
+    fn pointer_position(&self) -> (i16, i16) {
+        if let Ok(cookie) = self.c.query_pointer(self.root) {
+            if let Ok(reply) = cookie.reply() {
+                return (reply.root_x, reply.root_y);
+            }
+        }
+        match self.monitors.get(self.focused_monitor) {
+            Some(m) => (
+                m.rect.x + (m.rect.w / 2) as i16,
+                m.rect.y + (m.rect.h / 2) as i16,
+            ),
+            None => (0, 0),
+        }
+    }
+
     fn screen_area(&self) -> Rect {
         Rect {
             x: 0,
@@ -283,57 +379,75 @@ impl Wm {
     }
 
     pub(crate) fn arrange(&mut self) -> Result<()> {
-        let screen = self.work_area();
-        let n = self
-            .clients
-            .iter()
-            .filter(|c| c.tag == self.tag && !c.floating && !c.fullscreen)
-            .count();
-        let boxes = self.layout.arrange_master(
-            screen,
-            n,
-            self.nmaster,
-            self.cfg.master_ratio,
-            self.cfg.gap,
-        );
+        let area = self.work_area();
 
-        let mut idx = 0;
-        for c in &self.clients {
-            if c.tag != self.tag {
-                if self.hidden.insert(c.win) {
-                    *self.pending_unmaps.entry(c.win).or_default() += 1;
-                    self.c.unmap_window(c.win)?;
+        // Tile each screen separately. A window is visible when its tag is the
+        // active tag on its own screen, so two screens can show two different
+        // workspaces at once.
+        let mut geometry: Vec<(Window, Rect, u16, bool)> = Vec::new();
+        let mut visible: Vec<Window> = Vec::new();
+        for mi in 0..self.monitors.len().max(1) {
+            let screen = self.monitor_area(mi, area);
+            let active = self.monitors.get(mi).map(|m| m.active).unwrap_or(0) as u32;
+            let n = self
+                .clients
+                .iter()
+                .filter(|c| c.monitor == mi && c.tag == active && !c.floating && !c.fullscreen)
+                .count();
+            let boxes = self.layout.arrange_master(
+                screen,
+                n,
+                self.nmaster,
+                self.cfg.master_ratio,
+                self.cfg.gap,
+            );
+            let mut idx = 0;
+            for c in &self.clients {
+                if c.monitor != mi {
+                    continue;
                 }
-                continue;
+                if c.tag != active {
+                    continue;
+                }
+                visible.push(c.win);
+                let r = if c.fullscreen {
+                    Rect {
+                        x: screen.x,
+                        y: screen.y,
+                        w: screen.w,
+                        h: screen.h,
+                    }
+                } else if c.floating || self.layout == Layout::Floating {
+                    self.clamp(c.geom, screen)
+                } else {
+                    let r = boxes.get(idx).copied().unwrap_or(screen);
+                    idx += 1;
+                    r
+                };
+                let smart = !c.floating && (n == 1 || self.layout == Layout::Monocle);
+                let b = if c.fullscreen || smart {
+                    0
+                } else {
+                    self.cfg.border_width
+                };
+                geometry.push((c.win, r, b, c.fullscreen));
             }
-            if self.hidden.remove(&c.win) {
+        }
+
+        // Hide everything that is not on an active workspace of its screen.
+        for c in &self.clients {
+            let shown = visible.contains(&c.win);
+            if !shown && self.hidden.insert(c.win) {
+                *self.pending_unmaps.entry(c.win).or_default() += 1;
+                self.c.unmap_window(c.win)?;
+            } else if shown && self.hidden.remove(&c.win) {
                 self.c.map_window(c.win)?;
             }
-            let r = if c.fullscreen {
-                Rect {
-                    x: 0,
-                    y: 0,
-                    w: self.screen_w,
-                    h: self.screen_h,
-                }
-            } else if c.floating || self.layout == Layout::Floating {
-                // Keep floating windows inside the work area, as dwm clamps.
-                self.clamp(c.geom, screen)
-            } else {
-                let r = boxes[idx];
-                idx += 1;
-                r
-            };
-            // Smart borders, like dwm: no border on a lone tile or in monocle,
-            // and never on a fullscreen window. Floating windows keep theirs.
-            let smart = !c.floating && (n == 1 || self.layout == Layout::Monocle);
-            let b = if c.fullscreen || smart {
-                0
-            } else {
-                self.cfg.border_width
-            };
+        }
+
+        for (win, r, b, fullscreen) in geometry {
             self.c.configure_window(
-                c.win,
+                win,
                 &ConfigureWindowAux::new()
                     .x(i32::from(r.x))
                     .y(i32::from(r.y))
@@ -341,33 +455,82 @@ impl Wm {
                     .height(u32::from(r.h.saturating_sub(b * 2).max(1)))
                     .border_width(u32::from(b)),
             )?;
-            if c.fullscreen {
+            if fullscreen {
                 self.c.configure_window(
-                    c.win,
+                    win,
                     &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
                 )?;
             }
         }
 
-        // Keep focus on a visible client. If the focused window was moved to
-        // another tag or closed, focus the most recently used visible one.
-        let visible: Vec<Window> = self
-            .clients
-            .iter()
-            .filter(|c| c.tag == self.tag)
-            .map(|c| c.win)
-            .collect();
-        let focus_valid = self.focus.map(|w| visible.contains(&w)).unwrap_or(false);
-        if !focus_valid {
-            let next = visible.last().copied();
+        // Focus stays on a visible window of the focused screen.
+        let focus_ok = self.focus.map(|w| visible.contains(&w)).unwrap_or(false);
+        if !focus_ok {
+            let next = self
+                .clients
+                .iter()
+                .filter(|c| visible.contains(&c.win) && c.monitor == self.focused_monitor)
+                .map(|c| c.win)
+                .next()
+                .or_else(|| {
+                    self.clients
+                        .iter()
+                        .rev()
+                        .find(|c| visible.contains(&c.win))
+                        .map(|c| c.win)
+                });
             self.focus_client(next)?;
         }
 
+        self.publish_desktop_state()?;
+        self.c.flush()?;
+        Ok(())
+    }
+
+    /// The usable area of one monitor, with the bar's height removed only on
+    /// the monitor the bar sits on.
+    fn monitor_area(&self, index: usize, work: Rect) -> Rect {
+        match self.monitors.get(index) {
+            Some(m) => {
+                // The bar spans the whole screen width, so its strut only
+                // affects whichever monitor covers the top edge.
+                if m.rect.y == 0 {
+                    let top = work.y.saturating_sub(m.rect.y).max(0) as u16;
+                    Rect {
+                        x: m.rect.x,
+                        y: m.rect.y + top as i16,
+                        w: m.rect.w,
+                        h: m.rect.h.saturating_sub(top),
+                    }
+                } else {
+                    m.rect
+                }
+            }
+            None => work,
+        }
+    }
+
+    /// Publish the desktop state in a way panels understand with several
+    /// screens: one flat list of workspaces, with the focused screen's
+    /// workspace selected.
+    fn publish_desktop_state(&mut self) -> Result<()> {
+        let total: usize = self.monitors.iter().map(|m| m.workspaces.len()).sum();
+        let active = self
+            .monitors
+            .get(self.focused_monitor)
+            .map(|m| m.active)
+            .unwrap_or(0) as u32;
+        self.prop(
+            self.root,
+            "_NET_NUMBER_OF_DESKTOPS",
+            AtomEnum::CARDINAL.into(),
+            &[total.max(1) as u32],
+        )?;
         self.prop(
             self.root,
             "_NET_CURRENT_DESKTOP",
             AtomEnum::CARDINAL.into(),
-            &[self.tag],
+            &[active],
         )?;
         let list: Vec<Window> = self.clients.iter().map(|c| c.win).collect();
         self.prop(
@@ -382,11 +545,33 @@ impl Wm {
             AtomEnum::WINDOW.into(),
             &list,
         )?;
-        self.c.flush()?;
+        // Publish workspace names so a bar or pager can label them.
+        let mut names = String::new();
+        for m in &self.monitors {
+            for w in &m.workspaces {
+                names.push_str(w);
+                names.push('\0');
+            }
+        }
+        if !names.is_empty() {
+            self.c.change_property8(
+                PropMode::REPLACE,
+                self.root,
+                self.atom("_NET_DESKTOP_NAMES"),
+                self.atom("UTF8_STRING"),
+                names.as_bytes(),
+            )?;
+        }
         Ok(())
     }
 
     /// Keep a floating rectangle inside the usable area.
+    /// True when `arg` names this window's class, ignoring case.
+    fn is_class_match(class: &str, arg: &str) -> bool {
+        let needle = arg.to_ascii_lowercase();
+        needle.len() > 2 && class.to_ascii_lowercase().contains(&needle)
+    }
+
     fn clamp(&self, r: Rect, area: Rect) -> Rect {
         let w = r.w.min(area.w).max(60);
         let h = r.h.min(area.h).max(40);
@@ -400,27 +585,46 @@ impl Wm {
         }
     }
 
-    /// Show a tag (dwm `view`, with `0` meaning the bitmask form).
+    /// The workspace shown on the focused screen.
+    pub(crate) fn active_tag(&self) -> u32 {
+        self.monitors
+            .get(self.focused_monitor)
+            .map(|m| m.active as u32)
+            .unwrap_or(0)
+    }
+
+    /// Switch the focused screen to one of its workspaces.
+    ///
+    /// `tag` is an index into that screen's own workspace list, so each screen
+    /// keeps its set independent of the others.
     pub(crate) fn view_tag(&mut self, tag: u32) -> Result<()> {
-        if tag < 9 {
-            self.tag = tag;
+        if let Some(m) = self.monitors.get_mut(self.focused_monitor) {
+            if (tag as usize) < m.workspaces.len() {
+                m.active = tag as usize;
+            }
         }
         self.arrange()
     }
 
-    /// Toggle a tag in the view (dwm `view` with `toggleview`).
+    /// Toggle a tag in the view.
+    ///
+    /// One workspace is shown per screen, so toggling a different workspace
+    /// switches to it; toggling the current one does nothing.
     pub(crate) fn toggle_tag(&mut self, tag: u32) -> Result<()> {
-        // Single-tag model: toggling the visible tag returns to tag 1 rather
-        // than showing an empty view. Keeps 0.2.0 predictable.
-        if tag < 9 && tag != self.tag {
-            self.tag = tag;
+        if tag != self.active_tag() {
+            return self.view_tag(tag);
         }
-        self.arrange()
+        Ok(())
     }
 
     /// Move the focused window to a tag (dwm `tag`/`toggletag`).
     pub(crate) fn move_to_tag(&mut self, tag: u32, follow: bool) -> Result<()> {
-        if tag >= 9 {
+        let count = self
+            .monitors
+            .get(self.focused_monitor)
+            .map(|m| m.workspaces.len())
+            .unwrap_or(9);
+        if tag as usize >= count {
             return Ok(());
         }
         if let Some(w) = self.focus {
@@ -441,7 +645,9 @@ impl Wm {
         let visible: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| c.tag == self.tag && !c.floating)
+            .filter(|c| {
+                c.monitor == self.focused_monitor && c.tag == self.active_tag() && !c.floating
+            })
             .map(|c| c.win)
             .collect();
         if visible.len() < 2 {
@@ -500,10 +706,57 @@ impl Wm {
         self.set_focus(visible[j])
     }
 
-    pub(crate) fn next_tag(&mut self, delta: i32) -> Result<()> {
-        let t = (self.tag as i32 + delta).rem_euclid(9);
-        self.tag = t as u32;
+    /// Move focus to the screen to the left (-1) or right (+1).
+    ///
+    /// A window is focused on the target screen so typing goes somewhere
+    /// useful; the screen keeps its own workspace.
+    pub(crate) fn focus_monitor(&mut self, delta: i32) -> Result<()> {
+        let count = self.monitors.len();
+        if count < 2 {
+            return Ok(());
+        }
+        let next = (self.focused_monitor as i32 + delta).rem_euclid(count as i32) as usize;
+        self.focused_monitor = next;
+        let active = self.monitors[next].active as u32;
+        let target = self
+            .clients
+            .iter()
+            .find(|c| c.monitor == next && c.tag == active)
+            .map(|c| c.win);
+        match target {
+            Some(w) => self.set_focus(w)?,
+            None => self.focus_client(None)?,
+        }
         self.arrange()
+    }
+
+    /// Move the focused window to the screen to the left (-1) or right (+1).
+    pub(crate) fn move_to_monitor(&mut self, delta: i32) -> Result<()> {
+        let count = self.monitors.len();
+        if count < 2 {
+            return Ok(());
+        }
+        let Some(w) = self.focus else {
+            return Ok(());
+        };
+        let target = (self.focused_monitor as i32 + delta).rem_euclid(count as i32) as usize;
+        if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+            c.monitor = target;
+            c.tag = self.monitors[target].active as u32;
+        }
+        self.focused_monitor = target;
+        self.arrange()
+    }
+
+    pub(crate) fn next_tag(&mut self, delta: i32) -> Result<()> {
+        let len = self
+            .monitors
+            .get(self.focused_monitor)
+            .map(|m| m.workspaces.len())
+            .unwrap_or(9)
+            .max(1) as i32;
+        let t = (self.active_tag() as i32 + delta).rem_euclid(len);
+        self.view_tag(t as u32)
     }
 
     pub(crate) fn toggle_fullscreen(&mut self, w: Window) -> Result<()> {
@@ -522,7 +775,12 @@ impl Wm {
                 self.c
                     .configure_window(w, &ConfigureWindowAux::new().border_width(u32::from(b)))?;
             }
-            if tag == self.tag {
+            if tag == self.active_tag()
+                && self
+                    .clients
+                    .iter()
+                    .any(|c| c.win == w && c.monitor == self.focused_monitor)
+            {
                 self.set_focus(w)?;
             }
         }

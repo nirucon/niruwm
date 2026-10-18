@@ -117,8 +117,13 @@ if [ "$exited" != 1 ]; then
 fi
 ok "session exited on quit"
 
-# No leftover bar process.
-if pgrep -f "$BINDIR/nirubar" >/dev/null 2>&1; then fail "nirubar left running"; fi
+# No leftover bar process. Match the program by its own name, not by a
+# command line containing the path: `pgrep -f` also matches this test script,
+# which mentions the path in its arguments.
+if pgrep -x nirubar >/dev/null 2>&1; then
+  echo "    left over: $(pgrep -x nirubar | tr '\n' ' ')"
+  fail "nirubar left running"
+fi
 ok "no leftover processes"
 
 echo "PASS session-smoke"

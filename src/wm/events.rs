@@ -77,11 +77,11 @@ impl Wm {
                 }
                 Event::ConfigureRequest(e) => self.configure_request(e)?,
                 Event::EnterNotify(e) => {
-                    if self
-                        .clients
-                        .iter()
-                        .any(|c| c.win == e.event && c.tag == self.tag)
-                    {
+                    if self.clients.iter().any(|c| {
+                        c.win == e.event
+                            && c.tag == self.active_tag()
+                            && c.monitor == self.focused_monitor
+                    }) {
                         self.set_focus(e.event)?;
                     }
                 }
@@ -95,6 +95,10 @@ impl Wm {
                     self.screen_w = g.width;
                     self.screen_h = g.height;
                     self.arrange()?;
+                }
+                // A cable was plugged in or out, or a resolution changed.
+                Event::RandrScreenChangeNotify(_) => {
+                    self.refresh_monitors()?;
                 }
                 Event::ClientMessage(e) => {
                     if !self.client_message(e)? {

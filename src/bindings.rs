@@ -51,6 +51,8 @@ pub enum Action {
     TagMonitor(i32),
     /// Swap the focused window with the previous/next window in the stack.
     SwapNext,
+    /// Show or hide the scratchpad window.
+    Scratchpad,
     SwapPrev,
 }
 
@@ -218,6 +220,7 @@ impl Action {
         add("super+shift+space", "toggle_float");
         add("super+shift+e", "toggle_fullscreen");
         add("super+shift+z", "shell nirupi-record.sh");
+        add("super+shift+s", "scratchpad");
         add("super+h", "dec_master_ratio");
         add("super+l", "inc_master_ratio");
         add("super+i", "inc_master");
@@ -363,6 +366,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "toggle_gaps" => Action::ToggleGaps,
         "focusmon" => Action::FocusMonitor(arg()?.parse().unwrap_or(1)),
         "tagmon" => Action::TagMonitor(arg()?.parse().unwrap_or(1)),
+        "scratchpad" => Action::Scratchpad,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {
