@@ -183,10 +183,26 @@ pub fn run(script: &str) -> Result<usize> {
                 // Tab reaches the window manager as a bare Tab on some
                 // synthetic keyboards, and the tag log would only show the
                 // result, not the cause.
+                //
+                // The pointer is moved far away first. A pointer left over a
+                // previous window means the key press also goes to that
+                // window, and in a terminal the digit '9' is "search"; the
+                // search box then takes the focus and swallows the next key.
                 eprintln!(
                     "niruwm: replay: press {combo} (tag {})",
                     current_tag().map(|t| t + 1).unwrap_or(0)
                 );
+                let _ = Command::new("xdotool")
+                    .args(["mousemove", "--sync", "1", "1"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                // The same trick in the config for whoever runs a replay by
+                // hand. Xvfb has no window manager focus rules, so a key that
+                // went to the window manager can also reach the window under
+                // the pointer; keeping the pointer in the corner means it
+                // never lands on a terminal. This is why the replay moves the
+                // pointer at all.
                 // `--clearmodifiers` matters: a stuck modifier from a previous
                 // step would otherwise change what this one does.
                 let _ = Command::new("xdotool")
