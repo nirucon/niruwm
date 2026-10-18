@@ -138,6 +138,8 @@ jobs:
             fi
             if [ "$fetched" = 0 ]; then
               echo "stage: this cargo cannot build the suite and v$version has no release" >&2
+              echo "stage: a tag's CI cannot download the release it is publishing;" >&2
+              echo "stage: use a newer cargo (rustup) to build here." >&2
               exit 1
             fi
             echo "testing the v$version release binaries"
