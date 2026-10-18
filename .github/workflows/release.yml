@@ -59,6 +59,7 @@ jobs:
       - name: Verify the binaries are static
         run: |
           for bin in niruwm/target/x86_64-unknown-linux-musl/release/niruwm \
+                     niruwm/target/x86_64-unknown-linux-musl/release/niruidle \
                      nirubar/target/x86_64-unknown-linux-musl/release/nirubar; do
             file "$bin"
             if ldd "$bin" 2>&1 | grep -q "=>"; then
@@ -71,7 +72,7 @@ jobs:
         run: |
           sudo apt-get install -y xvfb x11-utils x11-apps xterm fonts-dejavu-core procps
           mkdir -p /tmp/niru/bin /tmp/niru/.config/niruwm/themes
-          cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl} /tmp/niru/bin/
+          cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} /tmp/niru/bin/
           cp nirubar/target/x86_64-unknown-linux-musl/release/nirubar /tmp/niru/bin/
           cp niruwm/session/niruwm-session /tmp/niru/bin/
           chmod +x /tmp/niru/bin/*
@@ -82,9 +83,9 @@ jobs:
       - name: Collect assets
         run: |
           mkdir -p dist
-          cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl} dist/
+          cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} dist/
           cp nirubar/target/x86_64-unknown-linux-musl/release/nirubar dist/
-          cd dist && sha256sum niruwm nirubar niructl > SHA256SUMS && cat SHA256SUMS
+          cd dist && sha256sum niruwm nirubar niructl niruidle > SHA256SUMS && cat SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -98,5 +99,6 @@ jobs:
             dist/niruwm
             dist/nirubar
             dist/niructl
+            dist/niruidle
             dist/SHA256SUMS
           generate_release_notes: true

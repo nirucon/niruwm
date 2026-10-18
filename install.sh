@@ -13,7 +13,7 @@
 # read for writing and never removed.
 set -eu
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -114,11 +114,11 @@ install_release() {
   dl_dir="$(mktemp -d)"
   trap 'rm -rf "$dl_dir"' EXIT HUP INT TERM
   say "Downloading NIRUWM $tag for x86_64 ..."
-  for b in niruwm nirubar niructl; do
+  for b in niruwm nirubar niructl niruidle; do
     fetch "$base/$b" "$dl_dir/$b" || die "cannot download $base/$b"
   done
   fetch "$base/SHA256SUMS" "$dl_dir/SHA256SUMS" || die "cannot download checksums"
-  for b in niruwm nirubar niructl; do
+  for b in niruwm nirubar niructl niruidle; do
     # Single quotes: $2 belongs to awk, not to the shell.
     expected="$(awk -v n="$b" '$2 == n {print $1}' "$dl_dir/SHA256SUMS")"
     [ -n "$expected" ] || die "no checksum for $b"
@@ -127,7 +127,7 @@ install_release() {
     chmod 0755 "$dl_dir/$b"
   done
   verify_versions "$dl_dir"
-  for b in niruwm nirubar niructl; do
+  for b in niruwm nirubar niructl niruidle; do
     put "$dl_dir/$b" "$BINDIR/$b"
   done
   put "$(dirname "$0")/session/niruwm-session" "$BINDIR/niruwm-session" 0755
@@ -150,7 +150,7 @@ build_local() {
   need_cmd cargo || die "cargo is required for --build (or drop --build to use released binaries)"
   say "Building from source ..."
   ( cd "$(dirname "$0")" && cargo build --release --locked )
-  for b in niruwm nirubar niructl; do
+  for b in niruwm nirubar niructl niruidle; do
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
   done
@@ -290,7 +290,7 @@ uninstall() {
 
 check() {
   ok=0
-  for b in niruwm nirubar niructl niruwm-session; do
+  for b in niruwm nirubar niructl niruidle niruwm-session; do
     if [ -x "$BINDIR/$b" ]; then say "OK   $BINDIR/$b"; else say "FAIL missing $BINDIR/$b"; ok=1; fi
   done
   if [ -e "$SESSION_FILE" ]; then say "OK   $SESSION_FILE"; else say "INFO no SDDM entry (run --register-session)"; fi

@@ -99,13 +99,13 @@ jobs:
             ( cd /tmp/nirubar-src && cargo build --release --locked )
             cp /tmp/nirubar-src/target/release/nirubar /tmp/niru/bin/
             cargo build --release --locked
-            cp target/release/niruwm target/release/niructl /tmp/niru/bin/
+            cp target/release/niruwm target/release/niructl target/release/niruidle /tmp/niru/bin/
           else
             version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
             url="https://github.com/nirucon/niruwm/releases/download/v$version"
             echo "toolchain too old; using the v$version release binaries"
             if command -v curl >/dev/null 2>&1; then GET="curl -fsSL -o"; else GET="wget -qO"; fi
-            for b in niruwm nirubar niructl; do
+            for b in niruwm nirubar niructl niruidle; do
               $GET "/tmp/niru/bin/$b" "$url/$b"
               chmod +x "/tmp/niru/bin/$b"
             done

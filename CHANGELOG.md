@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+
+- `niruidle`, part of NIRUWM: the idle ladder. Screensaver after
+  `idle_minutes`, lock `lock_after_minutes` later, display off
+  `dpms_off_minutes` after that. Idle time comes from MIT-SCREEN-SAVER, so no
+  `xidlehook`, `xprintidle` or shell glue is needed.
+- `lock_after_minutes` in `~/.config/niruui/screensaver.toml`.
+
+### Changed
+
+- The session starts `niruidle` and nothing else for idling. Previously it
+  could start `xss-lock` or `xidlehook`, and two ladders then competed: one
+  locked the screen again the moment the other unlocked it.
+- The installer adds missing config sections and missing keys instead of
+  leaving an old file without `[wallpaper]` or the new bar settings.
+
+### Fixed
+
+- NIRUWM rejected a config containing `battery`, `network` or `icons`, which
+  NIRUBAR writes. Both sides now have a test that fails if the two config
+  shapes drift.
+
+
 ## 0.3.0
 
 ### Added
