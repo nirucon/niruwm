@@ -118,7 +118,12 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     assert_eq!(values(&c, root, "_NET_CLIENT_LIST").len(), 3);
     let full = atom(&c, "_NET_WM_STATE_FULLSCREEN");
     message(&c, root, windows[0], "_NET_WM_STATE", [1, full, 0, 0, 0]);
-    wait(|| values(&c, windows[0], "_NET_WM_STATE").contains(&full));
+    // The property is published before the geometry request is flushed. Wait
+    // for the applied rectangle, not only for the state atom.
+    wait(|| {
+        let g = c.get_geometry(windows[0]).unwrap().reply().unwrap();
+        g.y == 0 && g.width == c.setup().roots[s].width_in_pixels
+    });
     let g = c.get_geometry(windows[0]).unwrap().reply().unwrap();
     assert_eq!(g.y, 0);
     assert_eq!(g.width, c.setup().roots[s].width_in_pixels);
@@ -370,6 +375,12 @@ fn session_restore_matches_windows_and_keeps_saved_focus() {
         floating_width < screen_width / 2,
         "saved floating state was not restored (width {floating_width})"
     );
+    // Stop the test applications before the next test starts its own manager.
+    for window in [focused, floating] {
+        if let Some(pid) = values(&c, window, "_NET_WM_PID").first() {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
+    }
 
     message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
     wait(|| wm.0.try_wait().unwrap().is_some());
