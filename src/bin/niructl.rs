@@ -270,12 +270,7 @@ fn login_action(action: &str) -> Result<()> {
 
 fn desktop(action: &str, args: &[String]) -> Result<()> {
     match action {
-        "lock" => {
-            let locker = program("nirulock")
-                .or_else(|| program("slock"))
-                .ok_or("no screen locker found: install nirulock or slock")?;
-            spawn_action(&locker, &[])
-        }
+        "lock" => lock_action(),
         "screensaver" => {
             let saver = program("niruscreensaver").ok_or("niruscreensaver is not installed")?;
             spawn_action(&saver, &["--preview"])
@@ -395,6 +390,27 @@ fn idle(args: &[String]) -> Result<()> {
         _ => return Err("idle needs on, off, toggle or status".into()),
     }
     Ok(())
+}
+
+/// Lock and, for NIRULOCK, wait for verified readiness before returning.
+///
+/// `slock` has no readiness contract, so it is still usable interactively but
+/// cannot be used as proof that a suspend is safe.
+fn lock_action() -> Result<()> {
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    if ready_lock(&c, root).is_some() {
+        return Ok(());
+    }
+    if let Some(locker) = program("nirulock") {
+        spawn_action(&locker, &[])?;
+        wait_ready_lock(&c, root)?;
+        return Ok(());
+    }
+    if let Some(locker) = program("slock") {
+        return spawn_action(&locker, &[]);
+    }
+    Err("no screen locker found: install nirulock or slock".into())
 }
 
 /// The lock window that currently owns the readiness marker, if any.
@@ -1001,7 +1017,6 @@ mod tests {
         let dnd_state = dir.join("dnd");
         std::fs::write(&dnd_state, "false\n").unwrap();
         let log = |name: &str| format!("printf '%s %s\\n' '{name}' \"$*\" >> \"$CALLS\"\n");
-        script(&bin, "nirulock", &log("nirulock"));
         script(&bin, "niruscreensaver", &log("niruscreensaver"));
         script(&bin, "loginctl", &log("loginctl"));
         script(
@@ -1026,8 +1041,6 @@ mod tests {
             panic!("{what} was not called; calls: {}", calls_now());
         };
 
-        desktop("lock", &[]).unwrap();
-        wait_for("nirulock");
         desktop("screensaver", &[]).unwrap();
         wait_for("niruscreensaver --preview");
         login_action("reboot").unwrap();

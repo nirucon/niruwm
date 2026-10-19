@@ -15,7 +15,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.14'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.15'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -49,6 +49,7 @@ KEYBOARD_VARIANT="${KEYBOARD_VARIANT:-}"
 START_DUNST="${START_DUNST:-1}"
 START_PICOM="${START_PICOM:-1}"
 START_IDLE="${START_IDLE:-1}"
+START_SLEEP_LOCK="${START_SLEEP_LOCK:-1}"
 
 # ── Session bus ──────────────────────────────────────────────────────────────
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
@@ -121,9 +122,15 @@ BG="0f0f10"
 command -v xsetroot >/dev/null 2>&1 && xsetroot -solid "#${BG:-0f0f10}" 2>/dev/null || :
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""
+STATUS_PID=""; DUNST_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""
 cleanup() {
-  for pid in $STATUS_PID $DUNST_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID; do
+  # The sleep-lock helper has its own child inhibitor and monitor. Give it a
+  # TERM first so its trap can release them, then make sure the direct child
+  # is gone even if the trap was not reached.
+  if [ -n "$SLEEP_LOCK_PID" ]; then
+    pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
+  fi
+  for pid in $STATUS_PID $DUNST_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -165,6 +172,39 @@ elif [ "$START_IDLE" = 1 ]; then
     [ -n "${LOCKER:-}" ] || LOCKER=slock
     xss-lock --transfer-sleep-lock -- "$LOCKER" >/dev/null 2>&1 & LOCK_PID=$!
   fi
+fi
+
+# ── Lock before suspend ─────────────────────────────────────────────────────
+# Hold a logind/elogind delay inhibitor for sleep. When PrepareForSleep(true)
+# arrives, lock and wait for NIRULOCK's verified readiness; only then does the
+# inner command exit and let the inhibitor go. A lock failure keeps the
+# inhibitor held instead of allowing an unlocked suspend. The outer loop
+# re-arms after resume.
+sleep_lock_loop() {
+  INHIBIT_PID=""
+  trap 'if [ -n "$INHIBIT_PID" ]; then kill "$INHIBIT_PID" 2>/dev/null || :; fi; exit 0' TERM INT HUP
+  while :; do
+    "$NIRU_INHIBIT" --what=sleep --mode=delay --who=NIRU --why="Lock before suspend" \
+      sh -c 'if dbus-monitor --system "type=signal,interface=org.freedesktop.login1.Manager,member=PrepareForSleep" 2>/dev/null | grep -m1 "boolean true" >/dev/null; then
+               niructl lock || { echo "niruwm-session: lock failed; keeping sleep inhibited" >&2; sleep 3600; }
+             fi' &
+    INHIBIT_PID=$!
+    wait "$INHIBIT_PID" 2>/dev/null || :
+    INHIBIT_PID=""
+    sleep 1
+  done
+}
+NIRU_INHIBIT=""
+for candidate in systemd-inhibit elogind-inhibit; do
+  if command -v "$candidate" >/dev/null 2>&1; then NIRU_INHIBIT="$candidate"; break; fi
+done
+if [ "$START_SLEEP_LOCK" = 1 ] && [ -n "$NIRU_INHIBIT" ] \
+   && command -v dbus-monitor >/dev/null 2>&1 \
+   && command -v niructl >/dev/null 2>&1 \
+   && command -v nirulock >/dev/null 2>&1; then
+  sleep_lock_loop & SLEEP_LOCK_PID=$!
+else
+  log "lock-before-suspend provider unavailable (needs loginctl inhibit, dbus-monitor, niructl and nirulock)"
 fi
 
 # Battery guard and autostart: NIRUPI's helpers only in the explicit
