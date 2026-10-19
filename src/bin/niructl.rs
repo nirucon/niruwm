@@ -279,10 +279,61 @@ fn desktop(action: &str, args: &[String]) -> Result<()> {
             let saver = program("niruscreensaver").ok_or("niruscreensaver is not installed")?;
             spawn_action(&saver, &["--preview"])
         }
-        "logout" | "suspend" | "reboot" | "shutdown" => login_action(action),
+        "suspend" => {
+            ensure_lock_ready()?;
+            login_action("suspend")
+        }
+        "logout" | "reboot" | "shutdown" => login_action(action),
         "dnd" => dnd(args),
         _ => Err(USAGE.into()),
     }
+}
+
+/// The lock window that currently owns the readiness marker, if any.
+///
+/// A killed locker can leave the property on the root window. Its X window
+/// disappears with the connection, so the window is part of the check.
+fn ready_lock(c: &x11rb::rust_connection::RustConnection, root: Window) -> Option<Window> {
+    let atom = c
+        .intern_atom(false, b"_NIRU_LOCK_READY")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let window = c
+        .get_property(false, root, atom, AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?
+        .value32()?
+        .next()?;
+    let attributes = c.get_window_attributes(window).ok()?.reply().ok()?;
+    (attributes.map_state == MapState::VIEWABLE).then_some(window)
+}
+
+fn wait_ready_lock(c: &x11rb::rust_connection::RustConnection, root: Window) -> Result<Window> {
+    for _ in 0..250 {
+        if let Some(window) = ready_lock(c, root) {
+            return Ok(window);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Err("screen locker did not publish readiness; not suspending".into())
+}
+
+/// Lock before suspending. Requires NIRULOCK's readiness contract; a bare
+/// `slock` cannot be verified and is therefore not accepted for suspend.
+fn ensure_lock_ready() -> Result<()> {
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    if ready_lock(&c, root).is_some() {
+        return Ok(());
+    }
+    let locker = program("nirulock")
+        .ok_or("cannot lock before suspend: install nirulock (slock cannot confirm readiness)")?;
+    spawn_action(&locker, &[])?;
+    wait_ready_lock(&c, root)?;
+    Ok(())
 }
 
 /// Do-not-disturb through the active provider's documented control.
