@@ -227,7 +227,9 @@ impl Wm {
                 }
                 return Ok(false);
             }
-            Action::Reload => self.reload()?,
+            Action::Reload => {
+                self.reload()?;
+            }
             Action::SaveSession => {
                 if let Err(e) = self.save_session() {
                     eprintln!("niruwm: could not save the session: {e}");
@@ -246,6 +248,7 @@ impl Wm {
                 if let Ok(t) = Theme::load(&cfg.theme) {
                     self.cfg = cfg;
                     self.theme = t;
+                    self.publish_theme()?;
                     self.update_borders()?;
                 }
             }

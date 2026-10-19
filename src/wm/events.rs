@@ -203,6 +203,7 @@ impl Wm {
             // The protocol carries zero-based indices (as EWMH does), while
             // the binding table uses the numbers a user types. Convert here
             // so both paths land on the same workspace.
+            let mut reload_ack = None;
             let action = match d[0] {
                 // The control channel carries zero-based *global* desktops.
                 1 => {
@@ -226,7 +227,15 @@ impl Wm {
                     6 => LayoutId::CenteredFloat,
                     _ => LayoutId::Tile,
                 })),
-                4 => Some(Action::Reload),
+                4 => {
+                    // d[1] is the serial `niructl` is waiting for. A key
+                    // binding sends zero and needs no acknowledgement.
+                    let applied = self.reload()?;
+                    if d[1] != 0 {
+                        reload_ack = Some((d[1], applied));
+                    }
+                    None
+                }
                 5 => Some(Action::Quit),
                 6 => Some(Action::SaveSession),
                 7 => Some(Action::ClearSession),
@@ -238,6 +247,23 @@ impl Wm {
                 }
             }
             self.arrange()?;
+            if let Some((serial, applied)) = reload_ack {
+                // The high bit marks a rejected reload, so the caller gets a
+                // completion signal either way and never treats "rejected" as
+                // success after an arbitrary delay.
+                let value = if applied {
+                    serial
+                } else {
+                    serial | 0x8000_0000
+                };
+                self.prop(
+                    self.root,
+                    "_NIRUWM_CONFIG_ACK",
+                    AtomEnum::CARDINAL.into(),
+                    &[value],
+                )?;
+                self.c.flush()?;
+            }
         } else if e.type_ == self.atom("_NIRUWM_LOCK") {
             // A lock screen has taken the keyboard and asks for the key grabs
             // to be released. d[0] = 1 means "locked", 0 means "unlocked".

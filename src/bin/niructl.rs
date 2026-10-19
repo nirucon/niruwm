@@ -446,16 +446,35 @@ fn run() -> Result<()> {
         // Exit the WM cleanly: the session script then tears down helpers.
         send(&c, root, atom(CMD_ATOM)?, [action, value, 0, 0, 0])?;
     } else if cmd == "reload" || cmd == "theme" {
-        // Bump the serial so BOTH the WM and the bar reload their settings.
-        send(&c, root, atom(CMD_ATOM)?, [action, value, 0, 0, 0])?;
-        let serial = atom(CONFIG_SERIAL)?;
+        // One serial for both the property the bar watches and the
+        // acknowledgement the window manager publishes. A fixed sleep could
+        // report success before the configuration was even parsed.
+        let serial = command_serial();
+        send(&c, root, atom(CMD_ATOM)?, [action, serial, 0, 0, 0])?;
         c.change_property32(
             PropMode::REPLACE,
             root,
-            serial,
+            atom(CONFIG_SERIAL)?,
             AtomEnum::CARDINAL,
-            &[std::process::id()],
+            &[serial],
         )?;
+        c.flush()?;
+        if property_u32(&c, root, atom("_NIRUWM_ACK_CONTROL")?) == Some(1) {
+            wait_reload_ack(&c, root, &atom, serial)?;
+            if cmd == "theme" {
+                verify_theme(&c, root, &atom, args.get(1).ok_or(USAGE)?)?;
+            }
+        } else {
+            // A manager from before the acknowledgement property still
+            // accepts the command. Keep the old short pause for that running
+            // session and say clearly that it is not a confirmed result.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            eprintln!(
+                "niructl: the running window manager cannot confirm reload; \
+                 log out/in to activate NIRUWM 0.16.9"
+            );
+        }
+        return Ok(());
     } else {
         send(&c, root, atom(CMD_ATOM)?, [action, value, 0, 0, 0])?;
     }
@@ -466,6 +485,69 @@ fn run() -> Result<()> {
     // WM; with it, `niructl` is synchronous like `wmctrl -s`.
     if action != 5 {
         wait_applied(&c, root, &atom, action, value)?;
+    }
+    Ok(())
+}
+
+/// A non-zero, 31-bit serial so the high bit stays free for "rejected".
+fn command_serial() -> u32 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u32)
+        .unwrap_or(0);
+    let serial = (nanos ^ std::process::id()) & 0x7fff_ffff;
+    serial.max(1)
+}
+
+/// Wait for the window manager to publish the result of this exact reload.
+///
+/// `_NIRUWM_CONFIG_ACK` carries the serial on success and the same serial with
+/// the high bit set when the configuration was rejected and the previous state
+/// is still active.
+fn wait_reload_ack(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    serial: u32,
+) -> Result<()> {
+    let ack = atom("_NIRUWM_CONFIG_ACK")?;
+    for _ in 0..200 {
+        if let Some(value) = property_u32(c, root, ack) {
+            if value & 0x7fff_ffff == serial {
+                if value & 0x8000_0000 != 0 {
+                    return Err(
+                        "window manager rejected the configuration; the previous state is still active"
+                            .into(),
+                    );
+                }
+                return Ok(());
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err("window manager did not acknowledge the reload".into())
+}
+
+/// Confirm that the theme in effect is the one that was requested.
+fn verify_theme(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    want: &str,
+) -> Result<()> {
+    let reply = c
+        .get_property(
+            false,
+            root,
+            atom("_NIRUWM_THEME")?,
+            atom("UTF8_STRING")?,
+            0,
+            128,
+        )?
+        .reply()?;
+    let got = String::from_utf8_lossy(&reply.value).to_string();
+    if got != want {
+        return Err(format!("window manager reports theme {got}, expected {want}").into());
     }
     Ok(())
 }
@@ -483,8 +565,8 @@ fn wait_applied(
         _ => None,
     };
     let Some((prop, want)) = check else {
-        // Layout, reload and theme have no single readable property; a short
-        // pause is enough for them to take effect.
+        // Layout has no single readable property. Reload and theme no longer
+        // take this path: both wait for `_NIRUWM_CONFIG_ACK`.
         std::thread::sleep(std::time::Duration::from_millis(30));
         return Ok(());
     };

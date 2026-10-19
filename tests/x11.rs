@@ -217,3 +217,81 @@ fn partial_key_overrides_preserve_defaults_and_helpers_are_reaped() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn reload_and_theme_acknowledge_applied_state() {
+    let dir = std::env::temp_dir().join(format!("niruwm-ack-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    let config = dir.join("niruwm/config.toml");
+    std::fs::write(&config, "theme = \"niru-noir\"\n[bar]\nenabled = false\n").unwrap();
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let theme = || {
+        c.get_property(
+            false,
+            root,
+            atom(&c, "_NIRUWM_THEME"),
+            AtomEnum::ANY,
+            0,
+            128,
+        )
+        .unwrap()
+        .reply()
+        .unwrap()
+        .value
+    };
+    wait(|| theme() == b"niru-noir");
+    assert_eq!(values(&c, root, "_NIRUWM_ACK_CONTROL"), vec![1]);
+
+    // A control reload carries a serial and is only acknowledged after the
+    // configuration was actually applied.
+    message(&c, root, root, "_NIRUWM_COMMAND", [4, 4242, 0, 0, 0]);
+    wait(|| values(&c, root, "_NIRUWM_CONFIG_ACK") == vec![4242]);
+
+    let niructl = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = niructl(&["theme", "niru-nord"]);
+    assert!(
+        out.status.success(),
+        "theme failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    wait(|| theme() == b"niru-nord");
+
+    // The old implementation slept 30 ms and reported success even when the
+    // window manager rejected the file. This must now fail observably while
+    // the working theme stays in effect.
+    std::fs::write(&config, "theme = \"niru-nord\"\n[bar\n").unwrap();
+    let out = niructl(&["reload"]);
+    assert!(!out.status.success(), "invalid config reported success");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("rejected"),
+        "unexpected error: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ack = values(&c, root, "_NIRUWM_CONFIG_ACK");
+    assert!(ack.first().is_some_and(|v| v & 0x8000_0000 != 0));
+    assert_eq!(theme(), b"niru-nord");
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -59,7 +59,7 @@ Themes: `niru-noir` (default), `niru-nord`, `niru-satie`, `niru-carl-larsson`.
 Custom themes: `~/.config/niruwm/themes/NAME.toml`. Session options:
 `~/.config/niruwm/session.conf`; idle timings: `~/.config/niruui/screensaver.toml`.
 
-**0.16.8:** `niructl` can select every listed layout (including centeredfloat) and `status` reports the real WM name. **0.16.7:** laptop backlight keys, `niructl brightness` and `niructl nightlight`
+**0.16.9:** `niructl reload` and `niructl theme` wait for an observable window-manager acknowledgement; a rejected configuration is reported as failure and the previous state stays active. **0.16.8:** `niructl` can select every listed layout (including centeredfloat) and `status` reports the real WM name. **0.16.7:** laptop backlight keys, `niructl brightness` and `niructl nightlight`
 (manual Kelvin, persistent off/on state) plus a bar brightness module. Also includes
 global EWMH desktop numbers with a monitor-layout property consumed by
 one bar per output, identity-based hotplug re-homing, and monitor-config/wallpaper

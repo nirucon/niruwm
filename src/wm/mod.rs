@@ -163,6 +163,9 @@ impl Wm {
             "WM_STATE",
             "WM_TAKE_FOCUS",
             "_NIRUWM_COMMAND",
+            "_NIRUWM_CONFIG_ACK",
+            "_NIRUWM_ACK_CONTROL",
+            "_NIRUWM_THEME",
             "_NIRUWM_BAR_CONTROL",
             "_NIRUWM_BAR_RESTART_SERIAL",
             "_NIRUWM_QUIT",
@@ -306,6 +309,29 @@ impl Wm {
             self.atom("UTF8_STRING"),
             b"1\x002\x003\x004\x005\x006\x007\x008\x009\x00",
         )?;
+        // The running control client can rely on an acknowledgement after a
+        // reload or theme change instead of guessing with a sleep. Old
+        // managers lack this property, so `niructl` can stay compatible.
+        self.prop(
+            self.root,
+            "_NIRUWM_ACK_CONTROL",
+            AtomEnum::CARDINAL.into(),
+            &[1],
+        )?;
+        self.publish_theme()?;
+        Ok(())
+    }
+
+    /// Publish the theme that is actually in effect, not just the one in the
+    /// configuration file.
+    fn publish_theme(&self) -> Result<()> {
+        self.c.change_property8(
+            PropMode::REPLACE,
+            self.root,
+            self.atom("_NIRUWM_THEME"),
+            self.atom("UTF8_STRING"),
+            self.cfg.theme.as_bytes(),
+        )?;
         Ok(())
     }
 
@@ -437,19 +463,23 @@ impl Wm {
 
     /// Reload configuration, theme and bindings. A broken file keeps the
     /// working runtime instead of leaving a half-applied state.
-    pub(crate) fn reload(&mut self) -> Result<()> {
+    ///
+    /// The boolean says whether the new configuration was applied; `false`
+    /// means the previous working state is still in use. `niructl` exposes
+    /// that distinction instead of reporting a fixed sleep as success.
+    pub(crate) fn reload(&mut self) -> Result<bool> {
         let cfg = match Config::load() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("niruwm: reload rejected: {e}");
-                return Ok(());
+                return Ok(false);
             }
         };
         let theme = match Theme::load(&cfg.theme) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("niruwm: reload rejected: {e}");
-                return Ok(());
+                return Ok(false);
             }
         };
         let old_height = self.cfg.bar_height;
@@ -457,6 +487,7 @@ impl Wm {
         let old_monitors = self.monitor_cfg.clone();
         self.cfg = cfg;
         self.theme = theme;
+        self.publish_theme()?;
         self.monitor_cfg = monitor_config(&self.cfg);
         self.wallpaper = Wallpaper::new(&self.cfg.wallpaper);
         if let Err(e) = self.wallpaper.apply() {
@@ -471,7 +502,7 @@ impl Wm {
             self.start_bar();
         }
         self.update_borders()?;
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn start(&mut self, program: &[String]) {
