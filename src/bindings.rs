@@ -61,6 +61,10 @@ pub enum Action {
     Scratchpad,
     /// A hardware media key: volume, mute or playback.
     MediaKey(String),
+    /// Change laptop backlight brightness by a percentage step.
+    BrightnessStep(i16),
+    /// Toggle the configured manual night light.
+    NightlightToggle,
     SwapPrev,
 }
 
@@ -196,7 +200,7 @@ impl Action {
         add("super+shift+q", "shell nirupi-power.sh");
         add("super+ctrl+t", "shell nirupi theme menu");
         add("super+shift+r", "shell nirupi-reload.sh");
-        add("super+n", "shell nirupi-nightlight.sh");
+        add("super+n", "nightlight_toggle");
         add("super+shift+c", "shell nirupi-caffeine.sh");
         add("super+shift+d", "shell nirupi-focus.sh");
         add("super+shift+l", "shell nirupi-keyboard.sh");
@@ -229,6 +233,8 @@ impl Action {
         add("XF86AudioPause", "media_key XF86AudioPause");
         add("XF86AudioNext", "media_key XF86AudioNext");
         add("XF86AudioPrev", "media_key XF86AudioPrev");
+        add("XF86MonBrightnessUp", "brightness_step 5");
+        add("XF86MonBrightnessDown", "brightness_step -5");
 
         // ── Layouts ─────────────────────────────────────────────────────────
         add("super+t", "layout tile");
@@ -395,6 +401,12 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "scratchpad" => Action::Scratchpad,
         // Hardware keys. The X names are what `keysym_named` resolves.
         "media_key" => Action::MediaKey(arg()?.to_string()),
+        "brightness_step" => Action::BrightnessStep(
+            arg()?
+                .parse::<i16>()
+                .map_err(|_| "brightness_step: not a number".to_string())?,
+        ),
+        "nightlight_toggle" => Action::NightlightToggle,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {

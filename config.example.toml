@@ -80,6 +80,13 @@ shuffle_on_start = true
 # `profiles` overrides one screen by its RandR name (see `xrandr --listmonitors`
 # or `niructl monitors`). Use it when a screen should have named workspaces, a
 # different count, or be the one that holds focus at login.
+[nightlight]
+# Manual night light, applied by `niructl nightlight on` / Super+N.
+# 0,0 means no location; manual temperature still works.
+latitude = 58.22
+longitude = 11.92
+temperature = 3400
+
 [monitors]
 workspaces = 9
 

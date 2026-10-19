@@ -140,6 +140,13 @@ impl Wm {
             }
             Action::Lock => self.lock_screen(),
             Action::Scratchpad => self.toggle_scratchpad()?,
+            Action::BrightnessStep(step) => {
+                let direction = if step >= 0 { "up" } else { "down" };
+                self.spawn_detached(&["niructl".into(), "brightness".into(), direction.into()]);
+            }
+            Action::NightlightToggle => {
+                self.spawn_detached(&["niructl".into(), "nightlight".into(), "toggle".into()]);
+            }
             Action::MediaKey(name) => {
                 // `media_key` knows which command each key needs. The previous
                 // version guessed a program from the key name first and dropped

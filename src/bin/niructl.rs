@@ -26,16 +26,207 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
-theme NAME | themes | monitors | reload | restart-bar | quit | \
-save | save-session | clear-session";
+theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
+clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
+
+fn which(name: &str) -> bool {
+    std::env::var("PATH")
+        .map(|p| {
+            p.split(':')
+                .filter(|d| !d.is_empty())
+                .any(|d| std::path::Path::new(d).join(name).is_file())
+        })
+        .unwrap_or(false)
+}
+
+fn command(program: &str, args: &[String]) -> Result<std::process::Output> {
+    let out = std::process::Command::new(program).args(args).output()?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(format!(
+            "{program} failed{}",
+            if err.is_empty() {
+                String::new()
+            } else {
+                format!(": {err}")
+            }
+        )
+        .into());
+    }
+    Ok(out)
+}
+
+fn backlight_percent() -> Option<u32> {
+    let out = std::process::Command::new("brightnessctl")
+        .args(["-m"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.split(',').nth(3)?.trim_end_matches('%').parse().ok()
+}
+
+fn notify(summary: &str, body: &str, value: Option<u32>) {
+    let mut args = vec![
+        "-a".to_string(),
+        "NIRU".to_string(),
+        "-r".to_string(),
+        "9201".to_string(),
+        "-t".to_string(),
+        "1200".to_string(),
+    ];
+    if let Some(value) = value {
+        args.push("-h".to_string());
+        args.push(format!("int:value:{value}"));
+    }
+    args.push(summary.to_string());
+    args.push(body.to_string());
+    let _ = std::process::Command::new("notify-send").args(args).spawn();
+}
+
+fn brightness(args: &[String]) -> Result<()> {
+    if !which("brightnessctl") {
+        return Err("brightnessctl is not installed".into());
+    }
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    let set = |value: &str| -> Result<()> {
+        command("brightnessctl", &["-q".into(), "set".into(), value.into()])?;
+        Ok(())
+    };
+    match action {
+        "up" => set("5%+")?,
+        "down" => set("5%-")?,
+        "set" => {
+            let value: u32 = args
+                .get(1)
+                .ok_or("brightness set needs a percentage")?
+                .parse()
+                .map_err(|_| "brightness set: not a number")?;
+            if value > 100 {
+                return Err("brightness set: use 0..100".into());
+            }
+            set(&format!("{value}%"))?;
+        }
+        "status" => {
+            let percent = backlight_percent().ok_or("no backlight device is available")?;
+            println!("{percent}%");
+            return Ok(());
+        }
+        _ => return Err("brightness needs up, down, set N or status".into()),
+    }
+    let percent = backlight_percent();
+    notify(
+        "Brightness",
+        &format!(
+            "{}%",
+            percent
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "--".into())
+        ),
+        percent,
+    );
+    Ok(())
+}
+
+fn nightlight_state() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".local/state")
+        });
+    base.join("niruwm/nightlight")
+}
+
+fn nightlight(args: &[String]) -> Result<()> {
+    if !which("gammastep") {
+        return Err("gammastep is not installed".into());
+    }
+    let cfg = Config::load()?;
+    let nl = &cfg.nightlight;
+    let (latitude, longitude) = if nl.latitude != 0.0 || nl.longitude != 0.0 {
+        (nl.latitude, nl.longitude)
+    } else {
+        (cfg.weather_latitude, cfg.weather_longitude)
+    };
+    if latitude == 0.0 && longitude == 0.0 {
+        return Err(
+            "set [nightlight] latitude/longitude in config.toml (or weather coordinates)".into(),
+        );
+    }
+    let location = format!("{latitude}:{longitude}");
+    let state = nightlight_state();
+    let apply = |kelvin: u32| -> Result<()> {
+        command(
+            "gammastep",
+            &[
+                "-m".into(),
+                "randr".into(),
+                "-l".into(),
+                location.clone(),
+                "-O".into(),
+                kelvin.to_string(),
+                "-o".into(),
+            ],
+        )?;
+        if let Some(parent) = state.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&state, kelvin.to_string())?;
+        notify("Night light", &format!("{kelvin} K"), None);
+        Ok(())
+    };
+    let off = || -> Result<()> {
+        command("gammastep", &["-x".into()])?;
+        let _ = std::fs::remove_file(&state);
+        notify("Night light", "off", None);
+        Ok(())
+    };
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "on" => apply(nl.temperature)?,
+        "off" => off()?,
+        "toggle" => {
+            if state.exists() {
+                off()?
+            } else {
+                apply(nl.temperature)?
+            }
+        }
+        "temperature" => {
+            let kelvin: u32 = args
+                .get(1)
+                .ok_or("nightlight temperature needs Kelvin")?
+                .parse()
+                .map_err(|_| "nightlight temperature: not a number")?;
+            if !(1000..=10000).contains(&kelvin) {
+                return Err("temperature must be 1000..10000 K".into());
+            }
+            apply(kelvin)?;
+        }
+        "status" => match std::fs::read_to_string(&state) {
+            Ok(kelvin) => println!("on {kelvin} K at {location}"),
+            Err(_) => println!("off"),
+        },
+        _ => return Err("nightlight needs on, off, toggle, status or temperature K".into()),
+    }
+    Ok(())
+}
 
 fn offline(cmd: &str) -> Result<()> {
     // The session file is a plain list, so these work without a window
     // manager too: useful from the console before starting a session.
     if cmd == "save-session" || cmd == "clear-session" {
         return session_from_file(cmd);
+    }
+    if cmd == "brightness" {
+        return brightness(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "nightlight" {
+        return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if cmd == "layouts" {
         // Print the layouts in the order Super+Ctrl+period cycles them, with
@@ -145,7 +336,10 @@ fn run() -> Result<()> {
     };
     // Listing themes and layouts reads only local files, so it works without
     // a display: people often run it over ssh or before X is up.
-    if cmd == "themes" || cmd == "layouts" {
+    if matches!(
+        cmd.as_str(),
+        "themes" | "layouts" | "brightness" | "nightlight"
+    ) {
         return offline(cmd);
     }
     let (c, s) = x11rb::connect(None)?;
@@ -181,6 +375,20 @@ fn run() -> Result<()> {
             if wm { "niruwm" } else { "none" },
             tag + 1,
             Theme::load(&Config::load()?.theme)?.name
+        );
+        println!(
+            "brightness={}",
+            backlight_percent()
+                .map(|p| format!("{p}%"))
+                .unwrap_or_else(|| "unavailable".into())
+        );
+        println!(
+            "nightlight={}",
+            if nightlight_state().exists() {
+                "on"
+            } else {
+                "off"
+            }
         );
         return Ok(());
     }

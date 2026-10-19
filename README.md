@@ -35,12 +35,14 @@ Existing NIRUX-owned installations are maintained with `nirux update`.
 | Super+T / Super+M | Tile / monocle |
 | Super+Shift+E / Super+Shift+S | Fullscreen / scratchpad |
 | Super+, / Super+. | Previous / next monitor |
+| Brightness keys / Super+N | Backlight step / night-light toggle |
 | Super+Escape / Super+R | Lock / reload |
 | Super+Q / Super+Ctrl+Shift+Q | Close window / log out |
 
 Settings: `~/.config/niruwm/config.toml` (XDG respected), shared with the bar.
 See [config.example.toml](config.example.toml) for layouts, rules, monitors,
-wallpaper and keybindings. Individual `[[keys]]` entries replace that key only;
+wallpaper, night light and keybindings. Backlight keys call `brightnessctl`;
+Super+N calls `niructl nightlight toggle` (Gammastep, explicit coordinates). Individual `[[keys]]` entries replace that key only;
 `action = "unbind"` releases a default shortcut.
 
 ```sh
@@ -57,7 +59,9 @@ Themes: `niru-noir` (default), `niru-nord`, `niru-satie`, `niru-carl-larsson`.
 Custom themes: `~/.config/niruwm/themes/NAME.toml`. Session options:
 `~/.config/niruwm/session.conf`; idle timings: `~/.config/niruui/screensaver.toml`.
 
-**0.16.6:** global EWMH desktop numbers with a monitor-layout property consumed by
+**0.16.7:** laptop backlight keys, `niructl brightness` and `niructl nightlight`
+(manual Kelvin, persistent off/on state) plus a bar brightness module. Also includes
+global EWMH desktop numbers with a monitor-layout property consumed by
 one bar per output, identity-based hotplug re-homing, and monitor-config/wallpaper
 refresh on reload. Also includes partial overrides/unbinding, event-loop child
 reaping, full-monitor fullscreen, idle wallpaper rotation and bar-independent borders.

@@ -35,6 +35,8 @@ pub struct Config {
     pub scratchpad: ScratchpadConfig,
     /// Window rules, applied when a window is first managed.
     pub rules: Vec<Rule>,
+    /// Manual night-light settings shared by `niructl` and the WM.
+    pub nightlight: NightlightConfig,
     /// Settings NIRUBAR reads from the same file. It refuses unknown fields as
     /// strictly as this program does, so every setting either program knows
     /// has to be accepted here, or the shared file is a config the other one
@@ -106,6 +108,27 @@ pub struct Rule {
     /// Open floating instead of tiled.
     #[allow(dead_code)]
     pub floating: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NightlightConfig {
+    /// Degrees, north positive. 0,0 means "not configured" for solar use.
+    pub latitude: f64,
+    /// Degrees, east positive.
+    pub longitude: f64,
+    /// Kelvin applied when night light is enabled.
+    pub temperature: u32,
+}
+
+impl Default for NightlightConfig {
+    fn default() -> Self {
+        Self {
+            latitude: 0.0,
+            longitude: 0.0,
+            temperature: 3400,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -251,6 +274,7 @@ impl Default for Config {
             keys: Vec::new(),
             wallpaper: WallpaperConfig::default(),
             monitors: MonitorsConfig::default(),
+            nightlight: NightlightConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             rules: Vec::new(),
             weather_latitude: 0.0,
@@ -389,6 +413,12 @@ impl Config {
             if p.name.is_empty() || p.workspaces.is_empty() {
                 return Err("monitors.profiles entries need a name and workspaces".into());
             }
+        }
+        if !(-90.0..=90.0).contains(&self.nightlight.latitude)
+            || !(-180.0..=180.0).contains(&self.nightlight.longitude)
+            || !(1000..=10000).contains(&self.nightlight.temperature)
+        {
+            return Err("nightlight latitude/longitude/temperature out of range".into());
         }
         if !(0.1..=0.95).contains(&self.scratchpad.width)
             || !(0.1..=0.95).contains(&self.scratchpad.height)
@@ -545,6 +575,10 @@ pub fn dump() -> Result<String> {
         "rotation_minutes = {}\n",
         c.wallpaper.rotation_minutes
     ));
+    out.push_str("\n[nightlight]\n");
+    out.push_str(&format!("latitude = {}\n", c.nightlight.latitude));
+    out.push_str(&format!("longitude = {}\n", c.nightlight.longitude));
+    out.push_str(&format!("temperature = {}\n", c.nightlight.temperature));
     out.push_str("\n[bar]\n");
     out.push_str(&format!("modules = {:?}\n", c.bar.modules));
     out.push_str(&format!("tags = {:?}\n", c.bar.tags));
