@@ -730,6 +730,10 @@ if wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -q MUTED; then
 else
   body="${v}%"
 fi
+# Prefer the suite OSD; a missing daemon falls back to notify-send.
+if command -v nirunotify >/dev/null 2>&1 && nirunotify --osd volume "$body" >/dev/null 2>&1; then
+  exit 0
+fi
 # A stable id per operation, so repeated presses replace the same bubble.
 case "$op" in up) id=9101 ;; down) id=9102 ;; *) id=9103 ;; esac
 notify-send -a NIRU -r "$id" -h int:value:"${v:-0}" -t 1200 "Volume" "$body" 2>/dev/null

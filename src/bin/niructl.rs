@@ -73,6 +73,22 @@ fn backlight_percent() -> Option<u32> {
 }
 
 fn notify(summary: &str, body: &str, value: Option<u32>) {
+    // Prefer the suite's coalesced hardware OSD when its daemon is running.
+    // The CLI exits nonzero without a socket, so a Dunst session falls back
+    // to the ordinary notification path.
+    if let Some(osd) = program("nirunotify") {
+        let channel = summary.to_lowercase().replace(' ', "-");
+        if std::process::Command::new(osd)
+            .args(["--osd", &channel, body])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            return;
+        }
+    }
     let mut args = vec![
         "-a".to_string(),
         "NIRU".to_string(),
