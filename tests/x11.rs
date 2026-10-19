@@ -236,7 +236,18 @@ fn reload_and_theme_acknowledge_applied_state() {
             .spawn()
             .unwrap(),
     );
-    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    // A property from the previous test survives its window manager. Wait for
+    // a check window that actually exists before sending events to the root.
+    wait(|| {
+        values(&c, root, "_NET_SUPPORTING_WM_CHECK")
+            .first()
+            .is_some_and(|owner| {
+                c.get_window_attributes(*owner)
+                    .ok()
+                    .and_then(|r| r.reply().ok())
+                    .is_some()
+            })
+    });
     let theme = || {
         c.get_property(
             false,
