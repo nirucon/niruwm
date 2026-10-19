@@ -98,9 +98,15 @@ impl Wm {
             self.scratchpad = Some(w);
             self.scratchpad_shown = true;
         }
+        // A restored window carries the placement saved for it. Matching
+        // happens after the scratchpad check so a terminal that happens to be
+        // the scratchpad never consumes a normal session record.
+        let pid = self.values(w, "_NET_WM_PID").first().copied();
+        let restored = self.take_restored(pid, is_scratchpad);
         let floating = dialog_floating
             || is_scratchpad
-            || rule.as_ref().and_then(|r| r.floating).unwrap_or(false);
+            || rule.as_ref().and_then(|r| r.floating).unwrap_or(false)
+            || restored.as_ref().is_some_and(|r| r.floating);
         // `_NET_WM_DESKTOP` is a global EWMH desktop number. Resolve it to
         // the owning monitor and that monitor's local workspace.
         let requested = requested_tag.and_then(|t| crate::monitor::find_global(&self.monitors, t));
@@ -115,14 +121,17 @@ impl Wm {
                 self.focused_monitor
             }
         };
-        let (monitor, tag) = match requested {
-            Some((monitor, tag)) => (monitor, tag as u32),
-            None => (
-                pointer_monitor,
-                rule.as_ref()
-                    .and_then(|r| r.workspace)
-                    .unwrap_or_else(|| self.active_tag()),
-            ),
+        let (monitor, tag) = match &restored {
+            Some(r) => (r.monitor.min(self.monitors.len().saturating_sub(1)), r.tag),
+            None => match requested {
+                Some((monitor, tag)) => (monitor, tag as u32),
+                None => (
+                    pointer_monitor,
+                    rule.as_ref()
+                        .and_then(|r| r.workspace)
+                        .unwrap_or_else(|| self.active_tag()),
+                ),
+            },
         };
         let monitor_name = self
             .monitors
@@ -143,8 +152,13 @@ impl Wm {
                 h: g.height,
             },
             take_focus,
-            pid: self.values(w, "_NET_WM_PID").first().copied(),
+            pid,
         });
+        if restored.as_ref().is_some_and(|r| r.focused) {
+            // Remember the window that had focus last time; switching to its
+            // workspace waits until the other restored windows have mapped.
+            self.restore_focus = Some((w, monitor, tag));
+        }
 
         if is_scratchpad {
             let screen = self
@@ -179,10 +193,16 @@ impl Wm {
             }
         }
         self.c.map_window(w)?;
-        if tag == self.active_tag() {
+        // A restored window must not move focus while its siblings are still
+        // starting; the saved focus is applied once restore has settled.
+        if restored.is_none() && tag == self.active_tag() {
             self.set_focus(w)?;
         }
-        self.arrange()
+        self.arrange()?;
+        if self.restore_remaining == 0 && self.restore_deadline.is_some() {
+            self.finish_restore()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn unmanage(&mut self, w: Window) {

@@ -27,7 +27,7 @@ jobs:
       - run: cargo test --locked
       - name: Key overrides, helper reaping and fullscreen regressions
         run: |
-          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool
+          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm
           xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' cargo test --locked --test x11 -- --ignored --test-threads=1
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
       - name: Build pinned bar and collect static test artifacts

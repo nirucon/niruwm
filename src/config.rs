@@ -341,7 +341,7 @@ fn legacy_path() -> PathBuf {
 impl Config {
     pub fn load() -> Result<Self> {
         let primary = directory().join("config.toml");
-        let text = match fs::read_to_string(&primary) {
+        let text = match fs::read_to_string(primary) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 match fs::read_to_string(legacy_path()) {

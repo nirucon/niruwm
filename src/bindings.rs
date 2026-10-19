@@ -155,7 +155,7 @@ fn expand_key(key: &str) -> Result<String, String> {
             if k.chars().count() == 1 {
                 return Ok(k.to_string());
             }
-            if k.starts_with("F") && k[1..].chars().all(|c| c.is_ascii_digit()) {
+            if k.starts_with('F') && k[1..].chars().all(|c| c.is_ascii_digit()) {
                 return Ok(k.to_string());
             }
             if k.starts_with("XF86") {

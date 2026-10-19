@@ -30,6 +30,8 @@ pub struct Entry {
     /// Screen index, 0-based.
     pub monitor: usize,
     pub floating: bool,
+    /// This window had the input focus when the session was saved.
+    pub focused: bool,
 }
 
 impl Entry {
@@ -37,11 +39,12 @@ impl Entry {
     /// spaces in its path survives.
     pub fn to_line(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             self.program.join("\u{1f}"),
             self.tag,
             self.monitor,
-            if self.floating { 1 } else { 0 }
+            if self.floating { 1 } else { 0 },
+            if self.focused { 1 } else { 0 }
         )
     }
 
@@ -61,11 +64,15 @@ impl Entry {
         let tag: u32 = fields.next()?.parse().ok()?;
         let monitor: usize = fields.next()?.parse().ok()?;
         let floating = fields.next().map(|f| f == "1").unwrap_or(false);
+        // The focus flag was added after the first session files. A missing
+        // field means "unknown", not "focus this window".
+        let focused = fields.next().map(|f| f == "1").unwrap_or(false);
         Some(Self {
             program,
             tag: tag.min(8),
             monitor: monitor.min(15),
             floating,
+            focused,
         })
     }
 }
@@ -131,6 +138,26 @@ pub fn ordered(entries: &[Entry]) -> Vec<Entry> {
     by_key.into_values().flatten().collect()
 }
 
+/// Group entries by the command that creates them.
+///
+/// A browser or terminal can own several windows from one process. Starting
+/// the same command once per window would either create duplicates or ignore
+/// the saved workspace for all but the first window.
+pub fn launches(entries: &[Entry]) -> Vec<(Vec<String>, Vec<Entry>)> {
+    let mut launches: Vec<(Vec<String>, Vec<Entry>)> = Vec::new();
+    for e in ordered(entries) {
+        if let Some((_, windows)) = launches
+            .iter_mut()
+            .find(|(command, _)| *command == e.program)
+        {
+            windows.push(e);
+        } else {
+            launches.push((e.program.clone(), vec![e]));
+        }
+    }
+    launches
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +169,7 @@ mod tests {
             tag: 3,
             monitor: 1,
             floating: true,
+            focused: true,
         };
         assert_eq!(Entry::from_line(&e.to_line()), Some(e));
     }
@@ -165,6 +193,7 @@ mod tests {
             tag,
             monitor,
             floating: false,
+            focused: false,
         };
         let entries = vec![mk("b", 2, 0), mk("a", 1, 0), mk("c", 0, 1), mk("d", 1, 0)];
         let order: Vec<String> = ordered(&entries)
@@ -172,5 +201,29 @@ mod tests {
             .map(|e| e.program[0].clone())
             .collect();
         assert_eq!(order, vec!["a", "d", "b", "c"]);
+    }
+
+    #[test]
+    fn shared_commands_start_once_and_keep_each_window() {
+        let mk = |program: &str, tag: u32| Entry {
+            program: vec![program.into()],
+            tag,
+            monitor: 0,
+            floating: false,
+            focused: false,
+        };
+        let entries = vec![mk("browser", 1), mk("browser", 3), mk("editor", 0)];
+        let launches = launches(&entries);
+        assert_eq!(launches.len(), 2);
+        let browser = launches
+            .iter()
+            .find(|(command, _)| command == &["browser".to_string()])
+            .expect("browser launch");
+        assert_eq!(browser.1.len(), 2);
+        let editor = launches
+            .iter()
+            .find(|(command, _)| command == &["editor".to_string()])
+            .expect("editor launch");
+        assert_eq!(editor.1.len(), 1);
     }
 }

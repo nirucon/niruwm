@@ -59,13 +59,13 @@ Themes: `niru-noir` (default), `niru-nord`, `niru-satie`, `niru-carl-larsson`.
 Custom themes: `~/.config/niruwm/themes/NAME.toml`. Session options:
 `~/.config/niruwm/session.conf`; idle timings: `~/.config/niruui/screensaver.toml`.
 
-**0.16.9:** `niructl reload` and `niructl theme` wait for an observable window-manager acknowledgement; a rejected configuration is reported as failure and the previous state stays active. **0.16.8:** `niructl` can select every listed layout (including centeredfloat) and `status` reports the real WM name. **0.16.7:** laptop backlight keys, `niructl brightness` and `niructl nightlight`
+**0.16.10:** session restore matches mapped windows back to their saved launch records instead of moving the active workspace while programs start; workspace/screen, floating state and saved focus are restored, shared commands start once, and the scratchpad is excluded. **0.16.9:** `niructl reload` and `niructl theme` wait for an observable window-manager acknowledgement; a rejected configuration is reported as failure and the previous state stays active. **0.16.8:** `niructl` can select every listed layout (including centeredfloat) and `status` reports the real WM name. **0.16.7:** laptop backlight keys, `niructl brightness` and `niructl nightlight`
 (manual Kelvin, persistent off/on state) plus a bar brightness module. Also includes
 global EWMH desktop numbers with a monitor-layout property consumed by
 one bar per output, identity-based hotplug re-homing, and monitor-config/wallpaper
 refresh on reload. Also includes partial overrides/unbinding, event-loop child
 reaping, full-monitor fullscreen, idle wallpaper rotation and bar-independent borders.
-Session restoration and suite-wide theme propagation still have tracked work in the [roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
+Suite-wide theme propagation still has tracked work in the [roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
 
 [Audit](https://github.com/nirucon/nirux/blob/main/AUDIT.md) ·
 [Hardware/session notes](docs/BARE-METAL.md) · [X11 regressions](tests/x11.rs)

@@ -14,7 +14,7 @@ use crate::layout::{Layout, Rect};
 use crate::monitor::{Monitor, MonitorConfig};
 use crate::wallpaper::Wallpaper;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     process::{Child, Command},
 };
 use x11rb::{
@@ -45,6 +45,21 @@ pub(crate) struct Client {
     /// toolkits and is what every desktop reads to answer the question.
     /// Without it, a saved session could not say what to start again.
     pid: Option<u32>,
+}
+
+/// One restored command and the windows it still has to map.
+pub(crate) struct PendingRestore {
+    pub(crate) command: Vec<String>,
+    pub(crate) pid: Option<u32>,
+    pub(crate) windows: VecDeque<PendingWindow>,
+}
+
+/// The saved placement for one window of a pending restore.
+pub(crate) struct PendingWindow {
+    pub(crate) tag: u32,
+    pub(crate) monitor: usize,
+    pub(crate) floating: bool,
+    pub(crate) focused: bool,
 }
 
 pub(crate) struct Wm {
@@ -85,6 +100,14 @@ pub(crate) struct Wm {
     pub(crate) keys_released: bool,
     /// When the bar was last started, to pace restarts.
     pub(crate) last_bar_start: std::time::Instant,
+    /// Commands started by session restore whose windows have not all mapped.
+    pub(crate) pending_restore: Vec<PendingRestore>,
+    /// Window to focus once restore has settled, with its saved screen/workspace.
+    pub(crate) restore_focus: Option<(Window, usize, u32)>,
+    /// Entries still waiting for a mapped window.
+    pub(crate) restore_remaining: usize,
+    /// When to stop waiting for programs that open fewer windows than saved.
+    pub(crate) restore_deadline: Option<std::time::Instant>,
 }
 
 impl Wm {
@@ -201,6 +224,10 @@ impl Wm {
             scratchpad_shown: false,
             keys_released: false,
             last_bar_start: std::time::Instant::now(),
+            pending_restore: Vec::new(),
+            restore_focus: None,
+            restore_remaining: 0,
+            restore_deadline: None,
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
         wm.focused_monitor = crate::monitor::primary(&monitors, &wm.monitor_cfg);
@@ -510,13 +537,22 @@ impl Wm {
     }
 
     pub(crate) fn spawn_owned(&mut self, program: &[String]) {
-        if let Some((cmd, args)) = program.split_first() {
-            match Command::new(cmd).args(args).spawn() {
-                Ok(child) => self.children.push(child),
-                Err(e) => {
-                    eprintln!("niruwm: cannot start {cmd}: {e}");
-                    self.missing_program(cmd, &e);
-                }
+        let _ = self.spawn_owned_pid(program);
+    }
+
+    /// Start an owned program and return its pid, for session matching.
+    pub(crate) fn spawn_owned_pid(&mut self, program: &[String]) -> Option<u32> {
+        let (cmd, args) = program.split_first()?;
+        match Command::new(cmd).args(args).spawn() {
+            Ok(child) => {
+                let pid = child.id();
+                self.children.push(child);
+                Some(pid)
+            }
+            Err(e) => {
+                eprintln!("niruwm: cannot start {cmd}: {e}");
+                self.missing_program(cmd, &e);
+                None
             }
         }
     }

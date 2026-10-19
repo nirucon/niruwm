@@ -306,3 +306,72 @@ fn reload_and_theme_acknowledge_applied_state() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore = "requires isolated X server and xterm"]
+fn session_restore_matches_windows_and_keeps_saved_focus() {
+    let dir = std::env::temp_dir().join(format!("niruwm-restore-{}", std::process::id()));
+    let state = dir.join("state");
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::create_dir_all(state.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "theme = \"niru-noir\"\nrestore_session = true\n[bar]\nenabled = false\n",
+    )
+    .unwrap();
+    // Two independent commands with different placements. The second one is
+    // floating on workspace 1 and had focus; the first is tiled on workspace 3.
+    let session = "xterm\u{1f}-title\u{1f}rest-two\u{1f}-e\u{1f}sleep\u{1f}3\t2\t0\t0\t1\n\
+         xterm\u{1f}-title\u{1f}rest-zero\u{1f}-e\u{1f}sleep\u{1f}3\t0\t0\t1\t0\n";
+    std::fs::write(state.join("niruwm/session.tsv"), session).unwrap();
+
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", &state)
+            .env("PATH", "/usr/bin:/bin")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        values(&c, root, "_NET_SUPPORTING_WM_CHECK")
+            .first()
+            .is_some_and(|owner| {
+                c.get_window_attributes(*owner)
+                    .ok()
+                    .and_then(|r| r.reply().ok())
+                    .is_some()
+            })
+    });
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    // Restore waits for the mapped windows, then shows the saved focus.
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![2]);
+    let clients = values(&c, root, "_NET_CLIENT_LIST");
+    let desktop = |w: Window| values(&c, w, "_NET_WM_DESKTOP").first().copied();
+    let focused = clients
+        .iter()
+        .copied()
+        .find(|w| desktop(*w) == Some(2))
+        .expect("the focused saved window on workspace 3");
+    let floating = clients
+        .iter()
+        .copied()
+        .find(|w| desktop(*w) == Some(0))
+        .expect("the tiled saved window on workspace 1");
+    assert_eq!(values(&c, root, "_NET_ACTIVE_WINDOW"), vec![focused]);
+    let focused_width = c.get_geometry(focused).unwrap().reply().unwrap().width;
+    let floating_width = c.get_geometry(floating).unwrap().reply().unwrap().width;
+    let screen_width = c.setup().roots[s].width_in_pixels;
+    assert_eq!(focused_width, screen_width, "focused window was not tiled");
+    assert!(
+        floating_width < screen_width / 2,
+        "saved floating state was not restored (width {floating_width})"
+    );
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

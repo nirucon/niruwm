@@ -54,6 +54,9 @@ impl Wm {
             // The same tick notices a bar that died. It is cheap: one
             // try_wait per child, once a second, and nothing else.
             self.restart_bars();
+            // A restored program may open fewer windows than it did when the
+            // session was saved. Stop waiting after the deadline.
+            self.finish_restore_if_due()?;
         }
     }
 

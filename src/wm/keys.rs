@@ -339,8 +339,9 @@ impl Wm {
     pub(crate) fn save_session(&self) -> Result<()> {
         let mut entries = Vec::new();
         for c in &self.clients {
-            if self.hidden.contains(&c.win) && c.win == self.scratchpad.unwrap_or(0) {
-                // A scratchpad is part of the window manager, not a session.
+            // A scratchpad is part of the window manager, not a session,
+            // whether it is shown or hidden when the session ends.
+            if self.scratchpad == Some(c.win) {
                 continue;
             }
             let Some(pid) = c.pid else { continue };
@@ -352,6 +353,7 @@ impl Wm {
                 tag: c.tag,
                 monitor: c.monitor,
                 floating: c.floating,
+                focused: self.focus == Some(c.win),
             });
         }
         crate::session_state::save(&entries)?;
@@ -369,33 +371,77 @@ impl Wm {
         if entries.is_empty() {
             return Ok(());
         }
-        let mut missing: Vec<String> = Vec::new();
+        let mut valid = Vec::new();
+        let mut missing = Vec::new();
         for e in crate::session_state::ordered(&entries) {
-            let Some((program, args)) = e.program.split_first() else {
+            // Old session files could contain the scratchpad even though it is
+            // not part of the desktop the user arranged.
+            if e.program == self.cfg.scratchpad.command {
+                continue;
+            }
+            let Some(program) = e.program.first() else {
                 continue;
             };
-            let path = std::path::Path::new(program);
             let present = if program.contains('/') {
-                path.is_file()
+                std::path::Path::new(program).is_file()
             } else {
                 which(program)
             };
             if !present {
-                missing.push(program.clone());
+                if !missing.contains(program) {
+                    missing.push(program.clone());
+                }
                 continue;
             }
-            // Tag and screen are where the program lands. `manage` places a
-            // new window on the active workspace, so the view moves there
-            // first and stays on the last one: the user starts on a screen
-            // that has a window, not an empty one.
+            // The file was written on the screens and workspace counts of the
+            // previous session. Clamp it to what exists now instead of asking
+            // a manager to show workspace 8 on a screen that has four.
             let screen = e.monitor.min(self.monitors.len().saturating_sub(1));
-            if let Some(m) = self.monitors.get_mut(screen) {
-                m.active = e.tag as usize;
-            }
-            self.focused_monitor = screen;
-            self.start(&e.program);
-            let _ = args;
+            let max_tag = self
+                .monitors
+                .get(screen)
+                .map(|m| m.workspaces.len().saturating_sub(1) as u32)
+                .unwrap_or(8);
+            valid.push(crate::session_state::Entry {
+                tag: e.tag.min(max_tag),
+                monitor: screen,
+                ..e
+            });
         }
+
+        // One process can own several saved windows. Start each distinct
+        // command once and let the mapped windows consume their own records.
+        let mut pending = Vec::new();
+        let mut remaining = 0;
+        for (command, windows) in crate::session_state::launches(&valid) {
+            let Some(pid) = self.spawn_owned_pid(&command) else {
+                continue;
+            };
+            remaining += windows.len();
+            pending.push(super::PendingRestore {
+                command,
+                pid: Some(pid),
+                windows: windows
+                    .into_iter()
+                    .map(|e| super::PendingWindow {
+                        tag: e.tag,
+                        monitor: e.monitor,
+                        floating: e.floating,
+                        focused: e.focused,
+                    })
+                    .collect(),
+            });
+        }
+        if !pending.is_empty() {
+            self.pending_restore = pending;
+            self.restore_remaining = remaining;
+            // Programs started by a session can take a while to map. Stop
+            // waiting after ten seconds so a saved window the program does not
+            // recreate cannot own a later, unrelated window.
+            self.restore_deadline =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+        }
+
         if !missing.is_empty() {
             eprintln!(
                 "niruwm: session: {} program(s) are not installed: {}",
@@ -410,6 +456,84 @@ impl Wm {
                 "Session partly restored".into(),
                 format!("Not installed: {list}"),
             ]);
+        }
+        Ok(())
+    }
+
+    /// Take the saved placement for a window that belongs to a restore launch.
+    ///
+    /// Matching uses `_NET_WM_PID` first. A program that forks or execs reports
+    /// a different pid, so its command line is the second chance. Only a single
+    /// pending launch with no pid information at all falls back to order.
+    pub(crate) fn take_restored(
+        &mut self,
+        pid: Option<u32>,
+        scratchpad: bool,
+    ) -> Option<super::PendingWindow> {
+        self.restore_deadline?;
+        let index = self
+            .pending_restore
+            .iter()
+            .position(|r| pid.is_some() && r.pid == pid)
+            .or_else(|| {
+                let command = pid.and_then(command_line)?;
+                self.pending_restore
+                    .iter()
+                    .position(|r| same_command(&r.command, &command))
+            })
+            // Some X clients still do not publish `_NET_WM_PID`. During the
+            // bounded restore window, order is then the only signal we have;
+            // the oldest record is still better than dropping the placement.
+            .or_else(|| pid.is_none().then_some(0))?;
+        let entry = self.pending_restore[index].windows.pop_front()?;
+        self.restore_remaining = self.restore_remaining.saturating_sub(1);
+        if self.pending_restore[index].windows.is_empty() {
+            self.pending_restore.remove(index);
+        }
+        // An old session may still name the scratchpad. Consume its record but
+        // let `manage` treat the window as the scratchpad it is.
+        if scratchpad {
+            return None;
+        }
+        Some(entry)
+    }
+
+    /// Finish restore when every saved window has mapped, or when the deadline
+    /// passes for programs that open fewer windows than they did last time.
+    pub(crate) fn finish_restore_if_due(&mut self) -> Result<()> {
+        if let Some(deadline) = self.restore_deadline {
+            if std::time::Instant::now() >= deadline {
+                self.finish_restore()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop waiting for more restored windows and show the saved focus.
+    ///
+    /// Restoring does not switch workspaces while programs start. When they
+    /// have all mapped, the screen and workspace that held focus are shown
+    /// again, so the session opens where the user left it.
+    pub(crate) fn finish_restore(&mut self) -> Result<()> {
+        if self.restore_deadline.take().is_none() {
+            return Ok(());
+        }
+        self.pending_restore.clear();
+        self.restore_remaining = 0;
+        let Some((window, monitor, tag)) = self.restore_focus.take() else {
+            return Ok(());
+        };
+        if !self.clients.iter().any(|c| c.win == window) {
+            return Ok(());
+        }
+        let monitor = monitor.min(self.monitors.len().saturating_sub(1));
+        self.focused_monitor = monitor;
+        if let Some(m) = self.monitors.get_mut(monitor) {
+            m.active = (tag as usize).min(m.workspaces.len().saturating_sub(1));
+        }
+        self.arrange()?;
+        if self.clients.iter().any(|c| c.win == window) {
+            self.set_focus(window)?;
         }
         Ok(())
     }
@@ -659,12 +783,29 @@ pub fn keysym_named(name: &str) -> Option<u32> {
     Some(v)
 }
 
+/// Compare a saved command with a running process command line.
+///
+/// A saved `kitty` and an exec'd `/usr/bin/kitty` are the same program. The
+/// arguments must still match exactly.
+fn same_command(saved: &[String], running: &[String]) -> bool {
+    fn base(s: &str) -> &str {
+        s.rsplit('/').next().unwrap_or(s)
+    }
+    if saved == running {
+        return true;
+    }
+    saved.len() == running.len()
+        && !saved.is_empty()
+        && base(&saved[0]) == base(&running[0])
+        && saved[1..] == running[1..]
+}
+
 /// The full command line of a process, from `/proc`.
 ///
 /// The session has to start the exact program that was running: a browser
 /// started with a profile argument must come back with it. `/proc/PID/cmdline`
 /// is NUL separated and keeps the arguments as they were.
-fn command_line(pid: u32) -> Option<Vec<String>> {
+pub(super) fn command_line(pid: u32) -> Option<Vec<String>> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
     let parts: Vec<String> = raw
         .split(|b| *b == 0)
