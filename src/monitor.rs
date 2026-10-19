@@ -65,7 +65,7 @@ impl Monitor {
 }
 
 /// Optional per-screen settings from `[monitors]`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MonitorConfig {
     /// Number of workspaces a screen gets when it has no entry below.
     pub workspaces: usize,
@@ -123,6 +123,33 @@ pub fn build(mut outputs: Vec<(String, Rect, bool)>, cfg: &MonitorConfig) -> (Ve
         .collect::<Vec<_>>();
     let many = monitors.len() > 1;
     (monitors, many)
+}
+
+/// First global EWMH desktop index belonging to monitor `index`.
+pub fn offset(monitors: &[Monitor], index: usize) -> u32 {
+    monitors
+        .iter()
+        .take(index)
+        .map(|m| m.workspaces.len() as u32)
+        .sum()
+}
+
+/// The focused global desktop number, including the monitor's offset.
+pub fn global_active(monitors: &[Monitor], index: usize) -> u32 {
+    offset(monitors, index) + monitors.get(index).map(|m| m.active as u32).unwrap_or(0)
+}
+
+/// Resolve a global desktop index to `(monitor, local workspace)`.
+pub fn find_global(monitors: &[Monitor], global: u32) -> Option<(usize, usize)> {
+    let mut start = 0u32;
+    for (index, monitor) in monitors.iter().enumerate() {
+        let end = start + monitor.workspaces.len() as u32;
+        if global >= start && global < end {
+            return Some((index, (global - start) as usize));
+        }
+        start = end;
+    }
+    None
 }
 
 /// Index of the screen that should hold focus at login: the configured primary
@@ -235,6 +262,25 @@ mod tests {
         );
         assert_eq!(m[0].name, "eDP-1");
         assert_eq!(m[1].name, "HDMI-1");
+    }
+
+    #[test]
+    fn global_desktops_map_to_monitor_local_workspaces() {
+        let (m, _) = build(
+            vec![
+                ("eDP-1".into(), rect(0, 0, 1000, 800), true),
+                ("HDMI-1".into(), rect(1000, 0, 1000, 800), true),
+            ],
+            &MonitorConfig::default(),
+        );
+        assert_eq!(offset(&m, 0), 0);
+        assert_eq!(offset(&m, 1), 9);
+        assert_eq!(global_active(&m, 1), 9);
+        assert_eq!(find_global(&m, 0), Some((0, 0)));
+        assert_eq!(find_global(&m, 8), Some((0, 8)));
+        assert_eq!(find_global(&m, 9), Some((1, 0)));
+        assert_eq!(find_global(&m, 17), Some((1, 8)));
+        assert_eq!(find_global(&m, 18), None);
     }
 
     #[test]

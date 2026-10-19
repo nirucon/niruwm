@@ -204,8 +204,19 @@ impl Wm {
             // the binding table uses the numbers a user types. Convert here
             // so both paths land on the same workspace.
             let action = match d[0] {
-                1 if d[1] < 9 => Some(Action::FocusTag(d[1] + 1)),
-                2 if d[1] < 9 => Some(Action::MoveToTag(d[1] + 1)),
+                // The control channel carries zero-based *global* desktops.
+                1 => {
+                    self.view_global(d[1])?;
+                    None
+                }
+                2 => {
+                    self.move_to_global(d[1])?;
+                    None
+                }
+                9 => {
+                    self.view_global(d[1])?;
+                    None
+                }
                 3 => Some(Action::SetLayout(match d[1] {
                     1 => LayoutId::Monocle,
                     2 => LayoutId::Left,
@@ -242,16 +253,15 @@ impl Wm {
                 self.grab()?;
             }
             self.c.flush()?;
-        } else if e.type_ == self.atom("_NET_CURRENT_DESKTOP") && d[0] < 9 {
-            // From NIRUBAR's clickable workspaces or an external pager.
-            self.view_tag(d[0])?;
+        } else if e.type_ == self.atom("_NET_CURRENT_DESKTOP") {
+            // From an external pager: a zero-based global desktop.
+            self.view_global(d[0])?;
         } else if e.type_ == self.atom("_NET_ACTIVE_WINDOW") {
-            if d[0] < 9 {
-                if let Some(c) = self.clients.iter().find(|c| c.win == e.window) {
-                    let tag = c.tag;
-                    self.view_tag(tag)?;
-                    self.set_focus(e.window)?;
-                }
+            if let Some(c) = self.clients.iter().find(|c| c.win == e.window) {
+                let (monitor, tag) = (c.monitor, c.tag);
+                self.focused_monitor = monitor;
+                self.view_tag(tag)?;
+                self.set_focus(e.window)?;
             }
         } else if e.type_ == self.atom("_NET_WM_STATE") {
             self.handle_wm_state(e)?;

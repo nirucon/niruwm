@@ -101,15 +101,11 @@ impl Wm {
         let floating = dialog_floating
             || is_scratchpad
             || rule.as_ref().and_then(|r| r.floating).unwrap_or(false);
-        let tag = match requested_tag {
-            Some(t) if t < 9 => t,
-            _ => rule
-                .as_ref()
-                .and_then(|r| r.workspace)
-                .unwrap_or_else(|| self.active_tag()),
-        };
+        // `_NET_WM_DESKTOP` is a global EWMH desktop number. Resolve it to
+        // the owning monitor and that monitor's local workspace.
+        let requested = requested_tag.and_then(|t| crate::monitor::find_global(&self.monitors, t));
         let (px, py) = self.pointer_position();
-        let monitor = if self.monitors.is_empty() {
+        let pointer_monitor = if self.monitors.is_empty() {
             0
         } else {
             let by_pointer = crate::monitor::monitor_at(&self.monitors, px, py);
@@ -119,9 +115,24 @@ impl Wm {
                 self.focused_monitor
             }
         };
+        let (monitor, tag) = match requested {
+            Some((monitor, tag)) => (monitor, tag as u32),
+            None => (
+                pointer_monitor,
+                rule.as_ref()
+                    .and_then(|r| r.workspace)
+                    .unwrap_or_else(|| self.active_tag()),
+            ),
+        };
+        let monitor_name = self
+            .monitors
+            .get(monitor)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
         self.clients.push(Client {
             win: w,
             monitor,
+            monitor_name,
             tag,
             floating,
             fullscreen: false,
@@ -541,11 +552,7 @@ impl Wm {
     /// workspace selected.
     fn publish_desktop_state(&mut self) -> Result<()> {
         let total: usize = self.monitors.iter().map(|m| m.workspaces.len()).sum();
-        let active = self
-            .monitors
-            .get(self.focused_monitor)
-            .map(|m| m.active)
-            .unwrap_or(0) as u32;
+        let active = crate::monitor::global_active(&self.monitors, self.focused_monitor);
         self.prop(
             self.root,
             "_NET_NUMBER_OF_DESKTOPS",
@@ -588,6 +595,40 @@ impl Wm {
                 names.as_bytes(),
             )?;
         }
+        // Every client advertises its global desktop for panels using EWMH.
+        for c in &self.clients {
+            let global = crate::monitor::offset(&self.monitors, c.monitor) + c.tag;
+            self.prop(
+                c.win,
+                "_NET_WM_DESKTOP",
+                AtomEnum::CARDINAL.into(),
+                &[global],
+            )?;
+        }
+        // The monitor layout contract lets one bar per output describe its own
+        // workspace range without guessing from the focused monitor.
+        let mut layout = String::new();
+        for (index, m) in self.monitors.iter().enumerate() {
+            let start = crate::monitor::offset(&self.monitors, index);
+            layout.push_str(&format!(
+                "{}	{}	{}	{}	{}	{}	{}
+",
+                m.name,
+                m.rect.x,
+                m.rect.y,
+                m.rect.w,
+                start,
+                m.workspaces.len(),
+                m.active
+            ));
+        }
+        self.c.change_property8(
+            PropMode::REPLACE,
+            self.root,
+            self.atom("_NIRUWM_MONITORS"),
+            self.atom("UTF8_STRING"),
+            layout.as_bytes(),
+        )?;
         Ok(())
     }
 
@@ -622,6 +663,38 @@ impl Wm {
             .get(self.focused_monitor)
             .map(|m| m.active as u32)
             .unwrap_or(0)
+    }
+
+    /// Switch to a global EWMH desktop, focusing its owning monitor.
+    pub(crate) fn view_global(&mut self, global: u32) -> Result<()> {
+        if let Some((monitor, workspace)) = crate::monitor::find_global(&self.monitors, global) {
+            self.focused_monitor = monitor;
+            if let Some(m) = self.monitors.get_mut(monitor) {
+                m.active = workspace;
+            }
+        }
+        self.arrange()
+    }
+
+    /// Move the focused window to a global desktop, changing monitor if needed.
+    pub(crate) fn move_to_global(&mut self, global: u32) -> Result<()> {
+        let Some((monitor, workspace)) = crate::monitor::find_global(&self.monitors, global) else {
+            return Ok(());
+        };
+        if let Some(w) = self.focus {
+            let monitor_name = self
+                .monitors
+                .get(monitor)
+                .map(|m| m.name.clone())
+                .unwrap_or_default();
+            if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                c.monitor = monitor;
+                c.monitor_name = monitor_name;
+                c.tag = workspace as u32;
+            }
+            self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[global])?;
+        }
+        self.arrange()
     }
 
     /// Switch the focused screen to one of its workspaces.
@@ -662,9 +735,11 @@ impl Wm {
             if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
                 c.tag = tag;
             }
-            self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
+            // Publish the global desktop number, not the monitor-local tag.
+            let global = crate::monitor::offset(&self.monitors, self.focused_monitor) + tag;
+            self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[global])?;
             if follow {
-                self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
+                self.view_tag(tag)?;
             }
         }
         self.arrange()

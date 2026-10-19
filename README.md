@@ -57,10 +57,11 @@ Themes: `niru-noir` (default), `niru-nord`, `niru-satie`, `niru-carl-larsson`.
 Custom themes: `~/.config/niruwm/themes/NAME.toml`. Session options:
 `~/.config/niruwm/session.conf`; idle timings: `~/.config/niruui/screensaver.toml`.
 
-**0.16.5:** consistent partial key overrides/unbinding, event-loop child reaping,
-full-monitor fullscreen, idle wallpaper rotation and border updates without a bar.
-Multi-monitor WM/bar protocol, session restoration and suite-wide theme propagation
-still have tracked work in the [roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
+**0.16.6:** global EWMH desktop numbers with a monitor-layout property consumed by
+one bar per output, identity-based hotplug re-homing, and monitor-config/wallpaper
+refresh on reload. Also includes partial overrides/unbinding, event-loop child
+reaping, full-monitor fullscreen, idle wallpaper rotation and bar-independent borders.
+Session restoration and suite-wide theme propagation still have tracked work in the [roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
 
 [Audit](https://github.com/nirucon/nirux/blob/main/AUDIT.md) ·
 [Hardware/session notes](docs/BARE-METAL.md) · [X11 regressions](tests/x11.rs)

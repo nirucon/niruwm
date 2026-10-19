@@ -36,6 +36,9 @@ pub(crate) struct Client {
     /// Set for windows that asked for WM_TAKE_FOCUS; focus is then delivered
     /// as a message rather than with SetInputFocus.
     take_focus: bool,
+    /// RandR output name, so hotplug can re-home a window by identity rather
+    /// than by a possibly reordered numeric index.
+    monitor_name: String,
     /// The process that asked to be opened, for the session file.
     ///
     /// X11 has no "what program is this window"; `_NET_WM_PID` is set by
@@ -99,21 +102,7 @@ impl Wm {
         let cfg = Config::load()?;
         let theme = Theme::load(&cfg.theme)?;
         let wallpaper = Wallpaper::new(&cfg.wallpaper);
-        let monitor_cfg = MonitorConfig {
-            workspaces: cfg.monitors.workspaces,
-            named: cfg
-                .monitors
-                .profiles
-                .iter()
-                .map(|p| (p.name.clone(), p.workspaces.clone()))
-                .collect(),
-            primary: cfg
-                .monitors
-                .profiles
-                .iter()
-                .find(|p| p.primary)
-                .map(|p| p.name.clone()),
-        };
+        let monitor_cfg = monitor_config(&cfg);
         let (c, s) = x11rb::connect(None)?;
         let root = c.setup().roots[s].root;
         let screen_w = c.setup().roots[s].width_in_pixels;
@@ -178,6 +167,7 @@ impl Wm {
             "_NIRUWM_BAR_RESTART_SERIAL",
             "_NIRUWM_QUIT",
             "_NIRUWM_LOCK",
+            "_NIRUWM_MONITORS",
         ] {
             atoms.insert(n, c.intern_atom(false, n.as_bytes())?.reply()?.atom);
         }
@@ -332,7 +322,7 @@ impl Wm {
     }
 
     pub(crate) fn refresh_monitors(&mut self) -> Result<()> {
-        let (monitors, multi) = randr::refresh(
+        let (mut monitors, multi) = randr::refresh(
             &self.c,
             self.root,
             self.screen_w,
@@ -341,17 +331,25 @@ impl Wm {
             &self.monitors,
         );
         let count = monitors.len().max(1);
+        let previous = self.monitors.clone();
+        // Re-home by output name: RandR may reorder outputs.
         for c in self.clients.iter_mut() {
-            if c.monitor >= count {
-                c.monitor = count - 1;
-                if let Some(m) = monitors.get(c.monitor) {
-                    c.tag = m.active as u32;
-                }
-            } else if let Some(m) = monitors.get(c.monitor) {
-                // The screen may now have fewer workspaces than before.
+            let index = monitors.iter().position(|m| m.name == c.monitor_name);
+            c.monitor = match index {
+                Some(i) => i,
+                None => self.focused_monitor.min(monitors.len().saturating_sub(1)),
+            };
+            if let Some(m) = monitors.get(c.monitor) {
+                c.monitor_name = m.name.clone();
                 if (c.tag as usize) >= m.workspaces.len() {
                     c.tag = m.active as u32;
                 }
+            }
+        }
+        // Master counts are a per-output preference, not an index preference.
+        for m in monitors.iter_mut() {
+            if let Some(old) = previous.iter().find(|p| p.name == m.name) {
+                m.nmaster = old.nmaster;
             }
         }
         if self.focused_monitor >= count {
@@ -388,7 +386,7 @@ impl Wm {
         // One bar per monitor. Each is told where it belongs, so it covers that
         // screen only and its workspace cells describe that screen.
         for m in &self.monitors {
-            let geometry = format!("{},{},{}", m.rect.x, m.rect.y, m.rect.w);
+            let geometry = format!("{},{},{},{}", m.rect.x, m.rect.y, m.rect.w, m.name);
             match Command::new("nirubar")
                 .arg("--monitor")
                 .arg(geometry)
@@ -456,11 +454,20 @@ impl Wm {
         };
         let old_height = self.cfg.bar_height;
         let old_enabled = self.cfg.bar.enabled;
+        let old_monitors = self.monitor_cfg.clone();
         self.cfg = cfg;
         self.theme = theme;
+        self.monitor_cfg = monitor_config(&self.cfg);
+        self.wallpaper = Wallpaper::new(&self.cfg.wallpaper);
+        if let Err(e) = self.wallpaper.apply() {
+            eprintln!("niruwm: wallpaper reload: {e}");
+        }
         self.resolve_bindings()?;
         self.grab()?;
-        if self.cfg.bar_height != old_height || self.cfg.bar.enabled != old_enabled {
+        if self.monitor_cfg != old_monitors {
+            // Workspace counts/names/primary changed: rebuild screens and bars.
+            self.refresh_monitors()?;
+        } else if self.cfg.bar_height != old_height || self.cfg.bar.enabled != old_enabled {
             self.start_bar();
         }
         self.update_borders()?;
@@ -515,6 +522,25 @@ impl Wm {
     pub(crate) fn reap_children(&mut self) {
         self.children
             .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+    }
+}
+
+/// The monitor preferences embedded in the shared configuration.
+fn monitor_config(cfg: &Config) -> MonitorConfig {
+    MonitorConfig {
+        workspaces: cfg.monitors.workspaces,
+        named: cfg
+            .monitors
+            .profiles
+            .iter()
+            .map(|p| (p.name.clone(), p.workspaces.clone()))
+            .collect(),
+        primary: cfg
+            .monitors
+            .profiles
+            .iter()
+            .find(|p| p.primary)
+            .map(|p| p.name.clone()),
     }
 }
 

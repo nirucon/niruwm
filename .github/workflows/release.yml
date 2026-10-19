@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: nirucon/nirubar
-          ref: ${{ inputs.nirubar_ref || 'v0.16.6' }}
+          ref: ${{ inputs.nirubar_ref || 'v0.17.0' }}
           path: nirubar
       - uses: dtolnay/rust-toolchain@stable
         with:
