@@ -28,7 +28,8 @@ use x11rb::{
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K | \
-lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status";
+lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
+idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -289,6 +290,113 @@ fn desktop(action: &str, args: &[String]) -> Result<()> {
     }
 }
 
+fn idle_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".local/state")
+        });
+    base.join("niruui/inhibit")
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Read the explicit idle-inhibition state. `Some(0)` never expires.
+fn idle_until() -> Option<u64> {
+    let text = std::fs::read_to_string(idle_path()).ok()?;
+    let until = text.trim().parse::<u64>().ok()?;
+    if until == 0 || until > now_secs() {
+        Some(until)
+    } else {
+        None
+    }
+}
+
+fn set_idle(until: Option<u64>) -> Result<()> {
+    let path = idle_path();
+    match until {
+        Some(value) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, format!("{value}\n"))?;
+        }
+        None => match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        },
+    }
+    Ok(())
+}
+
+fn xset(args: &[&str]) {
+    let _ = std::process::Command::new("xset")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn idle(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    let minutes = args.get(1).map(|v| v.parse::<u64>());
+    let minutes = match minutes {
+        Some(Ok(0)) => return Err("idle minutes must be at least 1".into()),
+        Some(Ok(n)) if n > 24 * 60 => return Err("idle minutes must be at most 1440".into()),
+        Some(Ok(n)) => Some(n),
+        Some(Err(_)) => return Err("idle minutes: not a number".into()),
+        None => None,
+    };
+    match action {
+        "on" => {
+            let until = minutes.map(|m| now_secs() + m * 60).unwrap_or(0);
+            set_idle(Some(until))?;
+            xset(&["s", "off", "-dpms"]);
+            println!(
+                "idle on{}",
+                minutes.map(|m| format!(" for {m} min")).unwrap_or_default()
+            );
+        }
+        "off" => {
+            set_idle(None)?;
+            xset(&["s", "default", "+dpms"]);
+            println!("idle off");
+        }
+        "toggle" => {
+            if idle_until().is_some() {
+                set_idle(None)?;
+                xset(&["s", "default", "+dpms"]);
+                println!("idle off");
+            } else {
+                let until = minutes.map(|m| now_secs() + m * 60).unwrap_or(0);
+                set_idle(Some(until))?;
+                xset(&["s", "off", "-dpms"]);
+                println!(
+                    "idle on{}",
+                    minutes.map(|m| format!(" for {m} min")).unwrap_or_default()
+                );
+            }
+        }
+        "status" => match idle_until() {
+            Some(0) => println!("idle on (no expiry)"),
+            Some(until) => {
+                let left = until.saturating_sub(now_secs());
+                println!("idle on, {} min remaining", left.div_ceil(60));
+            }
+            None => println!("idle off"),
+        },
+        _ => return Err("idle needs on, off, toggle or status".into()),
+    }
+    Ok(())
+}
+
 /// The lock window that currently owns the readiness marker, if any.
 ///
 /// A killed locker can leave the property on the root window. Its X window
@@ -382,6 +490,9 @@ fn offline(cmd: &str) -> Result<()> {
     }
     if cmd == "nightlight" {
         return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "idle" {
+        return idle(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if matches!(
         cmd,
@@ -510,6 +621,7 @@ fn run() -> Result<()> {
             | "reboot"
             | "shutdown"
             | "dnd"
+            | "idle"
     ) {
         return offline(cmd);
     }
@@ -902,6 +1014,7 @@ mod tests {
         std::env::set_var("CALLS", &calls);
         std::env::set_var("DND_STATE", &dnd_state);
         std::env::set_var("XDG_SESSION_ID", "42");
+        std::env::set_var("XDG_STATE_HOME", &dir);
         let calls_now = || std::fs::read_to_string(&calls).unwrap_or_default();
         let wait_for = |what: &str| {
             for _ in 0..100 {
@@ -925,6 +1038,14 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dnd_state).unwrap().trim(), "true");
         dnd(&["toggle".to_string()]).unwrap();
         assert_eq!(std::fs::read_to_string(&dnd_state).unwrap().trim(), "false");
+        idle(&["on".to_string(), "1".to_string()]).unwrap();
+        assert!(idle_until().is_some());
+        idle(&["off".to_string()]).unwrap();
+        assert!(idle_until().is_none());
+        let path = idle_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "1\n").unwrap();
+        assert!(idle_until().is_none(), "expired inhibition stayed active");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

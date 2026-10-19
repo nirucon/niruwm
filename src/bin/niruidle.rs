@@ -156,6 +156,41 @@ fn xset_dpms(force: &str) {
         .status();
 }
 
+fn inhibit_path() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".local/state")
+        });
+    base.join("niruui/inhibit")
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Explicit expiry in the shared state file; `0` means until turned off.
+fn inhibit_active_from(path: &std::path::Path, now: u64) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(until) = text.trim().parse::<u64>() else {
+        return false;
+    };
+    until == 0 || until > now
+}
+
+fn xset_saver(force: &str, dpms: &str) {
+    let _ = Command::new("xset")
+        .args(["s", force, dpms])
+        .stderr(Stdio::null())
+        .status();
+}
+
 fn idle_seconds(conn: &x11rb::rust_connection::RustConnection, root: Window) -> Option<u64> {
     let info = conn.screensaver_query_info(root).ok()?.reply().ok()?;
     Some(u64::from(info.ms_since_user_input) / 1000)
@@ -230,6 +265,8 @@ fn main() {
     let mut blanked = false;
     let mut display_off = false;
     let mut retry_lock_at = Instant::now();
+    let inhibit = inhibit_path();
+    let mut inhibited = false;
 
     loop {
         reap(&mut saver_child);
@@ -242,6 +279,30 @@ fn main() {
                 retry_lock_at = Instant::now() + POLL;
             }
         }
+        // Explicit inhibition state, never a guessed process id. While it is
+        // active, reset the X idle clock so no saver or locker fires, and undo
+        // any display-off state niruidle itself set.
+        if inhibit_active_from(&inhibit, now_secs()) {
+            if !inhibited {
+                eprintln!("niruidle: idle inhibition on");
+                stop_saver(&mut saver_child);
+                if display_off {
+                    xset_dpms("on");
+                    display_off = false;
+                }
+                inhibited = true;
+            }
+            let _ = conn.force_screen_saver(ScreenSaver::RESET);
+            let _ = conn.flush();
+            thread::sleep(POLL);
+            continue;
+        }
+        if inhibited {
+            eprintln!("niruidle: idle inhibition off");
+            xset_saver("default", "+dpms");
+            inhibited = false;
+        }
+
         let idle = idle_seconds(&conn, root).unwrap_or(0);
         let locked = locker_child.is_some();
 
@@ -313,6 +374,22 @@ mod tests {
         assert!(child.is_none());
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
         stop_saver(&mut child); // No fake PID/sentinel is ever sent a signal.
+    }
+
+    #[test]
+    fn only_explicit_unexpired_inhibition_is_active() {
+        let dir = std::env::temp_dir().join(format!("niruidle-inhibit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("inhibit");
+        assert!(!inhibit_active_from(&path, 100));
+        std::fs::write(&path, "0\n").unwrap();
+        assert!(inhibit_active_from(&path, 100));
+        std::fs::write(&path, "200\n").unwrap();
+        assert!(inhibit_active_from(&path, 100));
+        assert!(!inhibit_active_from(&path, 200));
+        std::fs::write(&path, "garbage\n").unwrap();
+        assert!(!inhibit_active_from(&path, 100));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

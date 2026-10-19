@@ -67,6 +67,8 @@ pub enum Action {
     NightlightToggle,
     /// Pause or resume notifications through the active provider.
     DndToggle,
+    /// Keep the screen awake until toggled off.
+    IdleToggle,
     SwapPrev,
 }
 
@@ -202,6 +204,7 @@ impl Action {
         add("super+shift+r", "reload");
         add("super+n", "nightlight_toggle");
         add("super+shift+d", "dnd_toggle");
+        add("super+shift+c", "idle_toggle");
         add("super+shift+w", "save_session");
         add("super+g", "toggle_gaps");
         add("super+shift+Print", "shell flameshot gui");
@@ -318,7 +321,6 @@ impl Action {
         add("super+shift+Escape", "shell sleep-suspend.sh");
         add("super+shift+q", "shell nirupi-power.sh");
         add("super+ctrl+t", "shell nirupi theme menu");
-        add("super+shift+c", "shell nirupi-caffeine.sh");
         add("super+shift+l", "shell nirupi-keyboard.sh");
         add("super+shift+t", "shell nirupi-touchpad.sh");
         add("super+v", "shell clip-menu.sh");
@@ -428,6 +430,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         ),
         "nightlight_toggle" => Action::NightlightToggle,
         "dnd_toggle" => Action::DndToggle,
+        "idle_toggle" => Action::IdleToggle,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {
