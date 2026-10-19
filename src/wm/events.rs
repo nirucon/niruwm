@@ -223,6 +223,7 @@ impl Wm {
                     3 => LayoutId::Centered,
                     4 => LayoutId::Fibonacci,
                     5 => LayoutId::Floating,
+                    6 => LayoutId::CenteredFloat,
                     _ => LayoutId::Tile,
                 })),
                 4 => Some(Action::Reload),

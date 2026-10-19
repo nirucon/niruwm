@@ -369,10 +369,26 @@ fn run() -> Result<()> {
 
     if cmd == "status" {
         let tag = property_u32(&c, root, atom("_NET_CURRENT_DESKTOP")?).unwrap_or(0);
-        let wm = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?).is_some();
+        let check = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?);
+        let wm = check
+            .and_then(|w| {
+                c.get_property(
+                    false,
+                    w,
+                    atom("_NET_WM_NAME").ok()?,
+                    atom("UTF8_STRING").ok()?,
+                    0,
+                    128,
+                )
+                .ok()?
+                .reply()
+                .ok()
+            })
+            .map(|r| String::from_utf8_lossy(&r.value).to_string())
+            .unwrap_or_else(|| "none".into());
         println!(
             "wm={} tag={} theme={}",
-            if wm { "niruwm" } else { "none" },
+            wm,
             tag + 1,
             Theme::load(&Config::load()?.theme)?.name
         );
@@ -403,6 +419,7 @@ fn run() -> Result<()> {
                 Some("monocle") => 1,
                 Some("left") => 2,
                 Some("centered") => 3,
+                Some("centeredfloat") => 6,
                 Some("fibonacci") => 4,
                 Some("floating") => 5,
                 _ => return Err(USAGE.into()),
