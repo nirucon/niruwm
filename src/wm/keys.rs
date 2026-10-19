@@ -116,7 +116,7 @@ impl Wm {
                 self.start_terminal(cmd);
             }
             Action::Browser => {
-                let cmd = if self.browser_present() {
+                let cmd = if self.cfg.nirupi_compat && self.browser_present() {
                     vec!["nirupi-browser".into()]
                 } else {
                     self.cfg.browser.clone()
@@ -128,10 +128,10 @@ impl Wm {
                 self.start(&cmd);
             }
             Action::LauncherUnified => {
-                // Only call the NIRUPI launcher when it is actually there;
-                // otherwise fall back to NIRUWM's own launcher so the binding
-                // is never dead on a clean install.
-                if self.helper_present("nirupi-launch.sh") {
+                // NIRUPI's combined launcher is part of the explicit
+                // compatibility profile. Without it the suite launcher keeps
+                // the binding useful on a standalone installation.
+                if self.cfg.nirupi_compat && self.helper_present("nirupi-launch.sh") {
                     self.shell("$HOME/.local/bin/nirupi-launch.sh");
                 } else {
                     let cmd = self.cfg.launcher.clone();
@@ -155,7 +155,7 @@ impl Wm {
                 self.media_key(&name);
             }
             Action::WindowSwitcher => {
-                if self.helper_present("nirupi-window.sh") {
+                if self.cfg.nirupi_compat && self.helper_present("nirupi-window.sh") {
                     self.shell("$HOME/.local/bin/nirupi-window.sh");
                 } else if self.command_present("rofi") {
                     self.start(&["rofi".into(), "-show".into(), "window".into()]);
@@ -621,7 +621,8 @@ impl Wm {
         self.start(&cmd);
     }
 
-    /// Lock the screen. Preference order: nirulock, NIRUPI's wrapper, slock.
+    /// Lock the screen. Preference order: nirulock, NIRUPI's wrapper when the
+    /// compatibility profile is on, then slock.
     ///
     /// Never fails silently: if nothing is installed the user gets a message
     /// instead of a key that appears broken.
@@ -630,11 +631,11 @@ impl Wm {
         // not always have `~/.local/bin` in PATH, and a bare name then fell
         // through to slock, which does not speak the NIRU lock protocol.
         let home = std::env::var("HOME").unwrap_or_default();
-        let candidates = [
-            format!("{home}/.local/bin/nirulock"),
-            format!("{home}/.local/bin/nirupi-lock.sh"),
-            "slock".to_string(),
-        ];
+        let mut candidates = vec![format!("{home}/.local/bin/nirulock")];
+        if self.cfg.nirupi_compat {
+            candidates.push(format!("{home}/.local/bin/nirupi-lock.sh"));
+        }
+        candidates.push("slock".to_string());
         for candidate in candidates {
             let present = if candidate.contains('/') {
                 std::path::Path::new(&candidate).is_file()
@@ -646,10 +647,19 @@ impl Wm {
                 return;
             }
         }
-        self.shell(
-            "notify-send -a NIRUWM 'Lock' 'No screen locker found: install nirulock, nirupi-lock or slock' 2>/dev/null || true",
-        );
-        eprintln!("niruwm: no screen locker found (nirulock, nirupi-lock.sh, slock)");
+        let body = if self.cfg.nirupi_compat {
+            "No screen locker found: install nirulock, nirupi-lock or slock"
+        } else {
+            "No screen locker found: install nirulock or slock"
+        };
+        self.spawn_detached(&[
+            "notify-send".into(),
+            "-a".into(),
+            "NIRUWM".into(),
+            "Lock".into(),
+            body.into(),
+        ]);
+        eprintln!("niruwm: {body}");
     }
 
     fn browser_present(&self) -> bool {

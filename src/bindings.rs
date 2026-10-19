@@ -168,11 +168,11 @@ fn expand_key(key: &str) -> Result<String, String> {
 }
 
 impl Action {
-    /// Default bindings, matching NIRUPI DWM where an equivalent exists.
+    /// Default bindings, all backed by the suite itself.
     ///
-    /// Commands that NIRUPI provides are called through their helper script
-    /// when present; the WM falls back to the plain binary so NIRUWM works
-    /// with no NIRUPI installed at all.
+    /// NIRUPI's helper commands are not defaults: a standalone install would
+    /// bind keys to scripts that do not exist. `nirupi_compat` adds those keys
+    /// explicitly for a shared NIRUPI machine.
     pub fn defaults() -> Vec<RawBinding> {
         let mut b: Vec<RawBinding> = Vec::new();
         let mut add = |keys: &str, action: &str| {
@@ -190,28 +190,17 @@ impl Action {
         // Super+Shift+P uses NIRUPI's combined launcher when installed.
         add("super+p", "launcher");
         add("super+shift+p", "launcher_unified");
+        // The old NIRUPI menu key now opens the suite launcher. NIRUPI's own
+        // menu is available through the compatibility profile.
+        add("super+shift+m", "launcher_unified");
         add("super+w", "window_switcher");
         add("super+shift+f", "start pcmanfm");
-        add("super+shift+m", "shell nirupi-menu.sh");
-        add("super+alt+k", "shell dwm-keybindings.sh -i");
-        add("super+shift+h", "shell nirupi-keys.sh");
         add("super+Escape", "lock");
-        add("super+shift+Escape", "shell sleep-suspend.sh");
-        add("super+shift+q", "shell nirupi-power.sh");
-        add("super+ctrl+t", "shell nirupi theme menu");
-        add("super+shift+r", "shell nirupi-reload.sh");
+        // The old NIRUPI reload key is a native reload, not a shell helper.
+        add("super+shift+r", "reload");
         add("super+n", "nightlight_toggle");
-        add("super+shift+c", "shell nirupi-caffeine.sh");
-        add("super+shift+d", "shell nirupi-focus.sh");
-        add("super+shift+l", "shell nirupi-keyboard.sh");
-        add("super+shift+t", "shell nirupi-touchpad.sh");
-        add("super+v", "shell clip-menu.sh");
-        // Super+S belongs to NIRUPI (its ssh helper) and stays that way for
-        // compatibility; the session is saved with Super+Shift+W instead.
-        add("super+s", "shell nirupi-ssh.sh");
         add("super+shift+w", "save_session");
         add("super+g", "toggle_gaps");
-        add("super+ctrl+shift+b", "shell nirupi-barmode.sh");
         add("super+shift+Print", "shell flameshot gui");
         add(
             "super+Print",
@@ -248,7 +237,6 @@ impl Action {
         add("super+ctrl+period", "layout_next");
         add("super+shift+space", "toggle_float");
         add("super+shift+e", "toggle_fullscreen");
-        add("super+shift+z", "shell nirupi-record.sh");
         add("super+shift+s", "scratchpad");
         add("super+h", "dec_master_ratio");
         add("super+l", "inc_master_ratio");
@@ -305,6 +293,36 @@ impl Action {
         add("super+ctrl+shift+q", "quit");
         add("super+r", "reload");
         add("super+ctrl+shift+r", "reload");
+        b
+    }
+
+    /// NIRUPI helper shortcuts, enabled explicitly with `nirupi_compat = true`.
+    ///
+    /// These keys used to be defaults even on a standalone installation, where
+    /// the helper scripts do not exist and the keys silently did nothing. They
+    /// stay available for people who keep NIRUPI, but only as a compatibility
+    /// profile; the suite's own actions are the defaults.
+    pub fn nirupi_compat() -> Vec<RawBinding> {
+        let mut b: Vec<RawBinding> = Vec::new();
+        let mut add = |keys: &str, action: &str| {
+            b.push(RawBinding {
+                keys: keys.into(),
+                action: action.into(),
+            })
+        };
+        add("super+alt+k", "shell dwm-keybindings.sh -i");
+        add("super+shift+h", "shell nirupi-keys.sh");
+        add("super+shift+Escape", "shell sleep-suspend.sh");
+        add("super+shift+q", "shell nirupi-power.sh");
+        add("super+ctrl+t", "shell nirupi theme menu");
+        add("super+shift+c", "shell nirupi-caffeine.sh");
+        add("super+shift+d", "shell nirupi-focus.sh");
+        add("super+shift+l", "shell nirupi-keyboard.sh");
+        add("super+shift+t", "shell nirupi-touchpad.sh");
+        add("super+v", "shell clip-menu.sh");
+        add("super+s", "shell nirupi-ssh.sh");
+        add("super+ctrl+shift+b", "shell nirupi-barmode.sh");
+        add("super+shift+z", "shell nirupi-record.sh");
         b
     }
 }
@@ -457,6 +475,27 @@ mod tests {
                 "duplicate binding: {}",
                 raw.keys
             );
+        }
+    }
+
+    #[test]
+    fn defaults_do_not_depend_on_nirupi_shell_helpers() {
+        for raw in Action::defaults() {
+            assert!(
+                !raw.action.starts_with("shell nirupi-")
+                    && !raw.action.starts_with("shell clip-menu.sh")
+                    && !raw.action.starts_with("shell dwm-keybindings.sh")
+                    && raw.action != "shell sleep-suspend.sh",
+                "standalone default uses a NIRUPI helper: {}",
+                raw.keys
+            );
+        }
+        // The compatibility profile still parses and is opt-in.
+        let compat = Action::nirupi_compat();
+        assert!(compat.iter().any(|b| b.action == "shell nirupi-power.sh"));
+        for raw in compat {
+            parse_keys(&raw.keys).unwrap_or_else(|e| panic!("{}: {e}", raw.keys));
+            parse_action(&raw.action).unwrap_or_else(|e| panic!("{}: {e}", raw.action));
         }
     }
 

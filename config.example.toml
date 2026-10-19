@@ -35,6 +35,12 @@ bar_height = 28
 # Share of the screen width given to the master column (0.1 to 0.9).
 master_ratio = 0.55
 
+# NIRUPI compatibility profile. When true, the old NIRUPI helper shortcuts
+# (power/theme menus, DND, caffeine, keyboard/touchpad toggles, SSH, clipboard,
+# recording and suspend) are added. They only work when NIRUPI's helper scripts
+# are installed; a standalone NIRU desktop leaves this off.
+nirupi_compat = false
+
 # ── Programs ────────────────────────────────────────────────────────────────
 # Commands are argument lists, never passed through a shell.
 terminal = ["kitty"]
@@ -192,10 +198,6 @@ action = "window_switcher"
 [[keys]]
 keys = "super+Escape"
 action = "lock"
-
-[[keys]]
-keys = "super+shift+q"
-action = "shell nirupi-power.sh"
 
 [[keys]]
 keys = "super+q"
@@ -416,18 +418,9 @@ action = "move_float up"
 keys = "super+ctrl+Down"
 action = "move_float down"
 
-# NIRUPI helpers, active when those programs are installed.
 [[keys]]
 keys = "super+shift+f"
 action = "start pcmanfm"
-
-[[keys]]
-keys = "super+v"
-action = "shell clip-menu.sh"
-
-[[keys]]
-keys = "super+ctrl+t"
-action = "shell nirupi theme menu"
 
 [[keys]]
 keys = "super+shift+Print"

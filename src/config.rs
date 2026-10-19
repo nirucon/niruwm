@@ -27,9 +27,13 @@ pub struct Config {
     pub font_path: Option<String>,
     pub font_size: f32,
     pub bar: Bar,
-    /// Optional bindings. When empty, the built-in NIRUPI-compatible table is
-    /// used. Entries replace a default binding with the same keys.
+    /// Optional bindings. When empty, the built-in table is used. Entries
+    /// replace a default binding with the same keys.
     pub keys: Vec<crate::bindings::RawBinding>,
+    /// Add NIRUPI's helper shortcuts (power/theme menus, DND, caffeine,
+    /// keyboard/touchpad, SSH, clipboard, recording and suspend). Off by
+    /// default so a standalone install has no dead shortcut.
+    pub nirupi_compat: bool,
     pub wallpaper: WallpaperConfig,
     pub monitors: MonitorsConfig,
     pub scratchpad: ScratchpadConfig,
@@ -272,6 +276,7 @@ impl Default for Config {
             font_size: 15.0,
             bar: Bar::default(),
             keys: Vec::new(),
+            nirupi_compat: false,
             wallpaper: WallpaperConfig::default(),
             monitors: MonitorsConfig::default(),
             nightlight: NightlightConfig::default(),
@@ -367,6 +372,9 @@ impl Config {
         // Overrides replace keys, not every other shortcut for the same action.
         // Use action="unbind" to explicitly release an unwanted default key.
         let mut table = crate::bindings::Action::defaults();
+        if self.nirupi_compat {
+            table.extend(crate::bindings::Action::nirupi_compat());
+        }
         for user in &self.keys {
             table.retain(|b| {
                 !(b.keys.eq_ignore_ascii_case(&user.keys)
@@ -557,6 +565,7 @@ pub fn dump() -> Result<String> {
     out.push_str(&format!("terminal = {:?}\n", c.terminal));
     out.push_str(&format!("browser = {:?}\n", c.browser));
     out.push_str(&format!("launcher = {:?}\n", c.launcher));
+    out.push_str(&format!("nirupi_compat = {}\n", c.nirupi_compat));
     out.push_str(&format!("font_size = {}\n\n", c.font_size));
     out.push_str("[monitors]\n");
     out.push_str(&format!("workspaces = {}\n", c.monitors.workspaces));
@@ -684,6 +693,24 @@ mod tests {
         assert_eq!(tab.action, "shell echo hi");
         // The pairing key is untouched: only what the file names changes.
         assert!(table.iter().any(|b| b.keys == "super+shift+Tab"));
+    }
+
+    #[test]
+    fn nirupi_helpers_are_an_explicit_profile() {
+        let plain = Config::default();
+        assert!(!plain.nirupi_compat);
+        assert!(!plain
+            .effective_keys()
+            .iter()
+            .any(|b| b.action == "shell nirupi-power.sh"));
+        let compat = Config {
+            nirupi_compat: true,
+            ..Config::default()
+        };
+        assert!(compat
+            .effective_keys()
+            .iter()
+            .any(|b| b.action == "shell nirupi-power.sh"));
     }
 
     #[test]
