@@ -161,6 +161,7 @@ tray = true
 #   inc_master, dec_master, inc_master_ratio, dec_master_ratio,
 #   toggle_float, toggle_fullscreen, swap_next, swap_prev,
 #   move_float left|right|up|down, resize_float dx dy,
+#   media_key NAME, brightness_step N, nightlight_toggle, dnd_toggle,
 #   close, quit, reload, toggle_gaps, theme NAME,
 #   focusmon N, tagmon N   (multi-monitor, reserved)
 

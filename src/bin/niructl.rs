@@ -27,7 +27,8 @@ use x11rb::{
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
-clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K";
+clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K | \
+lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -216,6 +217,109 @@ fn nightlight(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Find a program in PATH or the selected NIRU prefix.
+fn program(name: &str) -> Option<String> {
+    if which(name) {
+        return Some(name.to_string());
+    }
+    let local = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".local/bin")
+        .join(name);
+    local.is_file().then(|| local.to_string_lossy().to_string())
+}
+
+fn spawn_action(program: &str, args: &[&str]) -> Result<()> {
+    std::process::Command::new(program)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot start {program}: {e}").into())
+}
+
+/// A login/power action with an explicit backend and no shell.
+fn login_action(action: &str) -> Result<()> {
+    if which("loginctl") {
+        let mut args: Vec<String> = Vec::new();
+        match action {
+            "logout" => {
+                if let Ok(session) = std::env::var("XDG_SESSION_ID") {
+                    if !session.is_empty() {
+                        args.push("terminate-session".into());
+                        args.push(session);
+                    }
+                }
+                if args.is_empty() {
+                    let user = std::env::var("USER").map_err(|_| "USER is not set")?;
+                    args.push("terminate-user".into());
+                    args.push(user);
+                }
+            }
+            "suspend" | "reboot" | "shutdown" => args.push(action.into()),
+            _ => return Err(format!("unknown login action: {action}").into()),
+        }
+        command("loginctl", &args)?;
+        return Ok(());
+    }
+    if action != "logout" && which("systemctl") {
+        command("systemctl", &[action.to_string()])?;
+        return Ok(());
+    }
+    Err(format!("no login backend for {action}: install logind/elogind or systemd").into())
+}
+
+fn desktop(action: &str, args: &[String]) -> Result<()> {
+    match action {
+        "lock" => {
+            let locker = program("nirulock")
+                .or_else(|| program("slock"))
+                .ok_or("no screen locker found: install nirulock or slock")?;
+            spawn_action(&locker, &[])
+        }
+        "screensaver" => {
+            let saver = program("niruscreensaver").ok_or("niruscreensaver is not installed")?;
+            spawn_action(&saver, &["--preview"])
+        }
+        "logout" | "suspend" | "reboot" | "shutdown" => login_action(action),
+        "dnd" => dnd(args),
+        _ => Err(USAGE.into()),
+    }
+}
+
+/// Do-not-disturb through the active provider's documented control.
+///
+/// The native notifier will take this over when it owns the bus; until then
+/// Dunst's own control interface is the honest provider.
+fn dnd(args: &[String]) -> Result<()> {
+    if !which("dunstctl") {
+        return Err(
+            "DND is unavailable: no supported notification provider (dunstctl missing)".into(),
+        );
+    }
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    let paused = || -> Result<bool> {
+        let out = command("dunstctl", &["is-paused".into()])?;
+        Ok(String::from_utf8_lossy(&out.stdout).trim() == "true")
+    };
+    match action {
+        "on" => {
+            command("dunstctl", &["set-paused".into(), "true".into()])?;
+            println!("dnd on");
+        }
+        "off" => {
+            command("dunstctl", &["set-paused".into(), "false".into()])?;
+            println!("dnd off");
+        }
+        "toggle" => {
+            let next = if paused()? { "false" } else { "true" };
+            command("dunstctl", &["set-paused".into(), next.into()])?;
+            println!("dnd {}", if next == "true" { "on" } else { "off" });
+        }
+        "status" => println!("dnd {}", if paused()? { "on" } else { "off" }),
+        _ => return Err("dnd needs on, off, toggle or status".into()),
+    }
+    Ok(())
+}
+
 fn offline(cmd: &str) -> Result<()> {
     // The session file is a plain list, so these work without a window
     // manager too: useful from the console before starting a session.
@@ -227,6 +331,12 @@ fn offline(cmd: &str) -> Result<()> {
     }
     if cmd == "nightlight" {
         return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if matches!(
+        cmd,
+        "lock" | "screensaver" | "logout" | "suspend" | "reboot" | "shutdown" | "dnd"
+    ) {
+        return desktop(cmd, &std::env::args().skip(2).collect::<Vec<_>>());
     }
     if cmd == "layouts" {
         // Print the layouts in the order Super+Ctrl+period cycles them, with
@@ -338,7 +448,17 @@ fn run() -> Result<()> {
     // a display: people often run it over ssh or before X is up.
     if matches!(
         cmd.as_str(),
-        "themes" | "layouts" | "brightness" | "nightlight"
+        "themes"
+            | "layouts"
+            | "brightness"
+            | "nightlight"
+            | "lock"
+            | "screensaver"
+            | "logout"
+            | "suspend"
+            | "reboot"
+            | "shutdown"
+            | "dnd"
     ) {
         return offline(cmd);
     }
@@ -693,5 +813,67 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("niructl: {e}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
+
+    fn script(dir: &std::path::Path, name: &str, body: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        let mut mode = std::fs::metadata(&path).unwrap().permissions();
+        mode.set_mode(0o755);
+        std::fs::set_permissions(&path, mode).unwrap();
+    }
+
+    #[test]
+    fn desktop_actions_use_explicit_backends() {
+        let dir = std::env::temp_dir().join(format!("niructl-actions-{}", std::process::id()));
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let calls = dir.join("calls");
+        let dnd_state = dir.join("dnd");
+        std::fs::write(&dnd_state, "false\n").unwrap();
+        let log = |name: &str| format!("printf '%s %s\\n' '{name}' \"$*\" >> \"$CALLS\"\n");
+        script(&bin, "nirulock", &log("nirulock"));
+        script(&bin, "niruscreensaver", &log("niruscreensaver"));
+        script(&bin, "loginctl", &log("loginctl"));
+        script(
+            &bin,
+            "dunstctl",
+            "printf 'dunstctl %s\\n' \"$*\" >> \"$CALLS\"\ncase \"$1\" in\nis-paused) cat \"$DND_STATE\" ;;\nset-paused) printf '%s\\n' \"$2\" > \"$DND_STATE\" ;;\nesac",
+        );
+        std::env::set_var("HOME", &dir);
+        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
+        std::env::set_var("CALLS", &calls);
+        std::env::set_var("DND_STATE", &dnd_state);
+        std::env::set_var("XDG_SESSION_ID", "42");
+        let calls_now = || std::fs::read_to_string(&calls).unwrap_or_default();
+        let wait_for = |what: &str| {
+            for _ in 0..100 {
+                if calls_now().contains(what) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            panic!("{what} was not called; calls: {}", calls_now());
+        };
+
+        desktop("lock", &[]).unwrap();
+        wait_for("nirulock");
+        desktop("screensaver", &[]).unwrap();
+        wait_for("niruscreensaver --preview");
+        login_action("reboot").unwrap();
+        wait_for("loginctl reboot");
+        desktop("logout", &[]).unwrap();
+        wait_for("loginctl terminate-session 42");
+        dnd(&["toggle".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&dnd_state).unwrap().trim(), "true");
+        dnd(&["toggle".to_string()]).unwrap();
+        assert_eq!(std::fs::read_to_string(&dnd_state).unwrap().trim(), "false");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

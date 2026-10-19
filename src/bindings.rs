@@ -65,6 +65,8 @@ pub enum Action {
     BrightnessStep(i16),
     /// Toggle the configured manual night light.
     NightlightToggle,
+    /// Pause or resume notifications through the active provider.
+    DndToggle,
     SwapPrev,
 }
 
@@ -199,6 +201,7 @@ impl Action {
         // The old NIRUPI reload key is a native reload, not a shell helper.
         add("super+shift+r", "reload");
         add("super+n", "nightlight_toggle");
+        add("super+shift+d", "dnd_toggle");
         add("super+shift+w", "save_session");
         add("super+g", "toggle_gaps");
         add("super+shift+Print", "shell flameshot gui");
@@ -316,7 +319,6 @@ impl Action {
         add("super+shift+q", "shell nirupi-power.sh");
         add("super+ctrl+t", "shell nirupi theme menu");
         add("super+shift+c", "shell nirupi-caffeine.sh");
-        add("super+shift+d", "shell nirupi-focus.sh");
         add("super+shift+l", "shell nirupi-keyboard.sh");
         add("super+shift+t", "shell nirupi-touchpad.sh");
         add("super+v", "shell clip-menu.sh");
@@ -425,6 +427,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
                 .map_err(|_| "brightness_step: not a number".to_string())?,
         ),
         "nightlight_toggle" => Action::NightlightToggle,
+        "dnd_toggle" => Action::DndToggle,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {

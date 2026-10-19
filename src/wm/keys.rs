@@ -147,6 +147,9 @@ impl Wm {
             Action::NightlightToggle => {
                 self.spawn_detached(&["niructl".into(), "nightlight".into(), "toggle".into()]);
             }
+            Action::DndToggle => {
+                self.spawn_detached(&["niructl".into(), "dnd".into(), "toggle".into()]);
+            }
             Action::MediaKey(name) => {
                 // `media_key` knows which command each key needs. The previous
                 // version guessed a program from the key name first and dropped
