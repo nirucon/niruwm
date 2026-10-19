@@ -207,7 +207,6 @@ impl Action {
         add("super+shift+c", "idle_toggle");
         add("super+shift+w", "save_session");
         add("super+g", "toggle_gaps");
-        add("super+shift+Print", "shell flameshot gui");
         add(
             "super+Print",
             "shell maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
