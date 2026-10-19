@@ -3,6 +3,8 @@
 set -eu
 SOURCE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BAR=${1:?pass the absolute path of the pinned nirubar binary}
+# Preserve the real build toolchain before isolating the install user's home.
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export HOME="$fixture/home" XDG_CONFIG_HOME="$fixture/config" XDG_STATE_HOME="$fixture/state"
