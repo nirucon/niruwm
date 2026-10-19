@@ -124,14 +124,19 @@ impl Wm {
                 self.start(&cmd);
             }
             Action::Launcher => {
-                let cmd = self.cfg.launcher.clone();
-                self.start(&cmd);
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--apps".into()]);
+                } else {
+                    let cmd = self.cfg.launcher.clone();
+                    self.start(&cmd);
+                }
             }
             Action::LauncherUnified => {
-                // NIRUPI's combined launcher is part of the explicit
-                // compatibility profile. Without it the suite launcher keeps
-                // the binding useful on a standalone installation.
-                if self.cfg.nirupi_compat && self.helper_present("nirupi-launch.sh") {
+                // Prefer the suite's action launcher. NIRUPI's combined
+                // launcher is only an explicit compatibility fallback.
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--actions".into()]);
+                } else if self.cfg.nirupi_compat && self.helper_present("nirupi-launch.sh") {
                     self.shell("$HOME/.local/bin/nirupi-launch.sh");
                 } else {
                     let cmd = self.cfg.launcher.clone();
