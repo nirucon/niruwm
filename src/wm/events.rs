@@ -33,6 +33,7 @@ extern "C" {
 impl Wm {
     pub(crate) fn run(&mut self) -> Result<()> {
         loop {
+            self.reap_children();
             // Drain everything already queued first: a burst of events (a tag
             // switch unmap/map sequence) must be handled before sleeping.
             while let Some(event) = self.c.poll_for_event()? {
@@ -46,8 +47,8 @@ impl Wm {
             // longer than the wallpaper check interval, so rotation happens
             // without a second thread. `poll(2)` blocks in the kernel; this
             // does not spin.
-            let ready = wait_readable(self.c.stream().as_raw_fd(), ROTATION_TICK);
-            if ready && self.wallpaper.tick() {
+            wait_readable(self.c.stream().as_raw_fd(), ROTATION_TICK);
+            if self.wallpaper.tick() {
                 eprintln!("niruwm: wallpaper changed");
             }
             // The same tick notices a bar that died. It is cheap: one

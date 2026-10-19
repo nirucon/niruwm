@@ -9,6 +9,8 @@ use serde::Deserialize;
 /// What a binding does. Parsed once at load time; the WM matches on this.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
+    /// Explicitly release a default shortcut rather than grabbing a no-op.
+    Unbind,
     Terminal,
     TerminalAlt,
     Browser,
@@ -343,6 +345,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
             .map_err(|_| format!("{verb}: not a number"))
     };
     Ok(match verb {
+        "unbind" => Action::Unbind,
         "terminal" => Action::Terminal,
         "terminal_alt" => Action::TerminalAlt,
         "browser" => Action::Browser,

@@ -129,7 +129,7 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
     message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
     wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
-    message(&c, root, root, "_NIRUWM_COMMAND", [4, 0, 0, 0, 0]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
     wait(|| wm.0.try_wait().unwrap().is_some());
     assert_eq!(
         c.get_window_attributes(windows[0])
@@ -139,5 +139,81 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
             .map_state,
         MapState::VIEWABLE
     );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server and xdotool"]
+fn partial_key_overrides_preserve_defaults_and_helpers_are_reaped() {
+    let dir = std::env::temp_dir().join(format!("niruwm-bindings-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[[keys]]\nkeys = \"super+x\"\naction = \"tag 2\"\n[[keys]]\nkeys = \"super+z\"\naction = \"shell true\"\n[[keys]]\nkeys = \"super+p\"\naction = \"unbind\"\n").unwrap();
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        values(&c, root, "_NET_SUPPORTING_WM_CHECK")
+            .first()
+            .is_some_and(|owner| {
+                c.get_window_attributes(*owner)
+                    .ok()
+                    .and_then(|r| r.reply().ok())
+                    .is_some()
+            })
+    });
+    let key = |key: &str| {
+        assert!(Command::new("xdotool")
+            .args(["key", key])
+            .status()
+            .unwrap()
+            .success())
+    };
+    key("super+3");
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![2]);
+    key("super+x");
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    let setup = c.setup();
+    let mapping = c
+        .get_keyboard_mapping(setup.min_keycode, setup.max_keycode - setup.min_keycode + 1)
+        .unwrap()
+        .reply()
+        .unwrap();
+    let p = mapping
+        .keysyms
+        .chunks(mapping.keysyms_per_keycode as usize)
+        .position(|symbols| symbols.contains(&0x70))
+        .unwrap() as u8
+        + setup.min_keycode;
+    // An unbound key is genuinely available to another client, not a grabbed no-op.
+    c.grab_key(
+        false,
+        root,
+        ModMask::M4,
+        p,
+        GrabMode::ASYNC,
+        GrabMode::ASYNC,
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    c.ungrab_key(p, root, ModMask::M4).unwrap();
+    for _ in 0..8 {
+        key("super+z");
+    }
+    let children = format!("/proc/{0}/task/{0}/children", wm.0.id());
+    wait(|| {
+        std::fs::read_to_string(&children)
+            .unwrap()
+            .trim()
+            .is_empty()
+    });
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }

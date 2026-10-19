@@ -25,6 +25,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Key overrides, helper reaping and fullscreen regressions
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool
+          xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' cargo test --locked --test x11 -- --ignored --test-threads=1
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
       - name: Build pinned bar and collect static test artifacts
         run: |
@@ -33,6 +37,8 @@ jobs:
           mkdir -p /tmp/ci-bin
           cp target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} /tmp/ci-bin/
           cp /tmp/nirubar-build/target/x86_64-unknown-linux-musl/release/nirubar /tmp/ci-bin/
+      - name: Standalone installer regression
+        run: sh tests/install-smoke.sh /tmp/ci-bin/nirubar
       - uses: actions/upload-artifact@v4
         with:
           name: session-binaries
@@ -43,7 +49,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh
+            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh
 
   session:
     needs: verify

@@ -58,6 +58,8 @@ pub(crate) struct Wm {
     pub(crate) layout: Layout,
     /// One bar per monitor, in monitor order.
     pub(crate) bars: Vec<Child>,
+    /// Reaped from the event loop; application/helper launches create no threads.
+    children: Vec<Child>,
     pub(crate) hidden: HashSet<Window>,
     pub(crate) pending_unmaps: HashMap<Window, u32>,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
@@ -193,6 +195,7 @@ impl Wm {
             theme,
             layout: Layout::Tile,
             bars: Vec::new(),
+            children: Vec::new(),
             hidden: HashSet::new(),
             pending_unmaps: HashMap::new(),
             bindings: Vec::new(),
@@ -471,16 +474,10 @@ impl Wm {
     pub(crate) fn spawn_owned(&mut self, program: &[String]) {
         if let Some((cmd, args)) = program.split_first() {
             match Command::new(cmd).args(args).spawn() {
-                Ok(mut child) => {
-                    // Reap in a thread: a long-running app must not become a
-                    // zombie, and the event loop must not block on it.
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
+                Ok(child) => self.children.push(child),
                 Err(e) => {
                     eprintln!("niruwm: cannot start {cmd}: {e}");
-                    Self::missing_program(cmd, &e);
+                    self.missing_program(cmd, &e);
                 }
             }
         }
@@ -491,31 +488,33 @@ impl Wm {
     /// A keyboard shortcut that does nothing looks like a broken window
     /// manager. The name of the missing program, in a notification, is the
     /// difference between "this desktop is broken" and "install kitty".
-    fn missing_program(cmd: &str, e: &std::io::Error) {
+    fn missing_program(&mut self, cmd: &str, e: &std::io::Error) {
         if e.kind() != std::io::ErrorKind::NotFound {
             return;
         }
-        // The command name comes from the config; strip anything that could
-        // end the shell string early.
-        let cmd: String = cmd
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || "-_./".contains(*c))
-            .collect();
         let body = format!("{cmd} is not installed; the key needs it");
-        Self::spawn_detached(&[
-            "sh".into(),
-            "-c".into(),
-            format!("notify-send -a NIRUWM 'Missing program' '{body}' 2>/dev/null || true"),
+        self.spawn_detached(&[
+            "notify-send".into(),
+            "-a".into(),
+            "NIRUWM".into(),
+            "Missing program".into(),
+            body,
         ]);
     }
 
     /// Start a detached program without waiting for it at all.
-    pub(crate) fn spawn_detached(program: &[String]) {
+    pub(crate) fn spawn_detached(&mut self, program: &[String]) {
         if let Some((cmd, args)) = program.split_first() {
-            if let Err(e) = Command::new(cmd).args(args).spawn() {
-                eprintln!("niruwm: cannot start {cmd}: {e}");
+            match Command::new(cmd).args(args).spawn() {
+                Ok(child) => self.children.push(child),
+                Err(e) => eprintln!("niruwm: cannot start {cmd}: {e}"),
             }
         }
+    }
+
+    pub(crate) fn reap_children(&mut self) {
+        self.children
+            .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
     }
 }
 

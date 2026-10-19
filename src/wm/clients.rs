@@ -254,9 +254,6 @@ impl Wm {
     }
 
     pub(crate) fn update_borders(&self) -> Result<()> {
-        if !self.cfg.bar.enabled {
-            return Ok(());
-        }
         for c in &self.clients {
             if c.fullscreen {
                 continue;
@@ -442,12 +439,10 @@ impl Wm {
                 }
                 visible.push(c.win);
                 let r = if c.fullscreen {
-                    Rect {
-                        x: screen.x,
-                        y: screen.y,
-                        w: screen.w,
-                        h: screen.h,
-                    }
+                    self.monitors
+                        .get(mi)
+                        .map(|m| m.rect)
+                        .unwrap_or_else(|| self.screen_area())
                 } else if c.floating || self.layout == Layout::Floating {
                     self.clamp(c.geom, screen)
                 } else {

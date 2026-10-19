@@ -340,12 +340,8 @@ impl Config {
     #[allow(dead_code)] // used by the WM binary, shared with niructl
     pub fn effective_keys(&self) -> Vec<crate::bindings::RawBinding> {
         use crate::bindings::{parse_keys, RawBinding};
-        // Every default binding is in the shipped config as well, so the
-        // override must replace the default with the *same action*, not merely
-        // add a row for the same key. Adding a row left both: super+Tab was
-        // both "tag_next" and (from the file) the same, fine, but a user entry
-        // that changed one binding of a key pair left the old one reachable.
-        // Removing by action as well makes the file the truth for its keys.
+        // Overrides replace keys, not every other shortcut for the same action.
+        // Use action="unbind" to explicitly release an unwanted default key.
         let mut table = crate::bindings::Action::defaults();
         for user in &self.keys {
             table.retain(|b| {
@@ -360,24 +356,6 @@ impl Config {
                 action: user.action.clone(),
             });
         }
-        // An action listed in the file is no longer taken from the defaults;
-        // otherwise a key removed from the file would still answer to the
-        // default binding that named the same action.
-        let overridden: Vec<String> = self
-            .keys
-            .iter()
-            .map(|k| k.action.split_whitespace().next().unwrap_or("").to_string())
-            .filter(|a| !a.is_empty())
-            .collect();
-        table.retain(|b| {
-            let mut a = b.action.split_whitespace();
-            let first = a.next().unwrap_or("");
-            !overridden.iter().any(|o| o == first)
-                || self
-                    .keys
-                    .iter()
-                    .any(|k| k.keys.eq_ignore_ascii_case(&b.keys))
-        });
         table
     }
 
@@ -460,6 +438,10 @@ impl Config {
         }
         if self.bar.date_format.is_empty() || self.bar.time_format.is_empty() {
             return Err("bar.date_format and bar.time_format must not be empty".into());
+        }
+        for binding in &self.keys {
+            crate::bindings::parse_keys(&binding.keys)?;
+            crate::bindings::parse_action(&binding.action)?;
         }
         Ok(())
     }
@@ -668,6 +650,26 @@ mod tests {
         assert_eq!(tab.action, "shell echo hi");
         // The pairing key is untouched: only what the file names changes.
         assert!(table.iter().any(|b| b.keys == "super+shift+Tab"));
+    }
+
+    #[test]
+    fn adding_an_action_does_not_remove_its_other_shortcuts() {
+        let c = Config {
+            keys: vec![crate::bindings::RawBinding {
+                keys: "super+x".into(),
+                action: "focus_next".into(),
+            }],
+            ..Config::default()
+        };
+        let table = c.effective_keys();
+        for key in ["super+x", "super+j", "super+Right", "super+Down"] {
+            assert!(
+                table
+                    .iter()
+                    .any(|b| b.keys == key && b.action == "focus_next"),
+                "missing {key}"
+            );
+        }
     }
 
     #[test]

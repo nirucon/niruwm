@@ -26,11 +26,7 @@ impl Wm {
             }
         }
 
-        let raw: Vec<RawBinding> = if self.cfg.keys.is_empty() {
-            Action::defaults()
-        } else {
-            self.cfg.keys.clone()
-        };
+        let raw: Vec<RawBinding> = self.cfg.effective_keys();
 
         let mut list = Vec::with_capacity(raw.len());
         for r in raw {
@@ -48,6 +44,9 @@ impl Wm {
                     continue;
                 }
             };
+            if action == Action::Unbind {
+                continue;
+            }
             let Some(sym) = keysym_named(&key) else {
                 eprintln!("niruwm: unknown keysym {key:?}");
                 continue;
@@ -90,7 +89,7 @@ impl Wm {
         // Compare only the modifier bits a binding can use. Lock (Caps) and
         // Mod2 (NumLock) change the state value but must not break matching;
         // mouse-button bits are irrelevant for a key press.
-        const MEANINGFUL: u32 = 0x1 | 0x4 | 0x8 | 0x40;
+        const MEANINGFUL: u32 = 0x1 | 0x4 | 0x8 | 0x20 | 0x40;
         let state = u32::from(e.state.bits()) & MEANINGFUL;
         let index = self
             .bindings
@@ -106,6 +105,7 @@ impl Wm {
     pub(super) fn dispatch(&mut self, action: Action) -> Result<bool> {
         let focused = self.focus;
         match action {
+            Action::Unbind => {}
             Action::Terminal => self.start_terminal(self.cfg.terminal.clone()),
             Action::TerminalAlt => {
                 let cmd = if self.cfg.terminal_alt.is_empty() {
@@ -273,8 +273,8 @@ impl Wm {
     /// `sh -c` is used so a command may use `$HOME`, pipes or `&&` as written
     /// in NIRUPI's helper scripts. The child is not waited for: a launcher
     /// that stays open must not block the event loop.
-    fn shell(&self, cmd: &str) {
-        Self::spawn_detached(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
+    fn shell(&mut self, cmd: &str) {
+        self.spawn_detached(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
     }
 
     /// Run one media key.
@@ -317,7 +317,7 @@ impl Wm {
         if let Some((program, args)) = cmd {
             let mut full = vec![program.to_string()];
             full.extend(args);
-            Self::spawn_detached(&full);
+            self.spawn_detached(&full);
         }
     }
 
@@ -393,12 +393,12 @@ impl Wm {
                 missing.join(", ")
             );
             let list = missing.join(", ");
-            Self::spawn_detached(&[
-                "sh".into(),
-                "-c".into(),
-                format!(
-                    "notify-send -a NIRUWM 'Session partly restored' 'Not installed: {list}' 2>/dev/null || true"
-                ),
+            self.spawn_detached(&[
+                "notify-send".into(),
+                "-a".into(),
+                "NIRUWM".into(),
+                "Session partly restored".into(),
+                format!("Not installed: {list}"),
             ]);
         }
         Ok(())

@@ -13,7 +13,7 @@
 # read for writing and never removed.
 set -eu
 
-VERSION="0.16.2"
+VERSION="0.16.5"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -52,6 +52,7 @@ say() { printf '%s\n' "$*"; }
 # Refuse anything that would touch a NIRUPI-owned path.
 guard_nirupi() {
   [ -z "$1" ] && return 0
+  nirux_owned "$1" && die "managed by NIRUX: $1 (use nirux update)"
   # No pipeline: `die` inside a subshell would only exit the subshell.
   saved_ifs=$IFS
   IFS='
@@ -60,6 +61,14 @@ guard_nirupi() {
     [ "$1" = "$p" ] && die "refusing to modify NIRUPI-owned path: $1"
   done
   IFS=$saved_ifs
+}
+
+nirux_owned() {
+  if [ -L "$1" ]; then
+    case "$(readlink "$1")" in *share/nirux/current/bin/*) return 0 ;; esac
+  fi
+  case "$1" in */xsessions/niruwm.desktop) [ -f "$1" ] && grep -q '^# NIRUX owner:' "$1" && return 0 ;; esac
+  return 1
 }
 
 record() {
@@ -114,11 +123,11 @@ install_release() {
   dl_dir="$(mktemp -d)"
   trap 'rm -rf "$dl_dir"' EXIT HUP INT TERM
   say "Downloading NIRUWM $tag for x86_64 ..."
-  for b in niruwm nirubar niructl niruidle; do
+  for b in niruwm nirubar niructl niruidle niruwm-session; do
     fetch "$base/$b" "$dl_dir/$b" || die "cannot download $base/$b"
   done
   fetch "$base/SHA256SUMS" "$dl_dir/SHA256SUMS" || die "cannot download checksums"
-  for b in niruwm nirubar niructl niruidle; do
+  for b in niruwm nirubar niructl niruidle niruwm-session; do
     # Single quotes: $2 belongs to awk, not to the shell.
     expected="$(awk -v n="$b" '$2 == n {print $1}' "$dl_dir/SHA256SUMS")"
     [ -n "$expected" ] || die "no checksum for $b"
@@ -126,35 +135,38 @@ install_release() {
     [ "$expected" = "$actual" ] || die "checksum mismatch for $b"
     chmod 0755 "$dl_dir/$b"
   done
-  verify_versions "$dl_dir"
-  for b in niruwm nirubar niructl niruidle; do
+  verify_versions "$dl_dir" "$tag" "$(cat nirubar-version)"
+  for b in niruwm nirubar niructl niruidle niruwm-session; do guard_nirupi "$BINDIR/$b"; done
+  for b in niruwm nirubar niructl niruidle niruwm-session; do
     put "$dl_dir/$b" "$BINDIR/$b"
   done
-  put "$(dirname "$0")/session/niruwm-session" "$BINDIR/niruwm-session" 0755
   install_config
   say "Installed NIRUWM $tag in $BINDIR"
 }
 
-# Both binaries ship together. A mismatch means the release was built against
-# the wrong NIRUBAR branch, which has happened; refuse rather than mix versions.
+# Bundled binaries have independent versions, both verified before activation.
 verify_versions() {
   dir="$1"
   wm="$("$dir/niruwm" --version 2>/dev/null | awk '{print $2}')"
-  bar="$("$dir/nirubar" --version 2>/dev/null | awk '{print $2}')"
-  say "NIRUWM $wm, NIRUBAR $bar"
-  [ -n "$wm" ] && [ -n "$bar" ] || die "cannot read binary versions"
-  [ "$wm" = "$bar" ] || die "version mismatch: niruwm $wm / nirubar $bar — refusing to install a mixed pair"
+  [ "$wm" = "$2" ] || die "expected NIRUWM $2, got $wm"
+  if [ -n "$3" ]; then
+    bar="$("$dir/nirubar" --version 2>/dev/null | awk '{print $2}')"
+    [ "$bar" = "$3" ] || die "expected NIRUBAR $3, got $bar"
+    say "NIRUWM $wm, NIRUBAR $bar"
+  else say "NIRUWM $wm (source build; install NIRUBAR separately if wanted)"
+  fi
 }
 
 build_local() {
   need_cmd cargo || die "cargo is required for --build (or drop --build to use released binaries)"
   say "Building from source ..."
   ( cd "$(dirname "$0")" && cargo build --release --locked )
-  for b in niruwm nirubar niructl niruidle; do
+  verify_versions "$(dirname "$0")/target/release" "$VERSION" ''
+  for b in niruwm niructl niruidle niruwm-session; do guard_nirupi "$BINDIR/$b"; done
+  for b in niruwm niructl niruidle; do
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
   done
-  verify_versions "$(dirname "$0")/target/release"
   put "session/niruwm-session" "$BINDIR/niruwm-session" 0755
   install_config
   say "Installed from source in $BINDIR"
@@ -263,6 +275,7 @@ install_config() {
 }
 
 register_session() {
+  guard_nirupi "$SESSION_FILE"
   # Never write a root-owned session entry by accident: SDDM would start a
   # session that cannot read the user's config, and the binaries would live in
   # /root. This happened once when the installer was run under `sudo` instead
@@ -291,13 +304,14 @@ uninstall() {
   [ -f "$MANIFEST" ] || { say "Nothing to remove (no manifest)."; return 0; }
   while IFS="$(printf '\t')" read -r path _hash; do
     [ -n "$path" ] || continue
+    nirux_owned "$path" && { say "Keeping NIRUX-owned $path"; continue; }
     case "$path" in
-      */niruwm*|*/nirubar|*/niructl) ;;
+      */niruwm*|*/nirubar|*/niructl|*/niruidle) ;;
       *) say "Skipping unexpected manifest entry: $path"; continue ;;
     esac
     [ -e "$path" ] && rm -f "$path" && say "Removed $path"
   done < "$MANIFEST"
-  if [ -e "$SESSION_FILE" ]; then
+  if [ -e "$SESSION_FILE" ] && ! nirux_owned "$SESSION_FILE"; then
     grep -q "niruwm-session" "$SESSION_FILE" 2>/dev/null &&
       sudo rm -f "$SESSION_FILE" && say "Removed $SESSION_FILE"
   fi
@@ -308,7 +322,7 @@ uninstall() {
 
 check() {
   ok=0
-  for b in niruwm nirubar niructl niruidle niruwm-session; do
+  for b in niruwm niructl niruidle niruwm-session; do
     if [ -x "$BINDIR/$b" ]; then say "OK   $BINDIR/$b"; else say "FAIL missing $BINDIR/$b"; ok=1; fi
   done
   if [ -e "$SESSION_FILE" ]; then say "OK   $SESSION_FILE"; else say "INFO no SDDM entry (run --register-session)"; fi
@@ -320,7 +334,7 @@ check() {
   done
   IFS=$saved_ifs
   "$BINDIR/niruwm" --check-config || ok=1
-  "$BINDIR/nirubar" --check-config || ok=1
+  if [ -x "$BINDIR/nirubar" ]; then "$BINDIR/nirubar" --check-config || ok=1; fi
   return "$ok"
 }
 
