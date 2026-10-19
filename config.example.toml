@@ -59,6 +59,15 @@ font_size = 15.0
 # NIRUWM sets and rotates the wallpaper only when enabled = true. Leave it
 # false when NIRUPI's wallrotate.sh owns the background, or two programs will
 # fight over it.
+# ── The bar's location ──────────────────────────────────────────────────────
+# The `sun` module shows sunrise and sunset for this place, in degrees; north
+# and east are positive. Leave both at 0 to hide the times (the panel then
+# says why). At the top level, not under [bar]: NIRUWM reads this file too and
+# refuses fields it does not know, so a setting only the bar uses still has to
+# be somewhere both accept.
+weather_latitude = 58.22
+weather_longitude = 11.93
+
 [wallpaper]
 enabled = false
 # Directory to draw from. Images: jpg, jpeg, png, webp, bmp.
@@ -90,7 +99,7 @@ shuffle_on_start = true
 # Manual night light, applied by `niructl nightlight on` / Super+N.
 # 0,0 means no location; manual temperature still works.
 latitude = 58.22
-longitude = 11.92
+longitude = 11.93
 temperature = 3400
 
 [monitors]
@@ -105,11 +114,26 @@ workspaces = 9
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
 enabled = true
-# Modules to show, in order. Available: workspaces, network, battery, volume,
-# media, clock. Remove one to hide it. A font without the glyphs falls back to
-# plain text. `volume` and `media` need wpctl (or amixer) and playerctl; they
-# simply show nothing when those are missing.
-modules = ["workspaces", "media", "volume", "network", "updates", "battery", "clock"]
+# Modules to show, in order. Remove one to hide it. A font without the glyphs
+# falls back to plain text.
+#
+#   workspaces  one cell per workspace
+#   media       the playing track, scrolling when it is long
+#   volume      speaker and percentage; click mutes
+#   network     wired or wireless link
+#   updates     packages that can be upgraded
+#   pulse       cpu and memory, with a graph in the panel
+#   uptime      how long the machine has been on
+#   sun         sunrise and sunset, from `location` below
+#   battery     laptops only; other machines show nothing
+#   clock       date and time
+#
+# `volume` and `media` need wpctl (or amixer) and playerctl; `updates` needs
+# the package manager it finds. Each says what is missing when clicked.
+# Add "weather" (and optionally "sun") to enable the information panels.
+# Add "notifications" for an unread indicator backed by nirunotify.
+# Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
+modules = ["workspaces", "media", "volume", "brightness", "network", "updates", "battery", "clock"]
 # Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
 # the rest keep their number. Glyphs and words both work.
 #   tags = ["web", "code", "chat", "", "", "", "", "", ""]
@@ -120,6 +144,10 @@ cell_width = 30
 # Show the focused window title between the workspaces and the status.
 title = false
 title_max = 60
+# Seconds before the title appears. With 2, switching through windows shows no
+# titles at all and the one you settle on appears. 0 shows it at once. Only
+# useful with `title = true`.
+title_delay_seconds = 0
 # Date and time.
 show_date = true
 show_time = true
@@ -135,6 +163,8 @@ popups = true
 popup_timeout_seconds = 4
 # Characters kept from the media title before an ellipsis.
 media_width = 32
+# Width of the graph in the pulse panel, in characters.
+graph_width = 24
 # Minutes between package update checks. The result is cached in
 # ~/.cache/nirubar/updates so the bar never runs a package query per redraw.
 update_check_minutes = 30
@@ -199,6 +229,10 @@ action = "window_switcher"
 [[keys]]
 keys = "super+Escape"
 action = "lock"
+
+[[keys]]
+keys = "super+shift+q"
+action = "shell nirupi-power.sh"
 
 [[keys]]
 keys = "super+q"
@@ -419,9 +453,18 @@ action = "move_float up"
 keys = "super+ctrl+Down"
 action = "move_float down"
 
+# NIRUPI helpers, active when those programs are installed.
 [[keys]]
 keys = "super+shift+f"
 action = "start pcmanfm"
+
+[[keys]]
+keys = "super+v"
+action = "shell clip-menu.sh"
+
+[[keys]]
+keys = "super+ctrl+t"
+action = "shell nirupi theme menu"
 
 [[keys]]
 keys = "super+shift+Print"
