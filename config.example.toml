@@ -20,7 +20,7 @@
 
 # ── Appearance ──────────────────────────────────────────────────────────────
 # Theme name. Built in: niru-noir, niru-nord, niru-satie, niru-carl-larsson.
-# List them with: niructl theme      (or read ~/.local/share/niruwm/themes/)
+# List them with: niructl themes
 theme = "niru-noir"
 # ── Layouts ─────────────────────────────────────────────────────────────────
 # One of: tile, left, monocle, centered, centeredfloat, fibonacci, floating.
@@ -46,7 +46,7 @@ nirupi_compat = false
 terminal = ["kitty"]
 # Bound to Super+Shift+Enter. Empty means the terminal above.
 terminal_alt = []
-# Super+B starts this, unless NIRUPI's nirupi-browser exists.
+# Super+B starts this. Install/select a browser; NIRUPI override requires nirupi_compat.
 browser = ["brave"]
 # Super+P.
 launcher = ["rofi", "-show", "drun"]
@@ -61,8 +61,8 @@ font_size = 15.0
 # fight over it.
 # ── The bar's location ──────────────────────────────────────────────────────
 # The `sun` module shows sunrise and sunset for this place, in degrees; north
-# and east are positive. Leave both at 0 to hide the times (the panel then
-# says why). At the top level, not under [bar]: NIRUWM reads this file too and
+# and east are positive. Zero coordinates identify the equator/prime meridian.
+# At the top level, not under [bar]: NIRUWM reads this file too and
 # refuses fields it does not know, so a setting only the bar uses still has to
 # be somewhere both accept.
 weather_latitude = 58.22
@@ -119,12 +119,12 @@ enabled = true
 #
 #   workspaces  one cell per workspace
 #   media       the playing track, scrolling when it is long
-#   volume      speaker and percentage; click mutes
+#   volume      speaker and percentage; click opens information
 #   network     wired or wireless link
 #   updates     packages that can be upgraded
 #   pulse       cpu and memory, with a graph in the panel
 #   uptime      how long the machine has been on
-#   sun         sunrise and sunset, from `location` below
+#   sun         sunrise and sunset, from top-level coordinates above
 #   battery     laptops only; other machines show nothing
 #   clock       date and time
 #
@@ -133,7 +133,7 @@ enabled = true
 # Add "weather" (and optionally "sun") to enable the information panels.
 # Add "notifications" for an unread indicator backed by nirunotify.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "media", "volume", "brightness", "network", "updates", "battery", "clock"]
+modules = ["workspaces", "media", "volume", "brightness", "network", "battery", "clock"]
 # Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
 # the rest keep their number. Glyphs and words both work.
 #   tags = ["web", "code", "chat", "", "", "", "", "", ""]
@@ -175,7 +175,7 @@ tray = true
 # ── Key bindings ────────────────────────────────────────────────────────────
 # Every default binding is listed below, so changing one is a single edit.
 # An entry with the same keys replaces the default; a new keys entry adds a
-# binding. Remove a whole entry to disable that binding.
+# binding. Use action = "unbind" to disable a default binding.
 #
 # Modifiers: super, shift, ctrl, alt.
 # Keys: Return, space, Tab, Escape, Left/Right/Up/Down, Print, comma, period,
@@ -193,7 +193,7 @@ tray = true
 #   move_float left|right|up|down, resize_float dx dy,
 #   media_key NAME, brightness_step N, nightlight_toggle, dnd_toggle, idle_toggle,
 #   close, quit, reload, toggle_gaps, theme NAME,
-#   focusmon N, tagmon N   (multi-monitor, reserved)
+#   focusmon N, tagmon N   (relative monitor step: -1 or 1)
 
 [[keys]]
 keys = "super+Return"
@@ -232,7 +232,7 @@ action = "lock"
 
 [[keys]]
 keys = "super+shift+q"
-action = "shell nirupi-power.sh"
+action = "launcher_unified"
 
 [[keys]]
 keys = "super+q"
@@ -453,27 +453,19 @@ action = "move_float up"
 keys = "super+ctrl+Down"
 action = "move_float down"
 
-# NIRUPI helpers, active when those programs are installed.
+# Standalone desktop actions. NIRUPI helper bindings require nirupi_compat.
 [[keys]]
 keys = "super+shift+f"
 action = "start pcmanfm"
 
 [[keys]]
-keys = "super+v"
-action = "shell clip-menu.sh"
-
-[[keys]]
 keys = "super+ctrl+t"
-action = "shell nirupi theme menu"
-
-[[keys]]
-keys = "super+shift+Print"
-action = "shell flameshot gui"
+action = "launcher_unified"
 
 [[keys]]
 keys = "super+Print"
-action = "shell maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""
+action = "shell mkdir -p \"$HOME/Pictures\" && maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""
 
 [[keys]]
 keys = "Print"
-action = "shell maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""
+action = "shell mkdir -p \"$HOME/Pictures\" && maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""

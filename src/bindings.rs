@@ -190,8 +190,7 @@ impl Action {
         add("super+Return", "terminal");
         add("super+shift+Return", "terminal_alt");
         add("super+b", "browser");
-        // Super+P is NIRUWM's own launcher: rofi -show drun, no NIRUPI needed.
-        // Super+Shift+P uses NIRUPI's combined launcher when installed.
+        // Prefer the native launcher; the configured app launcher is fallback.
         add("super+p", "launcher");
         add("super+shift+p", "launcher_unified");
         // The old NIRUPI menu key now opens the suite launcher. NIRUPI's own
@@ -209,11 +208,11 @@ impl Action {
         add("super+g", "toggle_gaps");
         add(
             "super+Print",
-            "shell maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
+            "shell mkdir -p \"$HOME/Pictures\" && maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
         );
         add(
             "Print",
-            "shell maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
+            "shell mkdir -p \"$HOME/Pictures\" && maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
         );
 
         // ── Hardware media keys ──────────────────────────────────────────
