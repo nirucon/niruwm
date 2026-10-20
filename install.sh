@@ -13,7 +13,7 @@
 # read for writing and never removed.
 set -eu
 
-VERSION="0.16.20"
+VERSION="0.16.21"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -120,6 +120,7 @@ fetch() {
 install_release() {
   tag="${NIRUWM_VERSION:-$VERSION}"
   base="${NIRUWM_BASE_URL:-https://github.com/$REPO/releases/download/v$tag}"
+  metadata_base="${NIRUWM_METADATA_BASE_URL:-https://raw.githubusercontent.com/$REPO/v$tag}"
   dl_dir="$(mktemp -d)"
   trap 'rm -rf "$dl_dir"' EXIT HUP INT TERM
   say "Downloading NIRUWM $tag for x86_64 ..."
@@ -135,7 +136,23 @@ install_release() {
     [ "$expected" = "$actual" ] || die "checksum mismatch for $b"
     chmod 0755 "$dl_dir/$b"
   done
-  verify_versions "$dl_dir" "$tag" "$(cat nirubar-version)"
+  # The selected release, not this checkout, defines its bundled bar version.
+  # New releases ship nirubar-version beside the binaries; older releases fall
+  # back to the metadata in their tag. This makes NIRUWM_VERSION=old-tag work
+  # from a newer checkout without expecting the current bar version.
+  if fetch "$base/nirubar-version" "$dl_dir/nirubar-version" 2>/dev/null; then
+    expected="$(awk -v n=nirubar-version '$2 == n {print $1}' "$dl_dir/SHA256SUMS")"
+    if [ -n "$expected" ]; then
+      actual="$(sha256 "$dl_dir/nirubar-version")"
+      [ "$expected" = "$actual" ] || die "checksum mismatch for nirubar-version"
+    fi
+  else
+    fetch "$metadata_base/nirubar-version" "$dl_dir/nirubar-version" 2>/dev/null ||
+      die "cannot download nirubar-version metadata for v$tag"
+  fi
+  bar_version="$(cat "$dl_dir/nirubar-version")"
+  [ -n "$bar_version" ] || die "empty nirubar-version metadata for v$tag"
+  verify_versions "$dl_dir" "$tag" "$bar_version"
   for b in niruwm nirubar niructl niruidle niruwm-session; do guard_nirupi "$BINDIR/$b"; done
   for b in niruwm nirubar niructl niruidle niruwm-session; do
     put "$dl_dir/$b" "$BINDIR/$b"
