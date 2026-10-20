@@ -171,7 +171,7 @@ impl Wm {
     pub(crate) fn new() -> Result<Self> {
         let cfg = Config::load()?;
         let theme = Theme::load(&cfg.theme)?;
-        let wallpaper = Wallpaper::new(&cfg.wallpaper);
+        let wallpaper = Wallpaper::new(&cfg.wallpaper, &cfg.theme);
         let monitor_cfg = monitor_config(&cfg);
         let (c, s) = x11rb::connect(None)?;
         let root = c.setup().roots[s].root;
@@ -302,8 +302,14 @@ impl Wm {
         wm.start_bar();
         // Set the wallpaper once the WM owns the display; a failure here must
         // not stop the session, so it is reported and ignored.
-        if let Err(e) = wm.wallpaper.apply() {
-            eprintln!("niruwm: wallpaper: {e}");
+        match wm.wallpaper.apply_theme() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(e) = wm.wallpaper.apply() {
+                    eprintln!("niruwm: wallpaper: {e}");
+                }
+            }
+            Err(e) => eprintln!("niruwm: wallpaper: {e}"),
         }
         // Bring back what was open last time, when the user asked for it. A
         // failure here costs comfort, never the session.
@@ -564,9 +570,15 @@ impl Wm {
         self.theme = theme;
         self.publish_theme()?;
         self.monitor_cfg = monitor_config(&self.cfg);
-        self.wallpaper = Wallpaper::new(&self.cfg.wallpaper);
-        if let Err(e) = self.wallpaper.apply() {
-            eprintln!("niruwm: wallpaper reload: {e}");
+        self.wallpaper = Wallpaper::new(&self.cfg.wallpaper, &self.cfg.theme);
+        match self.wallpaper.apply_theme() {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                if let Err(e) = self.wallpaper.apply() {
+                    eprintln!("niruwm: wallpaper reload: {e}");
+                }
+            }
+            Err(e) => eprintln!("niruwm: wallpaper reload: {e}"),
         }
         self.resolve_bindings()?;
         self.grab()?;

@@ -267,6 +267,9 @@ impl Wm {
                     self.theme = t;
                     self.publish_theme()?;
                     self.update_borders()?;
+                    if let Err(e) = self.wallpaper.set_theme(&self.cfg.theme) {
+                        eprintln!("niruwm: wallpaper theme: {e}");
+                    }
                 }
             }
             Action::ToggleGaps => {

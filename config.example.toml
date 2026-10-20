@@ -56,9 +56,10 @@ font_size = 15.0
 # font_path = "/path/to/your/monospace.ttf"
 
 # ── Wallpaper ───────────────────────────────────────────────────────────────
-# NIRUWM sets and rotates the wallpaper only when enabled = true. Leave it
-# false when NIRUPI's wallrotate.sh owns the background, or two programs will
-# fight over it.
+# NIRUWM sets and rotates the wallpaper only when enabled = true. NIRUX
+# installs the four theme wallpaper sets under ~/Pictures/Wallpapers/NIRU.
+# Set this false when NIRUPI's wallrotate.sh owns the background, or two
+# programs will fight over it.
 # ── The bar's location ──────────────────────────────────────────────────────
 # The `sun` module shows sunrise and sunset for this place, in degrees; north
 # and east are positive. Zero coordinates identify the equator/prime meridian.
@@ -69,7 +70,7 @@ weather_latitude = 58.22
 weather_longitude = 11.93
 
 [wallpaper]
-enabled = false
+enabled = true
 # Directory to draw from. Images: jpg, jpeg, png, webp, bmp.
 dir = "~/Pictures/Wallpapers"
 # random = a new picture each rotation
@@ -87,6 +88,12 @@ scale = "fill"
 files = []
 # Pick a fresh picture at login, even in `fixed` mode.
 shuffle_on_start = true
+# When the theme changes, apply that theme's wallpaper from theme_dir. Your
+# own `mode = "single"` file is never overridden.
+follow_theme = true
+# NIRUX installs nirux-wallpaper-<theme>-4k.png and -8k.png here. A custom
+# theme `foo` can provide nirux-wallpaper-foo-4k.png.
+theme_dir = "~/Pictures/Wallpapers/NIRU"
 
 # ── Monitors ────────────────────────────────────────────────────────────────
 # Automatic by default: every connected screen gets its own nine workspaces,

@@ -227,6 +227,12 @@ pub struct WallpaperConfig {
     pub files: Vec<String>,
     /// Pick a new picture every time the session starts, even in `fixed` mode.
     pub shuffle_on_start: bool,
+    /// When the theme changes, use that theme's wallpaper from `theme_dir`.
+    /// Custom `single` wallpapers are never overridden.
+    pub follow_theme: bool,
+    /// Directory holding NIRUX-installed theme wallpapers. A custom theme
+    /// `foo` may provide `nirux-wallpaper-foo-4k.png` or `-8k.png`.
+    pub theme_dir: String,
 }
 
 impl Default for WallpaperConfig {
@@ -240,6 +246,8 @@ impl Default for WallpaperConfig {
             scale: "fill".into(),
             files: Vec::new(),
             shuffle_on_start: true,
+            follow_theme: true,
+            theme_dir: "~/Pictures/Wallpapers/NIRU".into(),
         }
     }
 }
@@ -520,6 +528,9 @@ impl Config {
         if self.wallpaper.rotation_minutes > 100_000 {
             return Err("wallpaper.rotation_minutes is too large".into());
         }
+        if self.wallpaper.follow_theme && self.wallpaper.theme_dir.trim().is_empty() {
+            return Err("wallpaper.theme_dir must not be empty when follow_theme is true".into());
+        }
         if self.bar.tags.len() > 9 {
             return Err("bar.tags has more than nine entries".into());
         }
@@ -782,6 +793,8 @@ pub fn dump() -> Result<String> {
     out.push_str(&format!("dir = {:?}\n", c.wallpaper.dir));
     out.push_str(&format!("mode = {:?}\n", c.wallpaper.mode));
     out.push_str(&format!("scale = {:?}\n", c.wallpaper.scale));
+    out.push_str(&format!("follow_theme = {}\n", c.wallpaper.follow_theme));
+    out.push_str(&format!("theme_dir = {:?}\n", c.wallpaper.theme_dir));
     out.push_str(&format!(
         "rotation_minutes = {}\n",
         c.wallpaper.rotation_minutes

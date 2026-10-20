@@ -59,6 +59,12 @@ pub struct Wallpaper {
     scale: String,
     /// Explicit file list; empty means "every image in dir".
     files: Vec<PathBuf>,
+    /// Current theme name, used when `follow_theme` is enabled.
+    theme: String,
+    /// Whether a theme change should apply that theme's default wallpaper.
+    follow_theme: bool,
+    /// Directory holding the NIRUX theme wallpapers.
+    theme_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +78,7 @@ pub enum Mode {
 }
 
 impl Wallpaper {
-    pub fn new(cfg: &crate::config::WallpaperConfig) -> Self {
+    pub fn new(cfg: &crate::config::WallpaperConfig, theme: &str) -> Self {
         let dir = expand_home(&cfg.dir);
         let mode = match cfg.mode.as_str() {
             "single" => Mode::Single,
@@ -93,7 +99,50 @@ impl Wallpaper {
             enabled: cfg.enabled,
             scale: cfg.scale.clone(),
             files: cfg.files.iter().map(|f| expand_home(f)).collect(),
+            theme: theme.to_string(),
+            follow_theme: cfg.follow_theme,
+            theme_dir: expand_home(&cfg.theme_dir),
         }
+    }
+
+    /// Apply the current theme's wallpaper. Returns `None` when theme
+    /// following is disabled, the wallpaper is off, the mode is `single`, or
+    /// no matching asset exists; callers then fall back to normal selection.
+    pub fn apply_theme(&mut self) -> Result<Option<PathBuf>> {
+        if !self.enabled || !self.follow_theme || self.mode == Mode::Single {
+            return Ok(None);
+        }
+        let Some(path) = self.theme_image() else {
+            return Ok(None);
+        };
+        set_image(&path, &self.scale);
+        if self.mode == Mode::Fixed {
+            self.image = Some(path.clone());
+        }
+        self.last_change = Instant::now();
+        Ok(Some(path))
+    }
+
+    /// Update the theme and apply its wallpaper when following is enabled.
+    pub fn set_theme(&mut self, theme: &str) -> Result<Option<PathBuf>> {
+        self.theme = theme.to_string();
+        self.apply_theme()
+    }
+
+    fn theme_image(&self) -> Option<PathBuf> {
+        let slug = self.theme.strip_prefix("niru-").unwrap_or(&self.theme);
+        if slug.is_empty() {
+            return None;
+        }
+        for suffix in ["4k.png", "8k.png", "png", "jpg", "jpeg", "webp", "bmp"] {
+            let candidate = self
+                .theme_dir
+                .join(format!("nirux-wallpaper-{slug}-{suffix}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
     }
 
     /// Apply the wallpaper now and return which file was used.
@@ -229,6 +278,56 @@ mod tests {
     }
 
     #[test]
+    fn theme_wallpaper_uses_the_theme_slug() {
+        let dir = tmpdir("theme-images");
+        File::create(dir.join("nirux-wallpaper-nord-4k.png")).unwrap();
+        File::create(dir.join("nirux-wallpaper-nord-8k.png")).unwrap();
+        let mut w = Wallpaper {
+            dir: dir.clone(),
+            mode: Mode::Random,
+            image: None,
+            last_change: Instant::now(),
+            rotation: Duration::from_secs(600),
+            enabled: true,
+            scale: "fill".into(),
+            files: Vec::new(),
+            theme: "niru-nord".into(),
+            follow_theme: true,
+            theme_dir: dir.clone(),
+        };
+        assert_eq!(
+            w.theme_image(),
+            Some(dir.join("nirux-wallpaper-nord-4k.png"))
+        );
+        w.theme = "mytheme".into();
+        File::create(dir.join("nirux-wallpaper-mytheme-4k.png")).unwrap();
+        assert_eq!(
+            w.theme_image(),
+            Some(dir.join("nirux-wallpaper-mytheme-4k.png"))
+        );
+    }
+
+    #[test]
+    fn single_mode_never_follows_the_theme() {
+        let dir = tmpdir("theme-single");
+        File::create(dir.join("nirux-wallpaper-noir-4k.png")).unwrap();
+        let mut w = Wallpaper {
+            dir: dir.clone(),
+            mode: Mode::Single,
+            image: None,
+            last_change: Instant::now(),
+            rotation: Duration::from_secs(600),
+            enabled: true,
+            scale: "fill".into(),
+            files: Vec::new(),
+            theme: "niru-noir".into(),
+            follow_theme: true,
+            theme_dir: dir,
+        };
+        assert_eq!(w.apply_theme().unwrap(), None);
+    }
+
+    #[test]
     fn picks_only_images() {
         let dir = tmpdir("images");
         File::create(dir.join("a.png")).unwrap();
@@ -243,6 +342,9 @@ mod tests {
             enabled: true,
             scale: "fill".into(),
             files: Vec::new(),
+            theme: "niru-noir".into(),
+            follow_theme: true,
+            theme_dir: PathBuf::new(),
         };
         let picked = w.pick().expect("at least one image");
         assert!(picked.extension().is_some());
@@ -261,6 +363,9 @@ mod tests {
             enabled: true,
             scale: "fill".into(),
             files: Vec::new(),
+            theme: "niru-noir".into(),
+            follow_theme: true,
+            theme_dir: PathBuf::new(),
         };
         assert_eq!(w.pick(), None);
     }
@@ -278,6 +383,9 @@ mod tests {
             enabled: false,
             scale: "fill".into(),
             files: Vec::new(),
+            theme: "niru-noir".into(),
+            follow_theme: true,
+            theme_dir: PathBuf::new(),
         };
         assert_eq!(w.apply().unwrap(), None);
         assert!(!w.tick());
@@ -296,6 +404,9 @@ mod tests {
             enabled: true,
             scale: "fill".into(),
             files: Vec::new(),
+            theme: "niru-noir".into(),
+            follow_theme: true,
+            theme_dir: PathBuf::new(),
         };
         assert!(!w.tick(), "must not rotate before the interval");
     }
