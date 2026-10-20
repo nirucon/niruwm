@@ -42,6 +42,8 @@ pub struct Config {
     /// default so a standalone install has no dead shortcut.
     pub nirupi_compat: bool,
     pub wallpaper: WallpaperConfig,
+    /// Optional applications to open on named workspaces after login.
+    pub autostart: AutostartConfig,
     pub monitors: MonitorsConfig,
     pub scratchpad: ScratchpadConfig,
     /// Window rules, applied when a window is first managed.
@@ -254,6 +256,39 @@ impl Default for WallpaperConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+pub struct AutostartConfig {
+    /// Run the entries at login. Empty `apps` means nothing starts.
+    pub enabled: bool,
+    /// Seconds to wait after each workspace group before switching to the next.
+    pub settle_seconds: u32,
+    /// Workspace to return to when the sequence finishes. 0 leaves the last one.
+    pub return_workspace: u32,
+    /// Applications to start, grouped by 1-based workspace.
+    pub apps: Vec<AutostartApp>,
+}
+
+impl Default for AutostartConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            settle_seconds: 2,
+            return_workspace: 1,
+            apps: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AutostartApp {
+    /// 1-based workspace number.
+    pub workspace: u32,
+    /// Argument list, never passed through a shell.
+    pub command: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Bar {
     /// `true` renders the bar as a dock window (NIRUWM only). Ignored by
     /// standalone use.
@@ -324,6 +359,7 @@ impl Default for Config {
             keys: Vec::new(),
             nirupi_compat: false,
             wallpaper: WallpaperConfig::default(),
+            autostart: AutostartConfig::default(),
             monitors: MonitorsConfig::default(),
             nightlight: NightlightConfig::default(),
             brightness: BrightnessConfig::default(),
@@ -530,6 +566,20 @@ impl Config {
         }
         if self.wallpaper.follow_theme && self.wallpaper.theme_dir.trim().is_empty() {
             return Err("wallpaper.theme_dir must not be empty when follow_theme is true".into());
+        }
+        if self.autostart.settle_seconds > 60 {
+            return Err("autostart.settle_seconds must be at most 60".into());
+        }
+        if self.autostart.return_workspace > 9 {
+            return Err("autostart.return_workspace must be between 0 and 9".into());
+        }
+        for app in &self.autostart.apps {
+            if !(1..=9).contains(&app.workspace) {
+                return Err("autostart.apps workspace must be between 1 and 9".into());
+            }
+            if app.command.is_empty() {
+                return Err("autostart.apps command must not be empty".into());
+            }
         }
         if self.bar.tags.len() > 9 {
             return Err("bar.tags has more than nine entries".into());
@@ -799,6 +849,22 @@ pub fn dump() -> Result<String> {
         "rotation_minutes = {}\n",
         c.wallpaper.rotation_minutes
     ));
+    out.push_str("\n[autostart]\n");
+    out.push_str(&format!("enabled = {}\n", c.autostart.enabled));
+    out.push_str(&format!(
+        "settle_seconds = {}\n",
+        c.autostart.settle_seconds
+    ));
+    out.push_str(&format!(
+        "return_workspace = {}\n",
+        c.autostart.return_workspace
+    ));
+    for app in &c.autostart.apps {
+        out.push_str(&format!(
+            "# workspace {}: {:?}\n",
+            app.workspace, app.command
+        ));
+    }
     out.push_str("\n[nightlight]\n");
     out.push_str(&format!("latitude = {}\n", c.nightlight.latitude));
     out.push_str(&format!("longitude = {}\n", c.nightlight.longitude));

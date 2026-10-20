@@ -1,6 +1,7 @@
 mod clients;
 mod events;
 mod keys;
+mod mouse;
 
 /// Exposed for `--doctor`, which reports which keys the layout can deliver.
 pub fn keysym_for(name: &str) -> Option<u32> {

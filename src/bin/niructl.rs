@@ -36,7 +36,7 @@ const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME |
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
-lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
+autostart | lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -895,6 +895,82 @@ fn wallpaper(cmd: &str) -> Result<()> {
     }
 }
 
+fn current_tag(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+) -> Option<u32> {
+    property_u32(c, root, atom("_NET_CURRENT_DESKTOP").ok()?)
+}
+
+fn switch_tag(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    workspace: u32,
+) -> Result<()> {
+    if workspace == 0 || workspace > 9 {
+        return Err("autostart workspace must be between 1 and 9".into());
+    }
+    let tag = workspace - 1;
+    send(c, root, atom("_NIRUWM_COMMAND")?, [1, tag, 0, 0, 0])?;
+    for _ in 0..50 {
+        if current_tag(c, root, atom) == Some(tag) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(format!("window manager did not switch to workspace {workspace}").into())
+}
+
+fn autostart(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+) -> Result<()> {
+    let cfg = Config::load()?;
+    if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() || cfg.nirupi_compat {
+        return Ok(());
+    }
+    if cfg.restore_session || !session_state::load().is_empty() {
+        // A saved session already contains what was open. Running autostart on
+        // top of it would open everything twice.
+        return Ok(());
+    }
+    let mut apps = cfg.autostart.apps.clone();
+    apps.sort_by_key(|app| app.workspace);
+
+    let mut index = 0;
+    let mut last_workspace = 0u32;
+    while index < apps.len() {
+        let workspace = apps[index].workspace;
+        switch_tag(c, root, atom, workspace)?;
+        last_workspace = workspace;
+        while index < apps.len() && apps[index].workspace == workspace {
+            let command = &apps[index].command;
+            if let Some((program, arguments)) = command.split_first() {
+                match std::process::Command::new(program).args(arguments).spawn() {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("niructl: autostart {program}: {e}"),
+                }
+                // Give the window manager time to see the first window before
+                // the next program opens on the same workspace.
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            index += 1;
+        }
+        if cfg.autostart.settle_seconds > 0 {
+            std::thread::sleep(Duration::from_secs(u64::from(cfg.autostart.settle_seconds)));
+        }
+    }
+
+    let return_to = cfg.autostart.return_workspace;
+    if return_to > 0 && current_tag(c, root, atom) == Some(last_workspace.saturating_sub(1)) {
+        switch_tag(c, root, atom, return_to)?;
+    }
+    Ok(())
+}
+
 fn offline(cmd: &str) -> Result<()> {
     // The session file is a plain list, so these work without a window
     // manager too: useful from the console before starting a session.
@@ -1112,6 +1188,10 @@ fn run() -> Result<()> {
             }
         );
         return Ok(());
+    }
+
+    if cmd == "autostart" {
+        return autostart(&c, root, &atom);
     }
 
     let (action, value) = match cmd.as_str() {

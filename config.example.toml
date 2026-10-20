@@ -18,6 +18,17 @@
 #
 # Restart the session only for session.conf changes.
 
+# Sections:
+#   Appearance and layout
+#   Programs and font
+#   Weather location
+#   Wallpaper
+#   Autostart
+#   Night light and brightness
+#   Monitors
+#   Bar
+#   Key bindings
+
 # ── Appearance ──────────────────────────────────────────────────────────────
 # Theme name. Built in: niru-noir, niru-nord, niru-satie, niru-carl-larsson.
 # List them with: niructl themes
@@ -55,20 +66,20 @@ launcher = ["rofi", "-show", "drun"]
 font_size = 15.0
 # font_path = "/path/to/your/monospace.ttf"
 
+# ── Weather location ───────────────────────────────────────────────────────
+# The `sun` module shows sunrise and sunset for this place, in degrees; north
+# and east are positive. Zero coordinates identify the equator/prime meridian.
+# At the top level, not under [bar]: NIRUWM reads this file too and refuses
+# fields it does not know, so a setting only the bar uses still has to be
+# somewhere both accept.
+weather_latitude = 58.22
+weather_longitude = 11.93
+
 # ── Wallpaper ───────────────────────────────────────────────────────────────
 # NIRUWM sets and rotates the wallpaper only when enabled = true. NIRUX
 # installs the four theme wallpaper sets under ~/Pictures/Wallpapers/NIRU.
 # Set this false when NIRUPI's wallrotate.sh owns the background, or two
 # programs will fight over it.
-# ── The bar's location ──────────────────────────────────────────────────────
-# The `sun` module shows sunrise and sunset for this place, in degrees; north
-# and east are positive. Zero coordinates identify the equator/prime meridian.
-# At the top level, not under [bar]: NIRUWM reads this file too and
-# refuses fields it does not know, so a setting only the bar uses still has to
-# be somewhere both accept.
-weather_latitude = 58.22
-weather_longitude = 11.93
-
 [wallpaper]
 enabled = true
 # Directory to draw from. Images: jpg, jpeg, png, webp, bmp.
@@ -95,13 +106,29 @@ follow_theme = true
 # theme `foo` can provide nirux-wallpaper-foo-4k.png.
 theme_dir = "~/Pictures/Wallpapers/NIRU"
 
-# ── Monitors ────────────────────────────────────────────────────────────────
-# Automatic by default: every connected screen gets its own nine workspaces,
-# like dwm. Plug a screen in or out and NIRUWM follows.
+# ── Autostart ──────────────────────────────────────────────────────────────
+# Optional programs opened once at login. They are grouped by workspace and
+# started in workspace order, so a terminal, browser and editor do not all open
+# in one heap. Multiple entries on the same workspace run in the order written.
+# `command` is an argument list, never a shell string. Empty `apps` means
+# nothing starts. A saved-session restore and NIRUPI compatibility suppress
+# this sequence so the same programs are not opened twice.
+[autostart]
+enabled = false
+# Seconds to wait after each workspace group before moving to the next one.
+settle_seconds = 2
+# Return here when the sequence finishes. 0 leaves the last workspace active.
+return_workspace = 1
+# [[autostart.apps]]
+# workspace = 1
+# command = ["kitty"]
 #
-# `profiles` overrides one screen by its RandR name (see `xrandr --listmonitors`
-# or `niructl monitors`). Use it when a screen should have named workspaces, a
-# different count, or be the one that holds focus at login.
+# [[autostart.apps]]
+# workspace = 3
+# command = ["helium"]
+
+
+# ── Night light and brightness ─────────────────────────────────────────────
 [nightlight]
 # Manual night light, applied by `niructl nightlight on` / Super+N.
 # 0,0 means no location; manual temperature still works.
@@ -120,6 +147,14 @@ day_temperature = 6500
 # Empty uses brightnessctl's default device; step is the up/down percentage.
 device = ""
 step = 5
+
+# ── Monitors ────────────────────────────────────────────────────────────────
+# Automatic by default: every connected screen gets its own nine workspaces,
+# like dwm. Plug a screen in or out and NIRUWM follows.
+#
+# `profiles` overrides one screen by its RandR name (see `xrandr --listmonitors`
+# or `niructl monitors`). Use it when a screen should have named workspaces, a
+# different count, or be the one that holds focus at login.
 
 [monitors]
 workspaces = 9
@@ -192,6 +227,10 @@ update_check_minutes = 30
 tray = true
 
 # ── Key bindings ────────────────────────────────────────────────────────────
+# Mouse: hold Super and drag with button 1 to move a window (a tiled window
+# becomes floating), or button 3 to resize it from the nearest corner.
+# Super+Shift+Space toggles floating and tiling again.
+#
 # Every default binding is listed below, so changing one is a single edit.
 # An entry with the same keys replaces the default; a new keys entry adds a
 # binding. Use action = "unbind" to disable a default binding.

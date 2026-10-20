@@ -79,6 +79,7 @@ impl Wm {
                 EventMask::ENTER_WINDOW | EventMask::PROPERTY_CHANGE | EventMask::FOCUS_CHANGE,
             ),
         )?;
+        self.grab_mouse_buttons(w)?;
         self.c.change_save_set(SetMode::INSERT, w)?;
 
         let take_focus = self.has_protocol(w, "WM_TAKE_FOCUS");

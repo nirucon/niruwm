@@ -104,6 +104,7 @@ impl Wm {
                         }
                     }
                 }
+                Event::ButtonPress(e) => self.mouse_button(e)?,
                 Event::KeyPress(e) => return self.key(e),
                 Event::MappingNotify(_) => {
                     self.resolve_bindings()?;
@@ -139,7 +140,7 @@ impl Wm {
         }
     }
 
-    fn configure_request(&mut self, e: ConfigureRequestEvent) -> Result<()> {
+    pub(super) fn configure_request(&mut self, e: ConfigureRequestEvent) -> Result<()> {
         let Some(c) = self.clients.iter().find(|c| c.win == e.window) else {
             // Unmanaged (override-redirect or a panel): honour it as-is.
             self.c

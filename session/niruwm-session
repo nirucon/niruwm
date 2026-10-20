@@ -106,6 +106,7 @@ command -v qt6ct >/dev/null 2>&1 && export QT_QPA_PLATFORMTHEME=qt6ct
 command -v kvantummanager >/dev/null 2>&1 && export QT_STYLE_OVERRIDE=kvantum
 export XCURSOR_THEME="${XCURSOR_THEME:-Adwaita}"
 export COLORTERM=truecolor
+export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-NIRUWM}"
 
 # ── Keyboard: Swedish by default, overridable ───────────────────────────────
 if command -v setxkbmap >/dev/null 2>&1; then
@@ -136,7 +137,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""
 cleanup() {
   # The sleep-lock helper has its own child inhibitor and monitor. Give it a
   # TERM first so its trap can release them, then make sure the direct child
@@ -144,7 +145,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -310,6 +311,18 @@ WM_LOG="$LOG_DIR/session.log"
   printf 'exec: %s\n' "$WM"
   printf 'config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/niruwm/config.toml"
 } >>"$WM_LOG" 2>/dev/null || WM_LOG=/dev/null
+if [ "$NIRUPI_COMPAT" = 0 ] && [ -x "$HOME/.local/bin/niructl" ]; then
+  (
+    i=0
+    while [ "$i" -lt 100 ]; do
+      pgrep -u "$(id -u)" -x niruwm >/dev/null 2>&1 && break
+      sleep 0.2
+      i=$((i + 1))
+    done
+    sleep 0.5
+    "$HOME/.local/bin/niructl" autostart
+  ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
+fi
 if [ "$WM_LOG" = /dev/null ]; then
   "$WM" "$@"
 else
