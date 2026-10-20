@@ -392,6 +392,20 @@ fn login_action(action: &str) -> Result<()> {
     Err(format!("no login backend for {action}: install logind/elogind or systemd").into())
 }
 
+fn power_action(action: &str) -> Result<()> {
+    if action == "suspend" {
+        ensure_lock_ready()?;
+    }
+    if let Err(e) = login_action(action) {
+        let body = format!("{action} failed: {e}");
+        let _ = std::process::Command::new("notify-send")
+            .args(["-a", "NIRU", "-u", "critical", "Power", &body])
+            .status();
+        return Err(e);
+    }
+    Ok(())
+}
+
 fn desktop(action: &str, args: &[String]) -> Result<()> {
     match action {
         "lock" => lock_action(),
@@ -399,11 +413,7 @@ fn desktop(action: &str, args: &[String]) -> Result<()> {
             let saver = program("niruscreensaver").ok_or("niruscreensaver is not installed")?;
             spawn_action(&saver, &["--preview"])
         }
-        "suspend" => {
-            ensure_lock_ready()?;
-            login_action("suspend")
-        }
-        "logout" | "reboot" | "shutdown" => login_action(action),
+        "suspend" | "logout" | "reboot" | "shutdown" => power_action(action),
         "dnd" => dnd(args),
         _ => Err(USAGE.into()),
     }

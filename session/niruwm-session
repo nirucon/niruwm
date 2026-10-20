@@ -136,7 +136,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""
 cleanup() {
   # The sleep-lock helper has its own child inhibitor and monitor. Give it a
   # TERM first so its trap can release them, then make sure the direct child
@@ -144,7 +144,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -152,6 +152,21 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
+
+# Graphical privilege prompts need a Polkit agent. Do not start a second one
+# when a desktop session already owns the role.
+if ! pgrep -u "$(id -u)" -f 'polkit.*authentication-agent' >/dev/null 2>&1; then
+  for agent in \
+    /usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1 \
+    /usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1 \
+    /usr/libexec/polkit-gnome-authentication-agent-1 \
+    /usr/bin/lxpolkit; do
+    [ -x "$agent" ] || continue
+    "$agent" >/dev/null 2>&1 & POLKIT_PID=$!
+    break
+  done
+  [ -n "$POLKIT_PID" ] || log 'no Polkit authentication agent found; graphical privilege prompts are unavailable'
+fi
 
 if [ "$START_PICOM" = 1 ] && command -v picom >/dev/null 2>&1 &&
    ! pgrep -u "$(id -u)" -x picom >/dev/null 2>&1; then
