@@ -604,11 +604,17 @@ impl Wm {
     /// Let NIRUX regenerate kitty/fish colours after a theme change. The hook
     /// is optional, detached, and owns no state in the window manager.
     pub(crate) fn run_terminal_theme_hook(&mut self, theme: &str) {
-        let Some(home) = std::env::var_os("HOME") else {
-            return;
-        };
-        let hook = std::path::PathBuf::from(home).join(".local/bin/nirux-theme-hook");
-        if hook.is_file() {
+        let home_hook = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .map(|home| home.join(".local/bin/nirux-theme-hook"));
+        let hook = home_hook.filter(|path| path.is_file()).or_else(|| {
+            std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|dir| dir.join("nirux-theme-hook"))
+                    .find(|path| path.is_file())
+            })
+        });
+        if let Some(hook) = hook {
             self.spawn_detached(&[hook.to_string_lossy().into_owned(), theme.to_string()]);
         }
     }
