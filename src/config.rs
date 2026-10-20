@@ -352,14 +352,20 @@ impl Config {
                 match fs::read_to_string(legacy_path()) {
                     Ok(s) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        return Ok(Self::default())
+                        let value = toml::Value::Table(Default::default());
+                        let mut c: Self = value.clone().try_into()?;
+                        apply_appearance_defaults(&mut c, &value);
+                        c.validate()?;
+                        return Ok(c);
                     }
                     Err(e) => return Err(e.into()),
                 }
             }
             Err(e) => return Err(e.into()),
         };
-        let c: Self = toml::from_str(&text)?;
+        let value: toml::Value = text.parse()?;
+        let mut c: Self = value.clone().try_into()?;
+        apply_appearance_defaults(&mut c, &value);
         c.validate()?;
         Ok(c)
     }
@@ -502,6 +508,120 @@ impl Config {
     }
 }
 
+/// Read the small, versioned appearance contract. Invalid or unsupported
+/// files are ignored with one diagnostic: the current theme keeps working.
+fn appearance_value() -> Option<toml::Value> {
+    let path = directory().join("appearance.toml");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            eprintln!("niruwm: {}: {e}", path.display());
+            return None;
+        }
+    };
+    let value: toml::Value = match text.parse() {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("niruwm: {}: {e}", path.display());
+            return None;
+        }
+    };
+    if value.get("schema").and_then(|v| v.as_integer()) != Some(1) {
+        eprintln!("niruwm: {}: unsupported appearance schema", path.display());
+        return None;
+    }
+    if let Some(colors) = value.get("colors") {
+        let Some(colors) = colors.as_table() else {
+            eprintln!("niruwm: {}: colors must be a table", path.display());
+            return None;
+        };
+        for colour in colors.values() {
+            let Some(text) = colour.as_str() else {
+                eprintln!("niruwm: {}: colours must be strings", path.display());
+                return None;
+            };
+            if Theme::pixel(text).is_err() {
+                eprintln!("niruwm: {}: invalid colour {text:?}", path.display());
+                return None;
+            }
+        }
+    }
+    if let Some(size) = value.get("font").and_then(|font| font.get("size")) {
+        if !size
+            .as_float()
+            .is_some_and(|size| size.is_finite() && size > 0.0)
+        {
+            eprintln!("niruwm: {}: font.size must be positive", path.display());
+            return None;
+        }
+    }
+    if let Some(motion) = value.get("motion").and_then(|motion| motion.get("reduced")) {
+        if motion.as_bool().is_none() {
+            eprintln!("niruwm: {}: motion.reduced must be boolean", path.display());
+            return None;
+        }
+    }
+    Some(value)
+}
+
+fn appearance_colour(value: &toml::Value, key: &str) -> Option<String> {
+    value.get("colors")?.get(key)?.as_str().map(str::to_string)
+}
+
+fn appearance_font_size(value: &toml::Value) -> Option<f32> {
+    value.get("font")?.get("size")?.as_float().map(|v| v as f32)
+}
+
+fn appearance_font_path(value: &toml::Value) -> Option<String> {
+    value.get("font")?.get("path")?.as_str().map(str::to_string)
+}
+
+fn appearance_spacing(value: &toml::Value, key: &str) -> Option<u16> {
+    value
+        .get("spacing")?
+        .get(key)?
+        .as_integer()
+        .and_then(|n| u16::try_from(n).ok())
+}
+
+fn apply_appearance_defaults(cfg: &mut Config, file: &toml::Value) {
+    let Some(appearance) = appearance_value() else {
+        return;
+    };
+    if file.get("font_size").is_none() {
+        if let Some(size) = appearance_font_size(&appearance) {
+            cfg.font_size = size;
+        }
+    }
+    if file.get("font_path").is_none() {
+        if let Some(path) = appearance_font_path(&appearance) {
+            cfg.font_path = Some(path);
+        }
+    }
+    if file.get("gap").is_none() {
+        if let Some(gap) = appearance_spacing(&appearance, "gap") {
+            cfg.gap = gap;
+        }
+    }
+    if file.get("border_width").is_none() {
+        if let Some(width) = appearance
+            .get("focus")
+            .and_then(|focus| focus.get("width"))
+            .and_then(|width| width.as_integer())
+            .and_then(|width| u16::try_from(width).ok())
+            .or_else(|| appearance_spacing(&appearance, "border_width"))
+        {
+            cfg.border_width = width;
+        }
+    }
+    if file.get("bar_height").is_none() {
+        if let Some(height) = appearance_spacing(&appearance, "bar_height") {
+            cfg.bar_height = height;
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Theme {
@@ -536,7 +656,22 @@ impl Theme {
             }
             _ => fs::read_to_string(&user_file)?,
         };
-        let theme: Self = toml::from_str(&text)?;
+        let mut theme: Self = toml::from_str(&text)?;
+        if !user_file.exists() {
+            if let Some(appearance) = appearance_value() {
+                for (field, key) in [
+                    (&mut theme.background, "background"),
+                    (&mut theme.foreground, "foreground"),
+                    (&mut theme.muted, "muted"),
+                    (&mut theme.border, "border"),
+                    (&mut theme.focus, "focus"),
+                ] {
+                    if let Some(colour) = appearance_colour(&appearance, key) {
+                        *field = colour;
+                    }
+                }
+            }
+        }
         for s in [
             &theme.background,
             &theme.foreground,
