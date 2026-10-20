@@ -49,6 +49,9 @@ niructl theme niru-nord
 Session options: `~/.config/niruwm/session.conf`; idle timing:
 `~/.config/niruui/screensaver.toml`. Notifications default to native when installed,
 with Dunst fallback. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
+On a theme change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` is
+run when present. NIRUX uses it to update kitty/fish colours; NIRUWM itself does
+not depend on it.
 
 [Roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md) ·
 [Hardware/session notes](docs/BARE-METAL.md) · [X11 tests](tests/x11.rs)
