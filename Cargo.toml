@@ -1,6 +1,6 @@
 [package]
 name = "niruwm"
-version = "0.16.36"
+version = "0.16.37"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
@@ -10,6 +10,7 @@ description = "Minimal NIRU X11 desktop component"
 x11rb = { version = "0.13", features = ["randr", "screensaver"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.22"
 chrono = "0.4"
 # Keep the lockfile compatible with the declared Rust 1.75 baseline.
 indexmap = "=2.7.1"

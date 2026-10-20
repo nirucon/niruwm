@@ -20,7 +20,12 @@ mod session_state;
 
 use chrono::{Local, Timelike};
 use config::{Config, Result, Theme};
-use std::time::Duration;
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use x11rb::{
     connection::{Connection, RequestConnection as _},
     protocol::{randr::ConnectionExt as _, xproto::*},
@@ -30,6 +35,7 @@ use x11rb::{
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
+wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
@@ -629,6 +635,266 @@ fn dnd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn wallpaper_config_path() -> PathBuf {
+    config::directory().join("config.toml")
+}
+
+fn wallpaper_expand(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest);
+    }
+    PathBuf::from(path)
+}
+
+fn wallpaper_is_image(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg" | "jpeg" | "png" | "webp" | "bmp")
+    )
+}
+
+fn wallpaper_friendly_name(base: &str) -> String {
+    let named = match base {
+        "nirux-wallpaper-noir" => Some("Niru Noir"),
+        "nirux-wallpaper-nord" => Some("Niru Nord"),
+        "nirux-wallpaper-satie" => Some("Niru Satie"),
+        "nirux-wallpaper-carl-larsson" => Some("Niru Carl Larsson"),
+        "nirux-wallpaper-noir-havamal-19" => Some("Håvamål 19"),
+        "nirux-wallpaper-noir-rooted-in-less" => Some("Rooted in Less"),
+        "nirux-wallpaper-noir-space-to-think-silhouette" => Some("Space to Think Silhouette"),
+        _ => None,
+    };
+    if let Some(name) = named {
+        return name.into();
+    }
+    let stem = base.strip_prefix("nirux-wallpaper-").unwrap_or(base);
+    stem.split('-')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn wallpaper_collect(
+    dir: &Path,
+    theme_dir: &Path,
+    seen: &mut std::collections::HashSet<PathBuf>,
+    entries: &mut std::collections::BTreeMap<String, (PathBuf, u8)>,
+) {
+    let Ok(read_dir) = fs::read_dir(dir) else {
+        return;
+    };
+    for file in read_dir.flatten() {
+        let path = file.path();
+        if !path.is_file() || !wallpaper_is_image(&path) {
+            continue;
+        }
+        if path.starts_with(theme_dir) {
+            continue;
+        }
+        let Ok(canonical) = path.canonicalize() else {
+            continue;
+        };
+        if !seen.insert(canonical.clone()) {
+            continue;
+        }
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(wallpaper_friendly_name)
+            .unwrap_or_else(|| "Wallpaper".into());
+        entries.entry(name).or_insert((canonical, 0));
+        if entries.len() >= 200 {
+            return;
+        }
+    }
+}
+
+fn wallpaper_list() -> Result<()> {
+    let cfg = Config::load()?;
+    let theme_dir = wallpaper_expand(&cfg.wallpaper.theme_dir);
+    let dir = wallpaper_expand(&cfg.wallpaper.dir);
+    let mut seen = std::collections::HashSet::new();
+    let mut themes: std::collections::BTreeMap<String, (PathBuf, u8)> =
+        std::collections::BTreeMap::new();
+    if let Ok(read_dir) = fs::read_dir(&theme_dir) {
+        for file in read_dir.flatten() {
+            let path = file.path();
+            if !path.is_file() || !wallpaper_is_image(&path) {
+                continue;
+            }
+            let Ok(canonical) = path.canonicalize() else {
+                continue;
+            };
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let (base, score) = if let Some(base) = stem.strip_suffix("-4k") {
+                (base, 2)
+            } else if let Some(base) = stem.strip_suffix("-8k") {
+                (base, 1)
+            } else {
+                (stem, 0)
+            };
+            let entry = themes
+                .entry(wallpaper_friendly_name(base))
+                .or_insert((canonical.clone(), 0));
+            if score > entry.1 {
+                *entry = (canonical, score);
+            }
+        }
+    }
+    for (name, (path, _)) in themes {
+        seen.insert(path.clone());
+        println!("{name}\t{}", path.display());
+    }
+    let mut user = std::collections::BTreeMap::new();
+    wallpaper_collect(&dir, &theme_dir, &mut seen, &mut user);
+    for file in &cfg.wallpaper.files {
+        let path = wallpaper_expand(file);
+        let Ok(canonical) = path.canonicalize() else {
+            continue;
+        };
+        if !canonical.is_file()
+            || !wallpaper_is_image(&canonical)
+            || !seen.insert(canonical.clone())
+        {
+            continue;
+        }
+        let name = canonical
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(wallpaper_friendly_name)
+            .unwrap_or_else(|| "Wallpaper".into());
+        user.entry(name).or_insert((canonical, 0));
+    }
+    for (name, (path, _)) in user {
+        println!("{name}\t{}", path.display());
+    }
+    Ok(())
+}
+
+fn wallpaper_status() -> Result<()> {
+    let cfg = Config::load()?;
+    let wallpaper = &cfg.wallpaper;
+    println!("enabled={}", wallpaper.enabled);
+    println!("mode={}", wallpaper.mode);
+    println!("rotation_minutes={}", wallpaper.rotation_minutes);
+    println!("scale={}", wallpaper.scale);
+    println!("follow_theme={}", wallpaper.follow_theme);
+    println!("file={}", wallpaper.file);
+    println!("dir={}", wallpaper.dir);
+    println!("theme_dir={}", wallpaper.theme_dir);
+    Ok(())
+}
+
+fn wallpaper_document() -> Result<toml_edit::DocumentMut> {
+    let path = wallpaper_config_path();
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut document = text.parse::<toml_edit::DocumentMut>()?;
+    if !document.contains_key("wallpaper") {
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(false);
+        document["wallpaper"] = toml_edit::Item::Table(table);
+    }
+    Ok(document)
+}
+
+fn write_wallpaper_document(document: &toml_edit::DocumentMut) -> Result<()> {
+    let path = wallpaper_config_path();
+    let dir = path.parent().ok_or("configuration directory is missing")?;
+    fs::create_dir_all(dir)?;
+    let mode = fs::metadata(&path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777)
+        .unwrap_or(0o644);
+    let temp = dir.join(format!(".config.toml.{}", std::process::id()));
+    fs::write(&temp, document.to_string())?;
+    fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn wallpaper_update(args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).ok_or(USAGE)?;
+    let mut document = wallpaper_document()?;
+    match sub {
+        "set" => {
+            let raw = args.get(1).ok_or(USAGE)?;
+            let path = wallpaper_expand(raw)
+                .canonicalize()
+                .map_err(|e| format!("wallpaper not found: {raw}: {e}"))?;
+            if !path.is_file() || !wallpaper_is_image(&path) {
+                return Err(format!("not a supported image: {raw}").into());
+            }
+            document["wallpaper"]["enabled"] = toml_edit::value(true);
+            document["wallpaper"]["mode"] = toml_edit::value("single");
+            document["wallpaper"]["file"] = toml_edit::value(path.display().to_string());
+        }
+        "mode" => {
+            let value = args.get(1).map(String::as_str).ok_or(USAGE)?;
+            if !["random", "fixed", "single"].contains(&value) {
+                return Err("wallpaper mode must be random, fixed or single".into());
+            }
+            document["wallpaper"]["enabled"] = toml_edit::value(true);
+            document["wallpaper"]["mode"] = toml_edit::value(value);
+        }
+        "rotation" => {
+            let value = args
+                .get(1)
+                .ok_or(USAGE)?
+                .parse::<u32>()
+                .map_err(|_| "rotation must be minutes")?;
+            if value > 100_000 {
+                return Err("rotation is too large".into());
+            }
+            document["wallpaper"]["enabled"] = toml_edit::value(true);
+            document["wallpaper"]["rotation_minutes"] = toml_edit::value(i64::from(value));
+        }
+        "scale" => {
+            let value = args.get(1).map(String::as_str).ok_or(USAGE)?;
+            if !["fill", "fit", "stretch", "center"].contains(&value) {
+                return Err("wallpaper scale must be fill, fit, stretch or center".into());
+            }
+            document["wallpaper"]["enabled"] = toml_edit::value(true);
+            document["wallpaper"]["scale"] = toml_edit::value(value);
+        }
+        "follow-theme" => {
+            let value = args.get(1).map(String::as_str).ok_or(USAGE)?;
+            let enabled = match value {
+                "on" => true,
+                "off" => false,
+                _ => return Err("follow-theme must be on or off".into()),
+            };
+            document["wallpaper"]["follow_theme"] = toml_edit::value(enabled);
+        }
+        _ => return Err(USAGE.into()),
+    }
+    write_wallpaper_document(&document)?;
+    Ok(())
+}
+
+fn wallpaper(cmd: &str) -> Result<()> {
+    match cmd {
+        "list" => wallpaper_list(),
+        "status" => wallpaper_status(),
+        _ => Err(USAGE.into()),
+    }
+}
+
 fn offline(cmd: &str) -> Result<()> {
     // The session file is a plain list, so these work without a window
     // manager too: useful from the console before starting a session.
@@ -775,6 +1041,12 @@ fn run() -> Result<()> {
     ) {
         return offline(cmd);
     }
+    if cmd == "wallpaper" {
+        let sub = args.get(1).map(String::as_str).unwrap_or("");
+        if sub == "list" || sub == "status" {
+            return wallpaper(sub);
+        }
+    }
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
     let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
@@ -872,13 +1144,17 @@ fn run() -> Result<()> {
             write_theme(name)?;
             (4, 0)
         }
+        "wallpaper" => {
+            wallpaper_update(&args[1..])?;
+            (4, 0)
+        }
         _ => return Err(USAGE.into()),
     };
 
     if cmd == "quit" {
         // Exit the WM cleanly: the session script then tears down helpers.
         send(&c, root, atom(CMD_ATOM)?, [action, value, 0, 0, 0])?;
-    } else if cmd == "reload" || cmd == "theme" {
+    } else if cmd == "reload" || cmd == "theme" || cmd == "wallpaper" {
         // One serial for both the property the bar watches and the
         // acknowledgement the window manager publishes. A fixed sleep could
         // report success before the configuration was even parsed.
