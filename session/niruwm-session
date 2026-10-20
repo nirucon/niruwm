@@ -311,7 +311,7 @@ WM_LOG="$LOG_DIR/session.log"
   printf 'exec: %s\n' "$WM"
   printf 'config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/niruwm/config.toml"
 } >>"$WM_LOG" 2>/dev/null || WM_LOG=/dev/null
-if [ "$NIRUPI_COMPAT" = 0 ] && [ -x "$HOME/.local/bin/niructl" ]; then
+if [ "$NIRUPI_COMPAT" = 0 ] && command -v niructl >/dev/null 2>&1; then
   (
     i=0
     while [ "$i" -lt 100 ]; do
@@ -320,7 +320,7 @@ if [ "$NIRUPI_COMPAT" = 0 ] && [ -x "$HOME/.local/bin/niructl" ]; then
       i=$((i + 1))
     done
     sleep 0.5
-    "$HOME/.local/bin/niructl" autostart
+    niructl autostart
   ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
 fi
 if [ "$WM_LOG" = /dev/null ]; then
