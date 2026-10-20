@@ -11,6 +11,13 @@ use std::{error::Error, fs, path::PathBuf};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+fn parse_clock(s: &str) -> Option<(u32, u32)> {
+    let (hour, minute) = s.trim().split_once(':')?;
+    let hour: u32 = hour.parse().ok()?;
+    let minute: u32 = minute.parse().ok()?;
+    (hour < 24 && minute < 60).then_some((hour, minute))
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -41,6 +48,7 @@ pub struct Config {
     pub rules: Vec<Rule>,
     /// Manual night-light settings shared by `niructl` and the WM.
     pub nightlight: NightlightConfig,
+    pub brightness: BrightnessConfig,
     /// Settings NIRUBAR reads from the same file. It refuses unknown fields as
     /// strictly as this program does, so every setting either program knows
     /// has to be accepted here, or the shared file is a config the other one
@@ -123,6 +131,14 @@ pub struct NightlightConfig {
     pub longitude: f64,
     /// Kelvin applied when night light is enabled.
     pub temperature: u32,
+    /// `manual`, `fixed` or `solar`.
+    pub mode: String,
+    /// Fixed schedule start, local time `HH:MM`.
+    pub on: String,
+    /// Fixed schedule end, local time `HH:MM`.
+    pub off: String,
+    /// Neutral daytime temperature for solar mode.
+    pub day_temperature: u32,
 }
 
 impl Default for NightlightConfig {
@@ -131,6 +147,28 @@ impl Default for NightlightConfig {
             latitude: 0.0,
             longitude: 0.0,
             temperature: 3400,
+            mode: "manual".into(),
+            on: "20:00".into(),
+            off: "07:00".into(),
+            day_temperature: 6500,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BrightnessConfig {
+    /// brightnessctl device name or wildcard. Empty uses the default.
+    pub device: String,
+    /// Percentage step for `niructl brightness up/down`.
+    pub step: u32,
+}
+
+impl Default for BrightnessConfig {
+    fn default() -> Self {
+        Self {
+            device: String::new(),
+            step: 5,
         }
     }
 }
@@ -280,6 +318,7 @@ impl Default for Config {
             wallpaper: WallpaperConfig::default(),
             monitors: MonitorsConfig::default(),
             nightlight: NightlightConfig::default(),
+            brightness: BrightnessConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             rules: Vec::new(),
             weather_latitude: 0.0,
@@ -433,8 +472,19 @@ impl Config {
         if !(-90.0..=90.0).contains(&self.nightlight.latitude)
             || !(-180.0..=180.0).contains(&self.nightlight.longitude)
             || !(1000..=10000).contains(&self.nightlight.temperature)
+            || !(1000..=10000).contains(&self.nightlight.day_temperature)
         {
             return Err("nightlight latitude/longitude/temperature out of range".into());
+        }
+        if !matches!(self.nightlight.mode.as_str(), "manual" | "fixed" | "solar") {
+            return Err("nightlight.mode must be manual, fixed or solar".into());
+        }
+        if parse_clock(&self.nightlight.on).is_none() || parse_clock(&self.nightlight.off).is_none()
+        {
+            return Err("nightlight.on/off must be HH:MM".into());
+        }
+        if self.brightness.step == 0 || self.brightness.step > 50 {
+            return Err("brightness.step must be between 1 and 50".into());
         }
         if !(0.1..=0.95).contains(&self.scratchpad.width)
             || !(0.1..=0.95).contains(&self.scratchpad.height)
@@ -740,6 +790,16 @@ pub fn dump() -> Result<String> {
     out.push_str(&format!("latitude = {}\n", c.nightlight.latitude));
     out.push_str(&format!("longitude = {}\n", c.nightlight.longitude));
     out.push_str(&format!("temperature = {}\n", c.nightlight.temperature));
+    out.push_str(&format!("mode = {:?}\n", c.nightlight.mode));
+    out.push_str(&format!("on = {:?}\n", c.nightlight.on));
+    out.push_str(&format!("off = {:?}\n", c.nightlight.off));
+    out.push_str(&format!(
+        "day_temperature = {}\n",
+        c.nightlight.day_temperature
+    ));
+    out.push_str("\n[brightness]\n");
+    out.push_str(&format!("device = {:?}\n", c.brightness.device));
+    out.push_str(&format!("step = {}\n", c.brightness.step));
     out.push_str("\n[bar]\n");
     out.push_str(&format!("modules = {:?}\n", c.bar.modules));
     out.push_str(&format!("tags = {:?}\n", c.bar.tags));
@@ -929,6 +989,21 @@ cell_width = 34
         assert!(c.bar.show_title);
         assert_eq!(c.bar.cell_width, 34);
         assert_eq!(c.terminal, vec!["kitty"]);
+    }
+
+    #[test]
+    fn nightlight_schedule_and_brightness_validate() {
+        let c: Config = toml::from_str(
+            "[nightlight]\nmode = \"fixed\"\non = \"20:30\"\noff = \"07:15\"\n[brightness]\nstep = 7\ndevice = \"intel_backlight\"\n",
+        )
+        .unwrap();
+        assert!(c.validate().is_ok());
+        assert_eq!(c.brightness.step, 7);
+        assert_eq!(c.nightlight.mode, "fixed");
+        let bad: Config = toml::from_str("[nightlight]\nmode = \"sometimes\"\n").unwrap();
+        assert!(bad.validate().is_err());
+        let bad: Config = toml::from_str("[brightness]\nstep = 0\n").unwrap();
+        assert!(bad.validate().is_err());
     }
 
     #[test]

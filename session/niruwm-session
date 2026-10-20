@@ -130,7 +130,7 @@ if command -v xsetroot >/dev/null 2>&1; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""
 cleanup() {
   # The sleep-lock helper has its own child inhibitor and monitor. Give it a
   # TERM first so its trap can release them, then make sure the direct child
@@ -138,7 +138,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -182,6 +182,19 @@ case "$NOTIFICATION_PROVIDER" in
     log "unknown NOTIFICATION_PROVIDER=$NOTIFICATION_PROVIDER; expected auto, native, dunst or external"
     ;;
 esac
+
+# ── Night-light schedule ────────────────────────────────────────────────────
+# Manual mode does nothing here. Fixed/solar mode starts one watcher that owns
+# every gammastep call and re-applies after resume or output changes.
+NIGHTLIGHT_MODE=$(awk -F= '
+  /^[[:space:]]*\[nightlight\]/ { inside = 1; next }
+  /^[[:space:]]*\[/ { inside = 0 }
+  inside && $1 ~ /mode[[:space:]]*$/ { gsub(/[ \t"]/, "", $2); print $2; exit }
+' "$CONFIG_HOME/niruwm/config.toml" 2>/dev/null || :)
+if [ "$NIGHTLIGHT_MODE" != "" ] && [ "$NIGHTLIGHT_MODE" != manual ] \
+   && command -v niructl >/dev/null 2>&1; then
+  niructl nightlight watch >/dev/null 2>&1 & NIGHTLIGHT_PID=$!
+fi
 
 # ── Idle ladder ─────────────────────────────────────────────────────────────
 # NIRUIDLE is part of NIRUWM and owns the whole sequence: screensaver after

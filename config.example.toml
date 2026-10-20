@@ -101,6 +101,18 @@ shuffle_on_start = true
 latitude = 58.22
 longitude = 11.93
 temperature = 3400
+# manual: Super+N / niructl nightlight on|off
+# fixed:  on/off local times every day
+# solar:  gammastep computes sunrise/sunset from the coordinates
+mode = "manual"
+on = "20:00"
+off = "07:00"
+day_temperature = 6500
+
+[brightness]
+# Empty uses brightnessctl's default device; step is the up/down percentage.
+device = ""
+step = 5
 
 [monitors]
 workspaces = 9

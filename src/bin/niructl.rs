@@ -18,7 +18,9 @@ mod monitor;
 #[allow(dead_code)] // niructl reads the list, it never writes one
 mod session_state;
 
+use chrono::{Local, Timelike};
 use config::{Config, Result, Theme};
+use std::time::Duration;
 use x11rb::{
     connection::{Connection, RequestConnection as _},
     protocol::{randr::ConnectionExt as _, xproto::*},
@@ -27,7 +29,7 @@ use x11rb::{
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
-clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K | \
+clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
@@ -60,9 +62,14 @@ fn command(program: &str, args: &[String]) -> Result<std::process::Output> {
     Ok(out)
 }
 
-fn backlight_percent() -> Option<u32> {
+fn backlight_percent(device: &str) -> Option<u32> {
+    let mut args = vec!["-m".to_string()];
+    if !device.is_empty() {
+        args.push("-d".into());
+        args.push(device.to_string());
+    }
     let out = std::process::Command::new("brightnessctl")
-        .args(["-m"])
+        .args(&args)
         .output()
         .ok()?;
     if !out.status.success() {
@@ -110,14 +117,24 @@ fn brightness(args: &[String]) -> Result<()> {
     if !which("brightnessctl") {
         return Err("brightnessctl is not installed".into());
     }
+    let cfg = Config::load().unwrap_or_default();
+    let device = cfg.brightness.device.clone();
+    let step = cfg.brightness.step.clamp(1, 50);
     let action = args.first().map(String::as_str).unwrap_or("status");
     let set = |value: &str| -> Result<()> {
-        command("brightnessctl", &["-q".into(), "set".into(), value.into()])?;
+        let mut full = vec!["-q".to_string()];
+        if !device.is_empty() {
+            full.push("-d".into());
+            full.push(device.clone());
+        }
+        full.push("set".into());
+        full.push(value.into());
+        command("brightnessctl", &full)?;
         Ok(())
     };
     match action {
-        "up" => set("5%+")?,
-        "down" => set("5%-")?,
+        "up" => set(&format!("{step}%+"))?,
+        "down" => set(&format!("{step}%-"))?,
         "set" => {
             let value: u32 = args
                 .get(1)
@@ -130,13 +147,13 @@ fn brightness(args: &[String]) -> Result<()> {
             set(&format!("{value}%"))?;
         }
         "status" => {
-            let percent = backlight_percent().ok_or("no backlight device is available")?;
+            let percent = backlight_percent(&device).ok_or("no backlight device is available")?;
             println!("{percent}%");
             return Ok(());
         }
         _ => return Err("brightness needs up, down, set N or status".into()),
     }
-    let percent = backlight_percent();
+    let percent = backlight_percent(&device);
     notify(
         "Brightness",
         &format!(
@@ -158,6 +175,44 @@ fn nightlight_state() -> std::path::PathBuf {
                 .join(".local/state")
         });
     base.join("niruwm/nightlight")
+}
+
+fn clock_minutes(value: &str) -> Option<u32> {
+    let (hour, minute) = value.trim().split_once(':')?;
+    let hour: u32 = hour.parse().ok()?;
+    let minute: u32 = minute.parse().ok()?;
+    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+}
+
+fn fixed_schedule_active(now: u32, on: u32, off: u32) -> bool {
+    if on < off {
+        now >= on && now < off
+    } else {
+        now >= on || now < off
+    }
+}
+
+fn solar_temperature(location: &str, day: u32, night: u32) -> Option<u32> {
+    let out = std::process::Command::new("gammastep")
+        .args(["-l", location, "-t", &format!("{day}:{night}"), "-p"])
+        .output()
+        .ok()?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for line in text.lines() {
+        if let Some(value) = line.split("Color temperature:").nth(1) {
+            return value
+                .trim()
+                .trim_end_matches('K')
+                .trim()
+                .parse::<u32>()
+                .ok();
+        }
+    }
+    None
 }
 
 fn nightlight(args: &[String]) -> Result<()> {
@@ -204,6 +259,33 @@ fn nightlight(args: &[String]) -> Result<()> {
         notify("Night light", "off", None);
         Ok(())
     };
+    let reconcile = || -> Result<()> {
+        let clock = Local::now();
+        let now = clock.hour() * 60 + clock.minute();
+        let desired = match nl.mode.as_str() {
+            "fixed" => {
+                let on = clock_minutes(&nl.on).ok_or("nightlight.on must be HH:MM")?;
+                let off = clock_minutes(&nl.off).ok_or("nightlight.off must be HH:MM")?;
+                fixed_schedule_active(now, on, off).then_some(nl.temperature)
+            }
+            "solar" => Some(
+                solar_temperature(&location, nl.day_temperature, nl.temperature)
+                    .ok_or("gammastep could not compute the solar temperature")?,
+            ),
+            _ => None,
+        };
+        match desired {
+            Some(kelvin) => {
+                let current = std::fs::read_to_string(&state).ok();
+                if current.as_deref() != Some(&kelvin.to_string()) {
+                    apply(kelvin)?;
+                }
+            }
+            None if state.exists() => off()?,
+            _ => {}
+        }
+        Ok(())
+    };
     match args.first().map(String::as_str).unwrap_or("status") {
         "on" => apply(nl.temperature)?,
         "off" => off()?,
@@ -225,11 +307,37 @@ fn nightlight(args: &[String]) -> Result<()> {
             }
             apply(kelvin)?;
         }
-        "status" => match std::fs::read_to_string(&state) {
-            Ok(kelvin) => println!("on {kelvin} K at {location}"),
-            Err(_) => println!("off"),
-        },
-        _ => return Err("nightlight needs on, off, toggle, status or temperature K".into()),
+        "apply" => reconcile()?,
+        "watch" => {
+            if nl.mode == "manual" {
+                println!("nightlight mode is manual; nothing to watch");
+                return Ok(());
+            }
+            loop {
+                if let Err(e) = reconcile() {
+                    eprintln!("niructl: nightlight: {e}");
+                }
+                std::thread::sleep(Duration::from_secs(30));
+            }
+        }
+        "status" => {
+            let current = std::fs::read_to_string(&state).unwrap_or_else(|_| "off".into());
+            println!("mode: {}", nl.mode);
+            match nl.mode.as_str() {
+                "fixed" => println!("schedule: {} - {}", nl.on, nl.off),
+                "solar" => println!(
+                    "solar: {location} ({} K day, {} K night)",
+                    nl.day_temperature, nl.temperature
+                ),
+                _ => {}
+            }
+            println!("current: {current}");
+        }
+        _ => {
+            return Err(
+                "nightlight needs on, off, toggle, status, temperature K, apply or watch".into(),
+            )
+        }
     }
     Ok(())
 }
@@ -709,7 +817,7 @@ fn run() -> Result<()> {
         );
         println!(
             "brightness={}",
-            backlight_percent()
+            backlight_percent(&Config::load()?.brightness.device)
                 .map(|p| format!("{p}%"))
                 .unwrap_or_else(|| "unavailable".into())
         );
@@ -1022,6 +1130,17 @@ mod tests {
         let mut mode = std::fs::metadata(&path).unwrap().permissions();
         mode.set_mode(0o755);
         std::fs::set_permissions(&path, mode).unwrap();
+    }
+
+    #[test]
+    fn fixed_schedule_handles_daytime_and_midnight_wrap() {
+        assert!(fixed_schedule_active(12 * 60, 8 * 60, 18 * 60));
+        assert!(!fixed_schedule_active(7 * 60, 8 * 60, 18 * 60));
+        assert!(fixed_schedule_active(23 * 60, 20 * 60, 7 * 60));
+        assert!(fixed_schedule_active(2 * 60, 20 * 60, 7 * 60));
+        assert!(!fixed_schedule_active(12 * 60, 20 * 60, 7 * 60));
+        assert_eq!(clock_minutes("20:30"), Some(20 * 60 + 30));
+        assert_eq!(clock_minutes("24:00"), None);
     }
 
     #[test]
