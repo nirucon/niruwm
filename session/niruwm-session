@@ -129,6 +129,12 @@ if command -v xsetroot >/dev/null 2>&1; then
   xsetroot -cursor_name left_ptr 2>/dev/null || :
 fi
 
+# Regenerate kitty/fish colours for the configured theme at login. Optional:
+# NIRUWM works without NIRUX but only the NIRUX hook writes terminal colours.
+if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
+  "$HOME/.local/bin/nirux-theme-hook" >/dev/null 2>&1 || log 'terminal theme hook failed'
+fi
+
 # ── Helper processes, all tracked for clean logout ──────────────────────────
 STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""
 cleanup() {

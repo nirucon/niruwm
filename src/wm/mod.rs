@@ -566,6 +566,7 @@ impl Wm {
         let old_height = self.cfg.bar_height;
         let old_enabled = self.cfg.bar.enabled;
         let old_monitors = self.monitor_cfg.clone();
+        let old_theme = self.cfg.theme.clone();
         self.cfg = cfg;
         self.theme = theme;
         self.publish_theme()?;
@@ -579,6 +580,10 @@ impl Wm {
                 }
             }
             Err(e) => eprintln!("niruwm: wallpaper reload: {e}"),
+        }
+        if old_theme != self.cfg.theme {
+            let terminal_theme = self.cfg.theme.clone();
+            self.run_terminal_theme_hook(&terminal_theme);
         }
         self.resolve_bindings()?;
         self.grab()?;
@@ -594,6 +599,18 @@ impl Wm {
 
     pub(crate) fn start(&mut self, program: &[String]) {
         self.spawn_owned(program);
+    }
+
+    /// Let NIRUX regenerate kitty/fish colours after a theme change. The hook
+    /// is optional, detached, and owns no state in the window manager.
+    pub(crate) fn run_terminal_theme_hook(&mut self, theme: &str) {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let hook = std::path::PathBuf::from(home).join(".local/bin/nirux-theme-hook");
+        if hook.is_file() {
+            self.spawn_detached(&[hook.to_string_lossy().into_owned(), theme.to_string()]);
+        }
     }
 
     pub(crate) fn spawn_owned(&mut self, program: &[String]) {

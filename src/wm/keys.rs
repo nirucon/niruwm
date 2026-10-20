@@ -270,6 +270,8 @@ impl Wm {
                     if let Err(e) = self.wallpaper.set_theme(&self.cfg.theme) {
                         eprintln!("niruwm: wallpaper theme: {e}");
                     }
+                    let terminal_theme = self.cfg.theme.clone();
+                    self.run_terminal_theme_hook(&terminal_theme);
                 }
             }
             Action::ToggleGaps => {
