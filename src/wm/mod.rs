@@ -62,6 +62,52 @@ pub(crate) struct PendingWindow {
     pub(crate) focused: bool,
 }
 
+/// Bounded, coalescing pool for short-lived hardware helpers.
+///
+/// Volume, brightness and toggle keys can arrive faster than the helper exits.
+/// Starting one child per event lets a key storm fill the process table. The
+/// pool keeps at most `limit` helpers, and a key already running is not started
+/// twice; the next press works as soon as the first helper returns.
+pub(crate) struct HelperPool {
+    running: HashMap<String, Child>,
+    limit: usize,
+}
+
+impl HelperPool {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            running: HashMap::new(),
+            limit,
+        }
+    }
+
+    /// Returns true when a process was started, false when coalesced or full.
+    pub(crate) fn spawn(&mut self, key: &str, program: &[String]) -> bool {
+        self.reap();
+        if self.running.contains_key(key) || self.running.len() >= self.limit {
+            return false;
+        }
+        let Some((cmd, args)) = program.split_first() else {
+            return false;
+        };
+        match Command::new(cmd).args(args).spawn() {
+            Ok(child) => {
+                self.running.insert(key.to_string(), child);
+                true
+            }
+            Err(e) => {
+                eprintln!("niruwm: cannot start {cmd}: {e}");
+                false
+            }
+        }
+    }
+
+    pub(crate) fn reap(&mut self) {
+        self.running
+            .retain(|_, child| !matches!(child.try_wait(), Ok(Some(_))));
+    }
+}
+
 pub(crate) struct Wm {
     pub(crate) c: RustConnection,
     pub(crate) root: Window,
@@ -78,6 +124,7 @@ pub(crate) struct Wm {
     pub(crate) bars: Vec<Child>,
     /// Reaped from the event loop; application/helper launches create no threads.
     children: Vec<Child>,
+    helpers: HelperPool,
     pub(crate) hidden: HashSet<Window>,
     pub(crate) pending_unmaps: HashMap<Window, u32>,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
@@ -212,6 +259,7 @@ impl Wm {
             layout: Layout::Tile,
             bars: Vec::new(),
             children: Vec::new(),
+            helpers: HelperPool::new(4),
             hidden: HashSet::new(),
             pending_unmaps: HashMap::new(),
             bindings: Vec::new(),
@@ -586,9 +634,14 @@ impl Wm {
         }
     }
 
+    pub(crate) fn spawn_helper(&mut self, key: &str, program: &[String]) -> bool {
+        self.helpers.spawn(key, program)
+    }
+
     pub(crate) fn reap_children(&mut self) {
         self.children
             .retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+        self.helpers.reap();
     }
 }
 
@@ -614,5 +667,28 @@ fn monitor_config(cfg: &Config) -> MonitorConfig {
 impl Drop for Wm {
     fn drop(&mut self) {
         self.stop_bars();
+    }
+}
+
+#[cfg(test)]
+mod helper_pool_tests {
+    use super::HelperPool;
+
+    fn sleeper() -> Vec<String> {
+        vec!["sh".into(), "-c".into(), "sleep 0.2".into()]
+    }
+
+    #[test]
+    fn coalesces_the_same_key_and_bounds_running_children() {
+        let mut pool = HelperPool::new(2);
+        assert!(pool.spawn("brightness", &sleeper()));
+        assert!(!pool.spawn("brightness", &sleeper()), "same key coalesced");
+        assert!(pool.spawn("volume", &sleeper()));
+        assert!(!pool.spawn("nightlight", &sleeper()), "limit is bounded");
+        std::thread::sleep(std::time::Duration::from_millis(350));
+        assert!(
+            pool.spawn("nightlight", &sleeper()),
+            "finished slots are reused"
+        );
     }
 }

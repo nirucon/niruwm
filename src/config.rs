@@ -392,6 +392,8 @@ impl Config {
     }
 
     fn validate(&self) -> Result<()> {
+        use std::fmt::Write as _;
+
         if !(8.0..=40.0).contains(&self.font_size)
             || !(0.1..=0.9).contains(&self.master_ratio)
             || self.gap > 100
@@ -474,8 +476,23 @@ impl Config {
                 return Err(format!("unknown bar module {m:?}").into());
             }
         }
-        if self.bar.date_format.is_empty() || self.bar.time_format.is_empty() {
-            return Err("bar.date_format and bar.time_format must not be empty".into());
+        for (name, format) in [
+            ("date_format", &self.bar.date_format),
+            ("time_format", &self.bar.time_format),
+        ] {
+            // Match NIRUBAR: token parsing alone accepts parse-only
+            // directives such as %#z. Exercise formatting through a fallible
+            // sink so both programs reject the same clock formats.
+            if format.is_empty()
+                || write!(
+                    &mut String::new(),
+                    "{}",
+                    chrono::Local::now().format(format)
+                )
+                .is_err()
+            {
+                return Err(format!("bar.{name} must be a valid nonempty strftime format").into());
+            }
         }
         for binding in &self.keys {
             crate::bindings::parse_keys(&binding.keys)?;
@@ -817,5 +834,17 @@ cell_width = 34
         let mut c = Config::default();
         c.bar.cell_width = 4;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_clock_formats_are_rejected_like_nirubar() {
+        for bad in ["%", "%Q", "%#", "%#z", ""] {
+            let mut c = Config::default();
+            c.bar.time_format = bad.into();
+            assert!(c.validate().is_err(), "accepted time format {bad:?}");
+            c.bar.time_format = "%H:%M".into();
+            c.bar.date_format = bad.into();
+            assert!(c.validate().is_err(), "accepted date format {bad:?}");
+        }
     }
 }

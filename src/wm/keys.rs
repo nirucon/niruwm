@@ -147,16 +147,22 @@ impl Wm {
             Action::Scratchpad => self.toggle_scratchpad()?,
             Action::BrightnessStep(step) => {
                 let direction = if step >= 0 { "up" } else { "down" };
-                self.spawn_detached(&["niructl".into(), "brightness".into(), direction.into()]);
+                self.spawn_helper(
+                    "brightness",
+                    &["niructl".into(), "brightness".into(), direction.into()],
+                );
             }
             Action::NightlightToggle => {
-                self.spawn_detached(&["niructl".into(), "nightlight".into(), "toggle".into()]);
+                self.spawn_helper(
+                    "nightlight",
+                    &["niructl".into(), "nightlight".into(), "toggle".into()],
+                );
             }
             Action::DndToggle => {
-                self.spawn_detached(&["niructl".into(), "dnd".into(), "toggle".into()]);
+                self.spawn_helper("dnd", &["niructl".into(), "dnd".into(), "toggle".into()]);
             }
             Action::IdleToggle => {
-                self.spawn_detached(&["niructl".into(), "idle".into(), "toggle".into()]);
+                self.spawn_helper("idle", &["niructl".into(), "idle".into(), "toggle".into()]);
             }
             Action::MediaKey(name) => {
                 // `media_key` knows which command each key needs. The previous
@@ -338,7 +344,7 @@ impl Wm {
         if let Some((program, args)) = cmd {
             let mut full = vec![program.to_string()];
             full.extend(args);
-            self.spawn_detached(&full);
+            self.spawn_helper(&format!("media:{name}"), &full);
         }
     }
 
