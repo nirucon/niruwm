@@ -40,6 +40,7 @@ clear-session | brightness up|down|set N|status | nightlight on|off|toggle|statu
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 display list|save NAME|preview NAME|apply NAME|keep|revert|status | \
+powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
@@ -1605,6 +1606,147 @@ fn display(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PowerProfileState {
+    active: String,
+    profiles: Vec<String>,
+    source: String,
+}
+
+fn powerprofilesctl(args: &[&str]) -> Result<String> {
+    let program = program("powerprofilesctl")
+        .ok_or("power profiles need powerprofilesctl (power-profiles-daemon)")?;
+    provider_query(
+        &program,
+        &args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn power_source() -> String {
+    let base = std::path::Path::new("/sys/class/power_supply");
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return "unknown".into();
+    };
+    let mut battery = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let kind = std::fs::read_to_string(path.join("type")).unwrap_or_default();
+        let kind = kind.trim();
+        if kind == "Mains" || kind == "USB" {
+            if std::fs::read_to_string(path.join("online"))
+                .map(|v| v.trim() == "1")
+                .unwrap_or(false)
+            {
+                return "ac".into();
+            }
+        } else if kind == "Battery" {
+            battery = true;
+        }
+    }
+    if battery {
+        "battery".into()
+    } else {
+        "unknown".into()
+    }
+}
+
+fn power_profile_state() -> Result<PowerProfileState> {
+    let active = powerprofilesctl(&["get"])?.trim().to_string();
+    if active.is_empty() {
+        return Err("powerprofilesctl returned no active profile".into());
+    }
+    let list = powerprofilesctl(&["list"])?;
+    let mut profiles = Vec::new();
+    for line in list.lines() {
+        let clean = line
+            .trim()
+            .trim_start_matches('*')
+            .trim()
+            .trim_end_matches(':');
+        if !clean.is_empty()
+            && clean
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c == '-' || c == '_')
+            && !profiles.iter().any(|profile| profile == clean)
+        {
+            profiles.push(clean.to_string());
+        }
+    }
+    if profiles.is_empty() {
+        return Err("powerprofilesctl reported no available profiles".into());
+    }
+    Ok(PowerProfileState {
+        active,
+        profiles,
+        source: power_source(),
+    })
+}
+
+fn powerprofile_status() {
+    if program("powerprofilesctl").is_none() {
+        println!("state=provider-unavailable\nreason=powerprofilesctl (power-profiles-daemon) is not installed");
+        return;
+    }
+    match power_profile_state() {
+        Ok(state) => {
+            println!(
+                "state=ready\nprovider=power-profiles-daemon\nactive={}\npower={}",
+                state.active, state.source
+            );
+            for profile in state.profiles {
+                println!("profile={profile}");
+            }
+        }
+        Err(error) => println!("state=unavailable\nreason={error}"),
+    }
+}
+
+fn powerprofile(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    match action {
+        "status" => powerprofile_status(),
+        "list" => {
+            for profile in power_profile_state()?.profiles {
+                println!("{profile}");
+            }
+        }
+        "set" | "next" => {
+            let state = power_profile_state()?;
+            let target = if action == "next" {
+                let index = state
+                    .profiles
+                    .iter()
+                    .position(|profile| profile == &state.active)
+                    .unwrap_or(0);
+                state.profiles[(index + 1) % state.profiles.len()].clone()
+            } else {
+                args.get(1)
+                    .ok_or("powerprofile set needs a profile name")?
+                    .to_string()
+            };
+            if !state.profiles.iter().any(|profile| profile == &target) {
+                return Err(
+                    format!("power profile {target} is not supported by this provider").into(),
+                );
+            }
+            if target != state.active {
+                powerprofilesctl(&["set", &target])?;
+                std::thread::sleep(Duration::from_millis(250));
+                let after = power_profile_state()?;
+                if after.active != target {
+                    return Err(format!("power profile {target} did not become active").into());
+                }
+            }
+            println!("power profile {target}");
+        }
+        _ => return Err(USAGE.into()),
+    }
+    Ok(())
+}
+
 fn wallpaper_config_path() -> PathBuf {
     config::directory().join("config.toml")
 }
@@ -2581,6 +2723,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "display" {
         return display(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "powerprofile" {
+        return powerprofile(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "mode" {
         return mode(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -2720,6 +2865,7 @@ fn run() -> Result<()> {
             | "audio"
             | "bluetooth"
             | "display"
+            | "powerprofile"
             | "mode"
             | "idle"
     ) {
