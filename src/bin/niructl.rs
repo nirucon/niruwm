@@ -385,14 +385,21 @@ fn login_action(action: &str) -> Result<()> {
                     args.push(user);
                 }
             }
-            "suspend" | "reboot" | "shutdown" => args.push(action.into()),
+            "suspend" | "reboot" => args.push(action.into()),
+            // logind has no `shutdown` verb; the power-off action is `poweroff`.
+            "shutdown" => args.push("poweroff".into()),
             _ => return Err(format!("unknown login action: {action}").into()),
         }
         command("loginctl", &args)?;
         return Ok(());
     }
     if action != "logout" && which("systemctl") {
-        command("systemctl", &[action.to_string()])?;
+        let verb = if action == "shutdown" {
+            "poweroff"
+        } else {
+            action
+        };
+        command("systemctl", &[verb.to_string()])?;
         return Ok(());
     }
     Err(format!("no login backend for {action}: install logind/elogind or systemd").into())
@@ -405,7 +412,7 @@ fn power_action(action: &str) -> Result<()> {
     if let Err(e) = login_action(action) {
         let body = format!("{action} failed: {e}");
         let _ = std::process::Command::new("notify-send")
-            .args(["-a", "NIRU", "-u", "critical", "Power", &body])
+            .args(["-a", "NIRU", "-t", "8000", "Power", &body])
             .status();
         return Err(e);
     }
@@ -1546,6 +1553,8 @@ mod tests {
         wait_for("niruscreensaver --preview");
         login_action("reboot").unwrap();
         wait_for("loginctl reboot");
+        desktop("shutdown", &[]).unwrap();
+        wait_for("loginctl poweroff");
         desktop("logout", &[]).unwrap();
         wait_for("loginctl terminate-session 42");
         dnd(&["toggle".to_string()]).unwrap();
