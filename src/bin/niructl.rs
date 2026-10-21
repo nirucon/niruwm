@@ -37,6 +37,7 @@ theme NAME | themes | monitors | reload | restart-bar | quit | save | save-sessi
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 autostart | lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
+audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down | \
 idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -659,6 +660,140 @@ fn dnd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioNode {
+    id: u32,
+    name: String,
+    default: bool,
+}
+
+/// Parse the Sinks/Sources part of `wpctl status` without depending on the
+/// tree drawing characters. IDs, not names, are used for selection because
+/// two identical devices can coexist.
+fn audio_nodes_from(text: &str, wanted: &str) -> Vec<AudioNode> {
+    let mut section = "";
+    let mut nodes = Vec::new();
+    for line in text.lines() {
+        let clean = line.trim_matches(|c: char| c.is_whitespace() || "│├└─".contains(c));
+        if clean == "Sinks:" {
+            section = "outputs";
+            continue;
+        }
+        if clean == "Sources:" {
+            section = "sources";
+            continue;
+        }
+        if clean.ends_with(':') || clean == "Filters:" || clean == "Streams:" {
+            section = "";
+            continue;
+        }
+        if section != wanted {
+            continue;
+        }
+        let default = clean.starts_with('*');
+        let clean = clean.trim_start_matches('*').trim();
+        let Some((id, rest)) = clean.split_once(". ") else {
+            continue;
+        };
+        let Ok(id) = id.trim().parse::<u32>() else {
+            continue;
+        };
+        let name = rest.split(" [").next().unwrap_or(rest).trim();
+        if !name.is_empty() {
+            nodes.push(AudioNode {
+                id,
+                name: name.to_string(),
+                default,
+            });
+        }
+    }
+    nodes
+}
+
+fn audio_nodes(kind: &str) -> Result<Vec<AudioNode>> {
+    let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
+    let out = command(&wpctl, &["status".into()])?;
+    Ok(audio_nodes_from(
+        &String::from_utf8_lossy(&out.stdout),
+        kind,
+    ))
+}
+
+fn audio_set_default(kind: &str, id: u32) -> Result<()> {
+    let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
+    command(&wpctl, &["set-default".into(), id.to_string()])?;
+    println!("default {kind}: {id}");
+    Ok(())
+}
+
+fn audio(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("outputs");
+    let wpctl = || program("wpctl").ok_or("audio control needs wpctl (WirePlumber)");
+    match action {
+        "outputs" | "sources" => {
+            let kind = action;
+            for node in audio_nodes(kind)? {
+                println!(
+                    "{}{}\t{}",
+                    if node.default { "*" } else { "" },
+                    node.id,
+                    node.name
+                );
+            }
+        }
+        "output" | "source" => {
+            let kind = if action == "output" {
+                "outputs"
+            } else {
+                "sources"
+            };
+            let value = args.get(1).ok_or(USAGE)?;
+            let id = if value == "next" {
+                let nodes = audio_nodes(kind)?;
+                if nodes.is_empty() {
+                    return Err(format!("no audio {kind} found").into());
+                }
+                let current = nodes.iter().position(|node| node.default).unwrap_or(0);
+                nodes[(current + 1) % nodes.len()].id
+            } else {
+                value
+                    .parse::<u32>()
+                    .map_err(|_| "audio id must be a number or next")?
+            };
+            audio_set_default(&kind[..kind.len() - 1], id)?;
+        }
+        "mute" | "mic-mute" => {
+            let node = if action == "mute" {
+                "@DEFAULT_AUDIO_SINK@"
+            } else {
+                "@DEFAULT_AUDIO_SOURCE@"
+            };
+            command(
+                &wpctl()?,
+                &["set-mute".into(), node.into(), "toggle".into()],
+            )?;
+        }
+        "volume" => {
+            let direction = args.get(1).map(String::as_str).ok_or(USAGE)?;
+            let arg = match direction {
+                "up" => "5%+",
+                "down" => "5%-",
+                _ => return Err("audio volume needs up or down".into()),
+            };
+            command(
+                &wpctl()?,
+                &[
+                    "set-volume".into(),
+                    "@DEFAULT_AUDIO_SINK@".into(),
+                    arg.into(),
+                ],
+            )?;
+        }
+        _ => return Err(USAGE.into()),
+    }
+    Ok(())
+}
+
 fn wallpaper_config_path() -> PathBuf {
     config::directory().join("config.toml")
 }
@@ -1003,6 +1138,9 @@ fn offline(cmd: &str) -> Result<()> {
     }
     if cmd == "brightness" {
         return brightness(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "audio" {
+        return audio(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if cmd == "nightlight" {
         return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
@@ -1520,6 +1658,36 @@ mod tests {
         let mut mode = std::fs::metadata(&path).unwrap().permissions();
         mode.set_mode(0o755);
         std::fs::set_permissions(&path, mode).unwrap();
+    }
+
+    #[test]
+    fn parses_audio_nodes_and_defaults() {
+        let text = "Audio\n ├─ Devices:\n │      42. Built-in Audio [alsa]\n ├─ Sinks:\n │  *   52. Speakers [vol: 0.50]\n │      57. HDMI / DisplayPort [vol: 1.00]\n ├─ Sources:\n │  *   53. Microphone [vol: 1.00]\n ├─ Filters:\n";
+        let outputs = audio_nodes_from(text, "outputs");
+        assert_eq!(
+            outputs,
+            vec![
+                AudioNode {
+                    id: 52,
+                    name: "Speakers".into(),
+                    default: true
+                },
+                AudioNode {
+                    id: 57,
+                    name: "HDMI / DisplayPort".into(),
+                    default: false
+                },
+            ]
+        );
+        let sources = audio_nodes_from(text, "sources");
+        assert_eq!(
+            sources,
+            vec![AudioNode {
+                id: 53,
+                name: "Microphone".into(),
+                default: true
+            }]
+        );
     }
 
     #[test]

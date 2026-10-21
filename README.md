@@ -50,7 +50,9 @@ Session options: `~/.config/niruwm/session.conf`, including
 `WELCOME_NOTIFICATION=always|once|off`; idle timing:
 `~/.config/niruui/screensaver.toml`. Notifications default to native when installed,
 with Dunst fallback. `niructl dnd on|off|toggle|status` controls whichever provider
-is running, so the launcher, keyboard and bar can share one command. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
+is running, so the launcher, keyboard and bar can share one command.
+`niructl audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down`
+provides the same provider-neutral control for PipeWire/WirePlumber. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
 On a theme change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` is
 run when present. NIRUX uses it to update kitty/fish colours; NIRUWM itself does
 not depend on it.
