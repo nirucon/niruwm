@@ -30,6 +30,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm
           xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' cargo test --locked --test x11 -- --ignored --test-threads=1
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Offline microphone controls (no real audio device)
+        run: sh tests/audio-microphone.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Build pinned bar and collect static test artifacts
         run: |
           git clone --depth 1 --branch "v$(cat nirubar-version)" https://github.com/nirucon/nirubar /tmp/nirubar-build

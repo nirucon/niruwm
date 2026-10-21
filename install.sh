@@ -13,7 +13,7 @@
 # read for writing and never removed.
 set -eu
 
-VERSION="0.16.53"
+VERSION="0.16.54"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"

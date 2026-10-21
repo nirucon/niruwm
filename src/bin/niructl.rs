@@ -39,7 +39,7 @@ clear-session | brightness up|down|set N|status | nightlight on|off|toggle|statu
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
-audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down | \
+audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -718,13 +718,120 @@ fn audio_nodes_from(text: &str, wanted: &str) -> Vec<AudioNode> {
     nodes
 }
 
+/// Audio queries must not hold the launcher or a status worker indefinitely.
+fn audio_query(program: &str, args: &[String]) -> Result<String> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(program)
+        .args(args)
+        .env("LC_ALL", "C")
+        .env("NO_COLOR", "1")
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let stdout = child.stdout.take().ok_or("audio stdout unavailable")?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = stdout.take(65_537).read_to_end(&mut bytes);
+        let _ = sender.send((result, bytes));
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            // Stop descendants too: they can otherwise keep stdout open after
+            // their leader exits, defeating the query deadline.
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let response = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+    if response.is_err() {
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.wait();
+    }
+    reader.join().map_err(|_| "audio reader stopped")?;
+    let (result, bytes) = response.map_err(|_| "audio provider timed out")?;
+    result?;
+    let status = status.ok_or("audio provider timed out")?;
+    if !status.success() {
+        return Err("audio provider rejected the request or is unavailable".into());
+    }
+    if bytes.len() > 65_536 {
+        return Err("audio provider output is too large".into());
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn audio_nodes(kind: &str) -> Result<Vec<AudioNode>> {
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
-    let out = command(&wpctl, &["status".into()])?;
-    Ok(audio_nodes_from(
-        &String::from_utf8_lossy(&out.stdout),
-        kind,
-    ))
+    let text = audio_query(&wpctl, &["status".into()])?;
+    Ok(audio_nodes_from(&text, kind))
+}
+
+#[derive(Debug)]
+struct MicrophoneReading {
+    id: u32,
+    name: String,
+    percent: u32,
+    muted: bool,
+}
+
+fn microphone_reading() -> Result<Option<MicrophoneReading>> {
+    let sources = audio_nodes("sources")?;
+    if sources.is_empty() {
+        return Ok(None);
+    }
+    let node = sources
+        .into_iter()
+        .find(|node| node.default)
+        .ok_or("no default audio input is selected")?;
+    let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
+    let text = audio_query(&wpctl, &["get-volume".into(), node.id.to_string()])?;
+    let value = text
+        .strip_prefix("Volume:")
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 10_000.0)
+        .ok_or("audio input level is invalid")?;
+    Ok(Some(MicrophoneReading {
+        id: node.id,
+        name: node.name.replace(['\t', '\r', '\n'], " "),
+        percent: (value * 100.0).round() as u32,
+        muted: text.contains("[MUTED]"),
+    }))
+}
+
+fn print_microphone(reading: &MicrophoneReading) {
+    println!(
+        "state=ready\nid={}\nname={}\npercent={}\nmuted={}",
+        reading.id, reading.name, reading.percent, reading.muted
+    );
+}
+
+fn microphone_status() {
+    if program("wpctl").is_none() {
+        println!("state=provider-unavailable\nreason=wpctl (WirePlumber) is not installed");
+        return;
+    }
+    match microphone_reading() {
+        Ok(Some(reading)) => print_microphone(&reading),
+        Ok(None) => println!("state=no-input\nreason=no audio input is available"),
+        Err(error) => println!("state=unavailable\nreason={error}"),
+    }
 }
 
 fn audio_default(kind: &str) -> Result<Option<u32>> {
@@ -736,6 +843,9 @@ fn audio_default(kind: &str) -> Result<Option<u32>> {
 
 fn audio_set_default(kind: &str, id: u32) -> Result<()> {
     let label = kind.trim_end_matches('s');
+    if !audio_nodes(kind)?.iter().any(|node| node.id == id) {
+        return Err(format!("audio {label} {id} is not an available audio device").into());
+    }
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
     command(&wpctl, &["set-default".into(), id.to_string()])?;
     std::thread::sleep(Duration::from_millis(150));
@@ -752,7 +862,10 @@ fn audio_set_default(kind: &str, id: u32) -> Result<()> {
 fn audio_next(kind: &str) -> Result<()> {
     let label = kind.trim_end_matches('s');
     let nodes = audio_nodes(kind)?;
-    if nodes.len() < 2 {
+    if nodes.is_empty() {
+        return Err(format!("no audio {label} is available").into());
+    }
+    if nodes.len() == 1 {
         println!("only one audio {label} is available");
         return Ok(());
     }
@@ -785,6 +898,38 @@ fn audio(args: &[String]) -> Result<()> {
                 );
             }
         }
+        "mic-status" => microphone_status(),
+        "mic-level" => {
+            // Adjust input gain only: changing gain must never unmute a mic.
+            let direction = args.get(1).map(String::as_str).ok_or(USAGE)?;
+            let value = match direction {
+                "up" => "5%+".to_string(),
+                "down" => "5%-".to_string(),
+                "set" => {
+                    let percent = args
+                        .get(2)
+                        .ok_or("mic-level set needs a percentage")?
+                        .parse::<u32>()
+                        .map_err(|_| "microphone level must be an integer 0..100")?;
+                    if percent > 100 {
+                        return Err("microphone level must be between 0 and 100".into());
+                    }
+                    format!("{percent}%")
+                }
+                _ => return Err("mic-level needs up, down or set N".into()),
+            };
+            let reading = microphone_reading()?.ok_or("no audio input is available")?;
+            audio_query(
+                &wpctl()?,
+                &[
+                    "set-volume".into(),
+                    "--limit".into(),
+                    "1.0".into(),
+                    reading.id.to_string(),
+                    value,
+                ],
+            )?;
+        }
         "output" | "source" => {
             let kind = if action == "output" {
                 "outputs"
@@ -801,15 +946,27 @@ fn audio(args: &[String]) -> Result<()> {
                 audio_set_default(kind, id)?;
             }
         }
-        "mute" | "mic-mute" => {
-            let node = if action == "mute" {
-                "@DEFAULT_AUDIO_SINK@"
-            } else {
-                "@DEFAULT_AUDIO_SOURCE@"
+        "mic-mute" => {
+            let value = match args.get(1).map(String::as_str).unwrap_or("toggle") {
+                "on" => "1",
+                "off" => "0",
+                "toggle" => "toggle",
+                _ => return Err("mic-mute needs on, off or toggle".into()),
             };
+            let reading = microphone_reading()?.ok_or("no audio input is available")?;
+            audio_query(
+                &wpctl()?,
+                &["set-mute".into(), reading.id.to_string(), value.into()],
+            )?;
+        }
+        "mute" => {
             command(
                 &wpctl()?,
-                &["set-mute".into(), node.into(), "toggle".into()],
+                &[
+                    "set-mute".into(),
+                    "@DEFAULT_AUDIO_SINK@".into(),
+                    "toggle".into(),
+                ],
             )?;
         }
         "volume" => {

@@ -82,6 +82,7 @@ jobs:
           cp niruwm/config.example.toml /tmp/niru/.config/niruwm/config.toml
           cp niruwm/themes/niru-noir.toml /tmp/niru/.config/niruwm/themes/
           sh niruwm/tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+          sh niruwm/tests/audio-microphone.sh /tmp/niru/bin/niructl
 
       - name: Collect assets
         run: |

@@ -1,6 +1,6 @@
 [package]
 name = "niruwm"
-version = "0.16.53"
+version = "0.16.54"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 toml_edit = "0.22"
 chrono = "0.4"
+libc = "0.2"
 # Keep the lockfile compatible with the declared Rust 1.75 baseline.
 indexmap = "=2.7.1"
 

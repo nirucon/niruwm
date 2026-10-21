@@ -324,6 +324,8 @@ pub struct Bar {
     pub separator: String,
     /// Modules to show, in order: workspaces, network, battery, clock.
     pub modules: Vec<String>,
+    /// Visibility of the optional microphone module. Read by NIRUBAR.
+    pub microphone_visibility: String,
     /// Workspace labels shown instead of 1..9.
     pub tags: Vec<String>,
     /// Show the date, the time, or both.
@@ -406,6 +408,7 @@ impl Default for Bar {
                 "clock".into(),
             ],
             tags: (1..=9).map(|n| n.to_string()).collect(),
+            microphone_visibility: "always".into(),
             show_date: true,
             show_time: true,
             date_format: "%Y-%m-%d".into(),
@@ -514,6 +517,9 @@ impl Config {
         }
         if self.bar.cell_width < 12 || self.bar.cell_width > 200 {
             return Err("bar.cell_width must be between 12 and 200".into());
+        }
+        if !matches!(self.bar.microphone_visibility.as_str(), "always" | "muted") {
+            return Err("bar.microphone_visibility must be always or muted".into());
         }
         if self.bar.title_max > 512 {
             return Err("bar.title_max must be at most 512".into());

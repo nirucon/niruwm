@@ -53,6 +53,12 @@ with Dunst fallback. `niructl dnd on|off|toggle|status` controls whichever provi
 is running, so the launcher, keyboard and bar can share one command.
 `niructl audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down`
 provides the same provider-neutral control for PipeWire/WirePlumber.
+Microphone controls: `niructl audio mic-status` returns a read-only snapshot
+(selected input, gain and mute; missing provider/input is explicit).
+`niructl audio mic-level up|down|set N` adjusts input gain up to 100% without
+unmuting it. `niructl audio mic-mute [on|off|toggle]` changes mute explicitly.
+These are shared by the bar and `nirulauncher --microphone`; gain does not
+indicate that an application is recording. Provider queries have deadlines.
 `niructl explain [--launcher]` reports missing audio/backlight/notifier/sleep
 protection, display state, weather configuration and installed-vs-running WM
 versions without changing anything. `niructl mode focus|presentation|stop|status`
