@@ -753,7 +753,7 @@ fn audio_next(kind: &str) -> Result<()> {
         return Ok(());
     }
     let current = nodes.iter().position(|node| node.default).unwrap_or(0);
-    for step in 1..=nodes.len() {
+    for step in 1..nodes.len() {
         let id = nodes[(current + step) % nodes.len()].id;
         let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
         command(&wpctl, &["set-default".into(), id.to_string()])?;
