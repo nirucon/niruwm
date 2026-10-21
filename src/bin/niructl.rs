@@ -612,12 +612,25 @@ fn ensure_lock_ready() -> Result<()> {
 /// The native notifier will take this over when it owns the bus; until then
 /// Dunst's own control interface is the honest provider.
 fn dnd(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    if !matches!(action, "on" | "off" | "toggle" | "status") {
+        return Err("dnd needs on, off, toggle or status".into());
+    }
+
+    // Prefer the running native provider. Its CLI is a socket client, so a
+    // missing daemon fails quickly and Dunst remains the fallback.
+    if let Some(notifier) = program("nirunotify") {
+        if let Ok(out) = command(&notifier, &["--dnd".into(), action.into()]) {
+            print!("{}", String::from_utf8_lossy(&out.stdout));
+            return Ok(());
+        }
+    }
+
     if !which("dunstctl") {
         return Err(
-            "DND is unavailable: no supported notification provider (dunstctl missing)".into(),
+            "DND is unavailable: neither a running nirunotify nor dunstctl is available".into(),
         );
     }
-    let action = args.first().map(String::as_str).unwrap_or("status");
     let paused = || -> Result<bool> {
         let out = command("dunstctl", &["is-paused".into()])?;
         Ok(String::from_utf8_lossy(&out.stdout).trim() == "true")
@@ -637,7 +650,7 @@ fn dnd(args: &[String]) -> Result<()> {
             println!("dnd {}", if next == "true" { "on" } else { "off" });
         }
         "status" => println!("dnd {}", if paused()? { "on" } else { "off" }),
-        _ => return Err("dnd needs on, off, toggle or status".into()),
+        _ => unreachable!(),
     }
     Ok(())
 }
@@ -1561,6 +1574,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&dnd_state).unwrap().trim(), "true");
         dnd(&["toggle".to_string()]).unwrap();
         assert_eq!(std::fs::read_to_string(&dnd_state).unwrap().trim(), "false");
+
+        // When the native service is present, DND must not shell out to Dunst.
+        let native_state = dir.join("native-dnd");
+        std::fs::write(&native_state, "off\n").unwrap();
+        std::fs::write(
+            bin.join("nirunotify"),
+            "#!/bin/sh\nprintf 'nirunotify %s\\n' \"$*\" >> \"$CALLS\"\ncase \"$2\" in\non|off) printf '%s\\n' \"$2\" > \"$NATIVE_STATE\" ;;\ntoggle) if [ \"$(cat \"$NATIVE_STATE\")\" = on ]; then printf 'off\\n' > \"$NATIVE_STATE\"; else printf 'on\\n' > \"$NATIVE_STATE\"; fi ;;\nesac\n[ \"$2\" = status ] && printf 'dnd %s\\n' \"$(cat \"$NATIVE_STATE\")\"\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin.join("nirunotify"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        std::env::set_var("NATIVE_STATE", &native_state);
+        dnd(&["toggle".to_string()]).unwrap();
+        wait_for("nirunotify --dnd toggle");
+        assert_eq!(std::fs::read_to_string(&native_state).unwrap().trim(), "on");
+        dnd(&["status".to_string()]).unwrap();
+        wait_for("nirunotify --dnd status");
         idle(&["on".to_string(), "1".to_string()]).unwrap();
         assert!(idle_until().is_some());
         idle(&["off".to_string()]).unwrap();
