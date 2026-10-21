@@ -621,7 +621,11 @@ fn dnd(args: &[String]) -> Result<()> {
     // missing daemon fails quickly and Dunst remains the fallback.
     if let Some(notifier) = program("nirunotify") {
         if let Ok(out) = command(&notifier, &["--dnd".into(), action.into()]) {
-            print!("{}", String::from_utf8_lossy(&out.stdout));
+            let text = String::from_utf8_lossy(&out.stdout);
+            let text = text.trim();
+            if !text.is_empty() {
+                println!("{text}");
+            }
             return Ok(());
         }
     }
