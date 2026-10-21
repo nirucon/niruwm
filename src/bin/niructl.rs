@@ -768,11 +768,11 @@ fn provider_query(program: &str, args: &[String]) -> Result<String> {
         let _ = child.wait();
     }
     reader.join().map_err(|_| "audio reader stopped")?;
-    let (result, bytes) = response.map_err(|_| "audio provider timed out")?;
+    let (result, bytes) = response.map_err(|_| "provider timed out")?;
     result?;
-    let status = status.ok_or("audio provider timed out")?;
+    let status = status.ok_or("provider timed out")?;
     if !status.success() {
-        return Err("audio provider rejected the request or is unavailable".into());
+        return Err("provider rejected the request or is unavailable".into());
     }
     if bytes.len() > 65_536 {
         return Err("audio provider output is too large".into());
