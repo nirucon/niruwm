@@ -39,7 +39,7 @@ clear-session | brightness up|down|set N|status | nightlight on|off|toggle|statu
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 autostart | lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down | \
-idle on|off|toggle|status [MINUTES]";
+explain [--launcher] | idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -1180,6 +1180,219 @@ fn move_window_to_workspace(
     Err(format!("window did not move to workspace {workspace}").into())
 }
 
+#[derive(Clone, Debug)]
+struct Explanation {
+    level: &'static str,
+    name: String,
+    detail: String,
+    action: String,
+}
+
+fn running_wm_name(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+) -> String {
+    let Some(owner) = property_u32(c, root, atom("_NET_SUPPORTING_WM_CHECK").unwrap_or(0)) else {
+        return "none".into();
+    };
+    let Ok(name_atom) = atom("_NET_WM_NAME") else {
+        return "unknown".into();
+    };
+    c.get_property(
+        false,
+        owner,
+        name_atom,
+        atom("UTF8_STRING").unwrap_or(0),
+        0,
+        128,
+    )
+    .ok()
+    .and_then(|cookie| cookie.reply().ok())
+    .map(|reply| String::from_utf8_lossy(&reply.value).to_string())
+    .unwrap_or_else(|| "unknown".into())
+}
+
+fn installed_program_version(name: &str) -> Option<String> {
+    let program = program(name)?;
+    let out = command(&program, &["--version".into()]).ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .map(str::to_string)
+}
+
+fn explanation_action(token: &str) -> String {
+    token.to_string()
+}
+
+fn explain(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    launcher: bool,
+) -> Result<()> {
+    let mut rows = Vec::new();
+    let cfg = Config::load()?;
+    let running = running_wm_name(c, root, atom);
+    let installed = installed_program_version("niruwm").unwrap_or_else(|| "unknown".into());
+    if running != format!("NIRUWM {installed}") {
+        rows.push(Explanation {
+            level: "WARN",
+            name: "Session version".into(),
+            detail: format!(
+                "running {running}; installed NIRUWM {installed}; log out/in to activate"
+            ),
+            action: explanation_action("doctor"),
+        });
+    } else {
+        rows.push(Explanation {
+            level: "OK",
+            name: "Session version".into(),
+            detail: format!("{running} is current"),
+            action: String::new(),
+        });
+    }
+
+    let native_notify = program("nirunotify")
+        .map(|program| command(&program, &["--dnd".into(), "status".into()]).is_ok())
+        .unwrap_or(false);
+    if native_notify {
+        rows.push(Explanation {
+            level: "OK",
+            name: "Notifications".into(),
+            detail: "NIRUNOTIFY owns the session bus".into(),
+            action: String::new(),
+        });
+    } else if which("dunstctl") {
+        rows.push(Explanation {
+            level: "OK",
+            name: "Notifications".into(),
+            detail: "Dunst is the active fallback".into(),
+            action: String::new(),
+        });
+    } else {
+        rows.push(Explanation {
+            level: "WARN",
+            name: "Notifications".into(),
+            detail: "no native notifier or Dunst responds".into(),
+            action: explanation_action("doctor"),
+        });
+    }
+
+    match audio_nodes("outputs") {
+        Ok(nodes) if nodes.is_empty() => rows.push(Explanation {
+            level: "WARN",
+            name: "Audio".into(),
+            detail: "no audio output is available".into(),
+            action: explanation_action("audio"),
+        }),
+        Ok(_) => rows.push(Explanation {
+            level: "OK",
+            name: "Audio".into(),
+            detail: "default output is available".into(),
+            action: String::new(),
+        }),
+        Err(e) => rows.push(Explanation {
+            level: "WARN",
+            name: "Audio".into(),
+            detail: e.to_string(),
+            action: explanation_action("doctor"),
+        }),
+    }
+
+    if backlight_percent(&cfg.brightness.device).is_none() {
+        rows.push(Explanation {
+            level: "WARN",
+            name: "Brightness".into(),
+            detail: "no backlight device was found".into(),
+            action: explanation_action("doctor"),
+        });
+    }
+
+    let inhibitor = ["systemd-inhibit", "elogind-inhibit"]
+        .iter()
+        .find_map(|tool| {
+            which(tool).then(|| {
+                command(tool, &["--list".into()])
+                    .map(|out| String::from_utf8_lossy(&out.stdout).contains("NIRU"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if !inhibitor {
+        rows.push(Explanation {
+            level: "WARN",
+            name: "Sleep protection".into(),
+            detail: "the lock-before-suspend inhibitor is not held".into(),
+            action: explanation_action("doctor"),
+        });
+    }
+
+    if let Ok(out) = command("xrandr", &["--query".into()]) {
+        let connected = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| line.contains(" connected"))
+            .count();
+        if connected == 0 {
+            rows.push(Explanation {
+                level: "WARN",
+                name: "Displays".into(),
+                detail: "no connected output was reported".into(),
+                action: explanation_action("doctor"),
+            });
+        }
+    } else {
+        rows.push(Explanation {
+            level: "WARN",
+            name: "Displays".into(),
+            detail: "xrandr is unavailable".into(),
+            action: explanation_action("doctor"),
+        });
+    }
+
+    if cfg.weather_latitude == 0.0 && cfg.weather_longitude == 0.0 {
+        rows.push(Explanation {
+            level: "WARN",
+            name: "Weather".into(),
+            detail: "latitude/longitude are 0,0; weather stays unavailable".into(),
+            action: explanation_action("doctor"),
+        });
+    }
+
+    if launcher {
+        let mut emitted = 0;
+        for row in &rows {
+            if row.level == "OK" {
+                continue;
+            }
+            println!(
+                "{}\t{}\t{}\t{}",
+                row.level, row.name, row.detail, row.action
+            );
+            emitted += 1;
+        }
+        if emitted == 0 {
+            println!("OK\tCore services\tall checked services respond\t\t");
+        }
+    } else {
+        for row in &rows {
+            println!(
+                "{:<4} {:<18} {}{}",
+                row.level,
+                row.name,
+                row.detail,
+                if row.action.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", row.action)
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
 fn autostart(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
@@ -1510,6 +1723,10 @@ fn run() -> Result<()> {
             }
         );
         return Ok(());
+    }
+
+    if cmd == "explain" {
+        return explain(&c, root, &atom, args.iter().any(|arg| arg == "--launcher"));
     }
 
     if cmd == "autostart" {
