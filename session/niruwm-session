@@ -15,7 +15,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.41'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.42'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -321,7 +321,7 @@ if [ "$NIRUPI_COMPAT" = 0 ] && command -v niructl >/dev/null 2>&1; then
     done
     sleep 0.5
     niructl autostart
-    if [ "${NIRUX_STARTX:-0}" = 1 ] && command -v notify-send >/dev/null 2>&1; then
+    if command -v notify-send >/dev/null 2>&1; then
       notify-send -a NIRUX -t 6000 "Welcome to NIRUX" "A minimal X11 desktop" >/dev/null 2>&1 || :
     fi
   ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
