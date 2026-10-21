@@ -59,6 +59,10 @@ Microphone controls: `niructl audio mic-status` returns a read-only snapshot
 unmuting it. `niructl audio mic-mute [on|off|toggle]` changes mute explicitly.
 These are shared by the bar and `nirulauncher --microphone`; gain does not
 indicate that an application is recording. Provider queries have deadlines.
+`niructl bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC`
+uses BlueZ `bluetoothctl`; status/list are read-only, and connect verifies that
+BlueZ reported the device connected. `nirulauncher --bluetooth` provides the
+keyboard device/power selector.
 `niructl explain [--launcher]` reports missing audio/backlight/notifier/sleep
 protection, display state, weather configuration and installed-vs-running WM
 versions without changing anything. `niructl mode focus|presentation|stop|status`

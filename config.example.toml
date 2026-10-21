@@ -209,6 +209,7 @@ enabled = true
 # Add "weather" (and optionally "sun") to enable the information panels.
 # Add "notifications" for an unread indicator backed by nirunotify.
 # Add "microphone" for input gain/mute; this does not monitor recording activity.
+# Add "bluetooth" for adapter/device status; hidden when no adapter exists.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
 modules = ["workspaces", "media", "volume", "brightness", "network", "mode", "battery", "clock"]
 # Missing input/provider stays visible even with "muted" visibility.

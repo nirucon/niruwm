@@ -40,6 +40,7 @@ wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-th
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
+bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -719,7 +720,7 @@ fn audio_nodes_from(text: &str, wanted: &str) -> Vec<AudioNode> {
 }
 
 /// Audio queries must not hold the launcher or a status worker indefinitely.
-fn audio_query(program: &str, args: &[String]) -> Result<String> {
+fn provider_query(program: &str, args: &[String]) -> Result<String> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -778,7 +779,7 @@ fn audio_query(program: &str, args: &[String]) -> Result<String> {
 
 fn audio_nodes(kind: &str) -> Result<Vec<AudioNode>> {
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
-    let text = audio_query(&wpctl, &["status".into()])?;
+    let text = provider_query(&wpctl, &["status".into()])?;
     Ok(audio_nodes_from(&text, kind))
 }
 
@@ -800,7 +801,7 @@ fn microphone_reading() -> Result<Option<MicrophoneReading>> {
         .find(|node| node.default)
         .ok_or("no default audio input is selected")?;
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
-    let text = audio_query(&wpctl, &["get-volume".into(), node.id.to_string()])?;
+    let text = provider_query(&wpctl, &["get-volume".into(), node.id.to_string()])?;
     let value = text
         .strip_prefix("Volume:")
         .and_then(|value| value.split_whitespace().next())
@@ -919,7 +920,7 @@ fn audio(args: &[String]) -> Result<()> {
                 _ => return Err("mic-level needs up, down or set N".into()),
             };
             let reading = microphone_reading()?.ok_or("no audio input is available")?;
-            audio_query(
+            provider_query(
                 &wpctl()?,
                 &[
                     "set-volume".into(),
@@ -954,7 +955,7 @@ fn audio(args: &[String]) -> Result<()> {
                 _ => return Err("mic-mute needs on, off or toggle".into()),
             };
             let reading = microphone_reading()?.ok_or("no audio input is available")?;
-            audio_query(
+            provider_query(
                 &wpctl()?,
                 &["set-mute".into(), reading.id.to_string(), value.into()],
             )?;
@@ -984,6 +985,201 @@ fn audio(args: &[String]) -> Result<()> {
                     arg.into(),
                 ],
             )?;
+        }
+        _ => return Err(USAGE.into()),
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BluetoothDevice {
+    mac: String,
+    name: String,
+    connected: bool,
+    battery: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+struct BluetoothState {
+    adapter: Option<String>,
+    powered: bool,
+    devices: Vec<BluetoothDevice>,
+}
+
+fn bluetoothctl(args: &[&str]) -> Result<String> {
+    let program =
+        program("bluetoothctl").ok_or("Bluetooth control needs bluetoothctl (bluez-utils)")?;
+    provider_query(
+        &program,
+        &args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn parse_bluetooth_show(text: &str) -> (Option<String>, bool) {
+    let mut adapter = None;
+    let mut powered = false;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Controller ") {
+            adapter = rest.split_whitespace().next().map(str::to_string);
+        }
+        if line.trim() == "Powered: yes" {
+            powered = true;
+        }
+    }
+    (adapter, powered)
+}
+
+fn parse_bluetooth_devices(text: &str) -> Vec<(String, String)> {
+    let mut devices = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("Device ") else {
+            continue;
+        };
+        let mut words = rest.splitn(2, ' ');
+        let Some(mac) = words.next().filter(|mac| !mac.is_empty()) else {
+            continue;
+        };
+        let name = words.next().unwrap_or(mac).trim();
+        devices.push((mac.to_string(), name.to_string()));
+    }
+    devices
+}
+
+fn parse_bluetooth_info(mac: String, name: String, text: &str) -> BluetoothDevice {
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|line| line.trim_start().strip_prefix(key))
+            .map(str::trim)
+    };
+    let connected = field("Connected:").is_some_and(|value| value == "yes");
+    let battery = text.lines().find_map(|line| {
+        let rest = line.trim_start().strip_prefix("Battery Percentage:")?;
+        rest.split_once('(')
+            .and_then(|(_, value)| value.trim_end_matches(')').trim().parse::<u32>().ok())
+            .or_else(|| {
+                rest.split_whitespace()
+                    .next()
+                    .and_then(|hex| u32::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
+            })
+    });
+    BluetoothDevice {
+        mac,
+        name,
+        connected,
+        battery,
+    }
+}
+
+fn bluetooth_state() -> Result<BluetoothState> {
+    let show = bluetoothctl(&["show"])?;
+    let (adapter, powered) = parse_bluetooth_show(&show);
+    if adapter.is_none() {
+        return Ok(BluetoothState {
+            adapter: None,
+            powered: false,
+            devices: Vec::new(),
+        });
+    }
+    let mut devices = parse_bluetooth_devices(&bluetoothctl(&["devices", "Paired"])?);
+    if devices.is_empty() {
+        devices = parse_bluetooth_devices(&bluetoothctl(&["devices"])?);
+    }
+    let mut paired = Vec::new();
+    for (mac, name) in devices.into_iter().take(32) {
+        let info = match bluetoothctl(&["info", &mac]) {
+            Ok(info) => info,
+            Err(_) => continue,
+        };
+        if !info.lines().any(|line| line.trim() == "Paired: yes") {
+            continue;
+        }
+        paired.push(parse_bluetooth_info(mac, name, &info));
+    }
+    Ok(BluetoothState {
+        adapter,
+        powered,
+        devices: paired,
+    })
+}
+
+fn bluetooth_status() {
+    if program("bluetoothctl").is_none() {
+        println!("state=provider-unavailable\nreason=bluetoothctl (bluez-utils) is not installed");
+        return;
+    }
+    match bluetooth_state() {
+        Ok(state) => {
+            println!(
+                "state=ready\nadapter={}\npowered={}",
+                state.adapter.unwrap_or_default(),
+                state.powered
+            );
+            for device in state.devices {
+                println!(
+                    "device={}\t{}\t{}\t{}",
+                    device.mac,
+                    device.name.replace(['\t', '\r', '\n'], " "),
+                    device.connected,
+                    device.battery.map(|b| b.to_string()).unwrap_or_default()
+                );
+            }
+        }
+        Err(error) => println!("state=unavailable\nreason={error}"),
+    }
+}
+
+fn bluetooth(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    match action {
+        "status" => bluetooth_status(),
+        "list" => {
+            for device in bluetooth_state()?.devices {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    device.mac,
+                    device.name,
+                    device.connected,
+                    device.battery.map(|b| b.to_string()).unwrap_or_default()
+                );
+            }
+        }
+        "power" => {
+            let state = bluetooth_state()?;
+            if state.adapter.is_none() {
+                return Err("no Bluetooth adapter is available".into());
+            }
+            let target = match args.get(1).map(String::as_str).unwrap_or("toggle") {
+                "on" => true,
+                "off" => false,
+                "toggle" => !state.powered,
+                _ => return Err("bluetooth power needs on, off or toggle".into()),
+            };
+            if target != state.powered {
+                bluetoothctl(&["power", if target { "on" } else { "off" }])?;
+            }
+            println!("bluetooth power {}", if target { "on" } else { "off" });
+        }
+        "connect" | "disconnect" => {
+            let mac = args.get(1).ok_or("bluetooth needs a device MAC")?;
+            if !mac.contains(':') {
+                return Err("bluetooth device must be a MAC address".into());
+            }
+            let state = bluetooth_state()?;
+            if !state.devices.iter().any(|device| device.mac == *mac) {
+                return Err(format!("Bluetooth device {mac} is not paired").into());
+            }
+            bluetoothctl(&[action, mac])?;
+            std::thread::sleep(Duration::from_millis(300));
+            let connected = bluetooth_state()?
+                .devices
+                .iter()
+                .any(|device| device.mac == *mac && device.connected);
+            if action == "connect" && !connected {
+                return Err(format!("Bluetooth device {mac} did not report connected").into());
+            }
         }
         _ => return Err(USAGE.into()),
     }
@@ -1960,6 +2156,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "audio" {
         return audio(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "bluetooth" {
+        return bluetooth(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "mode" {
         return mode(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -2097,6 +2296,7 @@ fn run() -> Result<()> {
             | "shutdown"
             | "dnd"
             | "audio"
+            | "bluetooth"
             | "mode"
             | "idle"
     ) {
