@@ -18,7 +18,7 @@ mod monitor;
 #[allow(dead_code)] // niructl reads the list, it never writes one
 mod session_state;
 
-use chrono::{Local, Timelike};
+use chrono::{Local, TimeZone, Timelike};
 use config::{Config, Result, Theme};
 use std::{
     collections::HashSet,
@@ -37,7 +37,8 @@ const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME |
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
-autostart | lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
+autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
+lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
@@ -1393,23 +1394,17 @@ fn explain(
     Ok(())
 }
 
-fn autostart(
+fn launch_sequence(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
     atom: &dyn Fn(&str) -> Result<Atom>,
+    apps: &[config::AutostartApp],
+    settle_seconds: u32,
+    window_timeout_ms: u64,
+    return_to: Option<u32>,
 ) -> Result<()> {
-    let cfg = Config::load()?;
-    if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() || cfg.nirupi_compat {
-        return Ok(());
-    }
-    if cfg.restore_session || !session_state::load().is_empty() {
-        // A saved session already contains what was open. Running autostart on
-        // top of it would open everything twice.
-        return Ok(());
-    }
-    let mut apps = cfg.autostart.apps.clone();
+    let mut apps = apps.to_vec();
     apps.sort_by_key(|app| app.workspace);
-
     let mut index = 0;
     let mut last_workspace = 0u32;
     let mut user_moved = false;
@@ -1443,8 +1438,7 @@ fn autostart(
                 }
                 if let Some(wanted) = app.class.as_deref().filter(|wanted| !wanted.is_empty()) {
                     let wanted = wanted.to_ascii_lowercase();
-                    let deadline =
-                        Instant::now() + Duration::from_millis(cfg.autostart.window_timeout_ms);
+                    let deadline = Instant::now() + Duration::from_millis(window_timeout_ms);
                     let mut placed = false;
                     while Instant::now() < deadline {
                         if current_tag(c, root, atom) != Some(workspace - 1) {
@@ -1472,13 +1466,10 @@ fn autostart(
                     }
                     if !placed && !user_moved {
                         eprintln!(
-                            "niructl: autostart {program}: no window matching {wanted:?} within {} ms",
-                            cfg.autostart.window_timeout_ms
+                            "niructl: autostart {program}: no window matching {wanted:?} within {window_timeout_ms} ms"
                         );
                     }
                 } else {
-                    // A command without a window match keeps the old bounded
-                    // spacing. This supports scripts and single-instance apps.
                     std::thread::sleep(Duration::from_millis(250));
                 }
             }
@@ -1487,17 +1478,315 @@ fn autostart(
         if user_moved {
             break;
         }
-        if cfg.autostart.settle_seconds > 0 {
-            std::thread::sleep(Duration::from_secs(u64::from(cfg.autostart.settle_seconds)));
+        if settle_seconds > 0 {
+            std::thread::sleep(Duration::from_secs(u64::from(settle_seconds)));
         }
     }
 
-    let return_to = cfg.autostart.return_workspace;
-    if !user_moved
-        && return_to > 0
-        && current_tag(c, root, atom) == Some(last_workspace.saturating_sub(1))
-    {
-        switch_tag(c, root, atom, return_to)?;
+    if !user_moved {
+        if let Some(return_to) = return_to.filter(|workspace| *workspace > 0) {
+            if current_tag(c, root, atom) == Some(last_workspace.saturating_sub(1)) {
+                switch_tag(c, root, atom, return_to)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn autostart(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+) -> Result<()> {
+    let cfg = Config::load()?;
+    if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() || cfg.nirupi_compat {
+        return Ok(());
+    }
+    if cfg.restore_session || !session_state::load().is_empty() {
+        return Ok(());
+    }
+    launch_sequence(
+        c,
+        root,
+        atom,
+        &cfg.autostart.apps,
+        cfg.autostart.settle_seconds,
+        cfg.autostart.window_timeout_ms,
+        (cfg.autostart.return_workspace > 0).then_some(cfg.autostart.return_workspace),
+    )
+}
+
+fn recipe(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    args: &[String],
+) -> Result<()> {
+    let cfg = Config::load()?;
+    let action = args.first().map(String::as_str).unwrap_or("list");
+    match action {
+        "list" => {
+            for recipe in &cfg.recipes {
+                println!("{}\t{}\tworkspace recipe", recipe.name, recipe.apps.len());
+            }
+        }
+        "run" => {
+            let name = args.get(1).ok_or("recipe run needs a name")?;
+            let recipe = cfg
+                .recipes
+                .iter()
+                .find(|recipe| recipe.name == *name)
+                .ok_or_else(|| format!("unknown recipe: {name}"))?;
+            let return_to = current_tag(c, root, atom).map(|tag| tag + 1);
+            launch_sequence(
+                c,
+                root,
+                atom,
+                &recipe.apps,
+                0,
+                cfg.autostart.window_timeout_ms,
+                return_to,
+            )?;
+        }
+        _ => return Err("recipe needs list or run NAME".into()),
+    }
+    Ok(())
+}
+
+fn dnd_is_on() -> Option<bool> {
+    if let Some(notifier) = program("nirunotify") {
+        if let Ok(out) = command(&notifier, &["--dnd".into(), "status".into()]) {
+            let text = String::from_utf8_lossy(&out.stdout);
+            return Some(text.trim().ends_with("on"));
+        }
+    }
+    if which("dunstctl") {
+        let out = command("dunstctl", &["is-paused".into()]).ok()?;
+        return Some(String::from_utf8_lossy(&out.stdout).trim() == "true");
+    }
+    None
+}
+
+fn dnd_apply(on: bool) -> Result<()> {
+    if let Some(notifier) = program("nirunotify") {
+        if command(
+            &notifier,
+            &["--dnd".into(), if on { "on" } else { "off" }.into()],
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    if which("dunstctl") {
+        command(
+            "dunstctl",
+            &[
+                "set-paused".into(),
+                if on { "true" } else { "false" }.into(),
+            ],
+        )?;
+        return Ok(());
+    }
+    Err("no supported notification provider".into())
+}
+
+fn mode_path() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
+        });
+    base.join("niruwm/mode")
+}
+
+#[derive(Clone, Debug)]
+struct ModeState {
+    name: String,
+    expiry: u64,
+    token: String,
+    dnd_initial_off: bool,
+    idle_set_until: Option<u64>,
+}
+
+fn read_mode() -> Option<ModeState> {
+    let text = std::fs::read_to_string(mode_path()).ok()?;
+    let mut name = None;
+    let mut expiry = None;
+    let mut token = None;
+    let mut dnd_initial_off = None;
+    let mut idle_set_until = None;
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "name" => name = Some(value.to_string()),
+            "expiry" => expiry = value.parse::<u64>().ok(),
+            "token" => token = Some(value.to_string()),
+            "dnd_initial_off" => dnd_initial_off = Some(value == "1"),
+            "idle_set_until" => idle_set_until = value.parse::<u64>().ok(),
+            _ => {}
+        }
+    }
+    Some(ModeState {
+        name: name?,
+        expiry: expiry?,
+        token: token?,
+        dnd_initial_off: dnd_initial_off?,
+        idle_set_until,
+    })
+}
+
+fn write_mode(state: &ModeState) -> Result<()> {
+    let path = mode_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    std::fs::write(
+        &temp,
+        format!(
+            "name={}\nexpiry={}\ntoken={}\ndnd_initial_off={}\nidle_set_until={}\n",
+            state.name,
+            state.expiry,
+            state.token,
+            u8::from(state.dnd_initial_off),
+            state
+                .idle_set_until
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+        ),
+    )?;
+    std::fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn mode_notify(summary: &str, body: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "NIRUX", "-t", "6000", summary, body])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn mode_stop(quiet: bool) -> Result<()> {
+    let Some(state) = read_mode() else {
+        if !quiet {
+            println!("no active work mode");
+        }
+        return Ok(());
+    };
+    if state.dnd_initial_off {
+        let _ = dnd_apply(false);
+    }
+    if let Some(until) = state.idle_set_until {
+        if idle_until() == Some(until) {
+            set_idle(None)?;
+            xset(&["s", "default", "+dpms"]);
+        }
+    }
+    let _ = std::fs::remove_file(mode_path());
+    if !quiet {
+        println!("{} mode stopped", state.name);
+        mode_notify("Work mode ended", &format!("{} restored", state.name));
+    }
+    Ok(())
+}
+
+fn mode(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    match action {
+        "focus" | "presentation" => {
+            let default_minutes = if action == "focus" { 25 } else { 60 };
+            let minutes = match args.get(1) {
+                Some(value) => value
+                    .parse::<u64>()
+                    .map_err(|_| "mode minutes must be a number")?
+                    .clamp(1, 480),
+                None => default_minutes,
+            };
+            mode_stop(true)?;
+            let expiry = now_secs() + minutes * 60;
+            let dnd_initial_off = dnd_is_on() != Some(true);
+            if dnd_initial_off {
+                dnd_apply(true)?;
+            }
+            let idle_set_until = if idle_until().is_none() {
+                let until = now_secs() + minutes * 60;
+                set_idle(Some(until))?;
+                xset(&["s", "off", "-dpms"]);
+                Some(until)
+            } else {
+                None
+            };
+            let token = format!("{}-{}", now_secs(), std::process::id());
+            write_mode(&ModeState {
+                name: action.into(),
+                expiry,
+                token: token.clone(),
+                dnd_initial_off,
+                idle_set_until,
+            })?;
+            println!(
+                "{} mode for {minutes} min, until {}",
+                action,
+                Local
+                    .timestamp_opt(expiry as i64, 0)
+                    .single()
+                    .map(|t| t.format("%H:%M").to_string())
+                    .unwrap_or_else(|| "?".into())
+            );
+            mode_notify(
+                if action == "focus" {
+                    "Focus mode"
+                } else {
+                    "Presentation mode"
+                },
+                &format!("DND and keep-awake for {minutes} min"),
+            );
+            let exe = std::env::current_exe()?;
+            let _ = std::process::Command::new(exe)
+                .args(["mode", "expire", &token])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        "stop" => {
+            mode_stop(args.iter().any(|arg| arg == "--quiet"))?;
+        }
+        "status" => match read_mode() {
+            Some(state) if state.expiry > now_secs() => {
+                let left = (state.expiry - now_secs()).div_ceil(60);
+                println!("{} mode, {left} min remaining", state.name);
+            }
+            Some(_) => {
+                mode_stop(true)?;
+                println!("mode off");
+            }
+            None => println!("mode off"),
+        },
+        "expire" => {
+            let token = args.get(1).ok_or("mode expire needs a token")?;
+            let Some(state) = read_mode() else {
+                return Ok(());
+            };
+            if state.token != *token {
+                return Ok(());
+            }
+            let wait = state.expiry.saturating_sub(now_secs());
+            if wait > 0 {
+                std::thread::sleep(Duration::from_secs(wait));
+            }
+            let Some(state) = read_mode() else {
+                return Ok(());
+            };
+            if state.token == *token {
+                mode_stop(false)?;
+            }
+        }
+        _ => return Err("mode needs focus, presentation, stop or status".into()),
     }
     Ok(())
 }
@@ -1513,6 +1802,9 @@ fn offline(cmd: &str) -> Result<()> {
     }
     if cmd == "audio" {
         return audio(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "mode" {
+        return mode(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if cmd == "nightlight" {
         return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
@@ -1648,6 +1940,7 @@ fn run() -> Result<()> {
             | "shutdown"
             | "dnd"
             | "audio"
+            | "mode"
             | "idle"
     ) {
         return offline(cmd);
@@ -1728,7 +2021,9 @@ fn run() -> Result<()> {
     if cmd == "explain" {
         return explain(&c, root, &atom, args.iter().any(|arg| arg == "--launcher"));
     }
-
+    if cmd == "recipe" {
+        return recipe(&c, root, &atom, &args[1..]);
+    }
     if cmd == "autostart" {
         return autostart(&c, root, &atom);
     }

@@ -55,7 +55,9 @@ is running, so the launcher, keyboard and bar can share one command.
 provides the same provider-neutral control for PipeWire/WirePlumber.
 `niructl explain [--launcher]` reports missing audio/backlight/notifier/sleep
 protection, display state, weather configuration and installed-vs-running WM
-versions without changing anything. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
+versions without changing anything. `niructl mode focus|presentation|stop|status`
+provides timed DND/keep-awake, and `niructl recipe list|run NAME` launches an
+app group into workspace/layout targets. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
 On a theme change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` is
 run when present. NIRUX uses it to update kitty/fish colours; NIRUWM itself does
 not depend on it.

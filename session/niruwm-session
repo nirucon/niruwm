@@ -15,7 +15,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.52'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.53'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -141,6 +141,9 @@ fi
 # ── Helper processes, all tracked for clean logout ──────────────────────────
 STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""
 cleanup() {
+  # Work modes are session-scoped. Clear them before helpers disappear, so a
+  # timer from this session cannot change the next login.
+  command -v niructl >/dev/null 2>&1 && niructl mode stop --quiet >/dev/null 2>&1 || :
   # The sleep-lock helper has its own child inhibitor and monitor. Give it a
   # TERM first so its trap can release them, then make sure the direct child
   # is gone even if the trap was not reached.

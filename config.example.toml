@@ -135,6 +135,20 @@ return_workspace = 1
 # class = "helium"
 # command = ["helium"]
 
+# Launcher-invoked workspace recipes. They reuse the same class/window
+# matching as autostart and return to the workspace you started from.
+# [[recipes]]
+# name = "Development"
+# [[recipes.apps]]
+# workspace = 1
+# class = "kitty"
+# command = ["kitty"]
+# [[recipes.apps]]
+# workspace = 2
+# class = "helium"
+# command = ["helium"]
+
+
 
 # ── Night light and brightness ─────────────────────────────────────────────
 [nightlight]
@@ -195,7 +209,7 @@ enabled = true
 # Add "weather" (and optionally "sun") to enable the information panels.
 # Add "notifications" for an unread indicator backed by nirunotify.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "media", "volume", "brightness", "network", "battery", "clock"]
+modules = ["workspaces", "media", "volume", "brightness", "network", "mode", "battery", "clock"]
 # Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
 # the rest keep their number. Glyphs and words both work.
 #   tags = ["web", "code", "chat", "", "", "", "", "", ""]

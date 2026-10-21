@@ -44,6 +44,8 @@ pub struct Config {
     pub wallpaper: WallpaperConfig,
     /// Optional applications to open on named workspaces after login.
     pub autostart: AutostartConfig,
+    /// Launcher-invoked workspace recipes. Empty means no recipes.
+    pub recipes: Vec<Recipe>,
     pub monitors: MonitorsConfig,
     pub scratchpad: ScratchpadConfig,
     /// Window rules, applied when a window is first managed.
@@ -296,6 +298,14 @@ pub struct AutostartApp {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Recipe {
+    pub name: String,
+    #[serde(default)]
+    pub apps: Vec<AutostartApp>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Bar {
     /// `true` renders the bar as a dock window (NIRUWM only). Ignored by
@@ -368,6 +378,7 @@ impl Default for Config {
             nirupi_compat: false,
             wallpaper: WallpaperConfig::default(),
             autostart: AutostartConfig::default(),
+            recipes: Vec::new(),
             monitors: MonitorsConfig::default(),
             nightlight: NightlightConfig::default(),
             brightness: BrightnessConfig::default(),
@@ -583,6 +594,19 @@ impl Config {
         }
         if !(500..=30_000).contains(&self.autostart.window_timeout_ms) {
             return Err("autostart.window_timeout_ms must be between 500 and 30000".into());
+        }
+        for recipe in &self.recipes {
+            if recipe.name.trim().is_empty() {
+                return Err("recipe name must not be empty".into());
+            }
+            for app in &recipe.apps {
+                if app.workspace == 0 || app.workspace > 9 {
+                    return Err("recipe workspace must be between 1 and 9".into());
+                }
+                if app.command.is_empty() {
+                    return Err("recipe command must not be empty".into());
+                }
+            }
         }
         for app in &self.autostart.apps {
             if !(1..=9).contains(&app.workspace) {
