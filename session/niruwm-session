@@ -15,7 +15,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.44'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.45'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -50,6 +50,8 @@ START_DUNST="${START_DUNST:-1}"
 # auto, native, dunst or external. Auto prefers the verified native service
 # when it is installed, and keeps Dunst as the standalone/fallback provider.
 NOTIFICATION_PROVIDER="${NOTIFICATION_PROVIDER:-auto}"
+# always, once or off. Read from session.conf like the options above.
+WELCOME_NOTIFICATION="${WELCOME_NOTIFICATION:-always}"
 START_PICOM="${START_PICOM:-1}"
 START_IDLE="${START_IDLE:-1}"
 START_SLEEP_LOCK="${START_SLEEP_LOCK:-1}"
@@ -321,8 +323,16 @@ if [ "$NIRUPI_COMPAT" = 0 ] && command -v niructl >/dev/null 2>&1; then
     done
     sleep 0.5
     niructl autostart
-    if command -v notify-send >/dev/null 2>&1; then
+    welcome=1
+    case "$WELCOME_NOTIFICATION" in
+      always) ;;
+      once) [ ! -e "$LOG_DIR/welcome-shown" ] || welcome=0 ;;
+      off) welcome=0 ;;
+      *) log "unknown WELCOME_NOTIFICATION=$WELCOME_NOTIFICATION; expected always, once or off" ;;
+    esac
+    if [ "$welcome" = 1 ] && command -v notify-send >/dev/null 2>&1; then
       notify-send -a NIRUX -t 6000 "Welcome to NIRUX" "A minimal X11 desktop" >/dev/null 2>&1 || :
+      [ "$WELCOME_NOTIFICATION" != once ] || : > "$LOG_DIR/welcome-shown"
     fi
   ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
 fi

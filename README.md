@@ -46,7 +46,8 @@ niructl restart-bar
 niructl theme niru-nord
 ```
 
-Session options: `~/.config/niruwm/session.conf`; idle timing:
+Session options: `~/.config/niruwm/session.conf`, including
+`WELCOME_NOTIFICATION=always|once|off`; idle timing:
 `~/.config/niruui/screensaver.toml`. Notifications default to native when installed,
 with Dunst fallback. `niructl dnd on|off|toggle|status` controls whichever provider
 is running, so the launcher, keyboard and bar can share one command. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
