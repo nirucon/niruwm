@@ -1275,6 +1275,7 @@ fn run() -> Result<()> {
             | "reboot"
             | "shutdown"
             | "dnd"
+            | "audio"
             | "idle"
     ) {
         return offline(cmd);
