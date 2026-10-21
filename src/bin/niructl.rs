@@ -671,10 +671,16 @@ struct AudioNode {
 /// tree drawing characters. IDs, not names, are used for selection because
 /// two identical devices can coexist.
 fn audio_nodes_from(text: &str, wanted: &str) -> Vec<AudioNode> {
+    let mut domain = "";
     let mut section = "";
     let mut nodes = Vec::new();
     for line in text.lines() {
         let clean = line.trim_matches(|c: char| c.is_whitespace() || "│├└─".contains(c));
+        if clean == "Audio" || clean == "Video" {
+            domain = clean;
+            section = "";
+            continue;
+        }
         if clean == "Sinks:" {
             section = "outputs";
             continue;
@@ -687,7 +693,7 @@ fn audio_nodes_from(text: &str, wanted: &str) -> Vec<AudioNode> {
             section = "";
             continue;
         }
-        if section != wanted {
+        if domain != "Audio" || section != wanted {
             continue;
         }
         let default = clean.starts_with('*');
@@ -719,11 +725,45 @@ fn audio_nodes(kind: &str) -> Result<Vec<AudioNode>> {
     ))
 }
 
+fn audio_default(kind: &str) -> Result<Option<u32>> {
+    Ok(audio_nodes(kind)?
+        .into_iter()
+        .find(|node| node.default)
+        .map(|node| node.id))
+}
+
 fn audio_set_default(kind: &str, id: u32) -> Result<()> {
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
     command(&wpctl, &["set-default".into(), id.to_string()])?;
+    std::thread::sleep(Duration::from_millis(150));
+    if audio_default(kind)? != Some(id) {
+        return Err(format!(
+            "audio {kind} {id} did not become the default; the device may be unavailable"
+        )
+        .into());
+    }
     println!("default {kind}: {id}");
     Ok(())
+}
+
+fn audio_next(kind: &str) -> Result<()> {
+    let nodes = audio_nodes(kind)?;
+    if nodes.len() < 2 {
+        println!("only one audio {kind} is available");
+        return Ok(());
+    }
+    let current = nodes.iter().position(|node| node.default).unwrap_or(0);
+    for step in 1..=nodes.len() {
+        let id = nodes[(current + step) % nodes.len()].id;
+        let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
+        command(&wpctl, &["set-default".into(), id.to_string()])?;
+        std::thread::sleep(Duration::from_millis(150));
+        if audio_default(kind)? == Some(id) {
+            println!("default {kind}: {id}");
+            return Ok(());
+        }
+    }
+    Err(format!("no other audio {kind} could become the default").into())
 }
 
 fn audio(args: &[String]) -> Result<()> {
@@ -748,19 +788,15 @@ fn audio(args: &[String]) -> Result<()> {
                 "sources"
             };
             let value = args.get(1).ok_or(USAGE)?;
-            let id = if value == "next" {
-                let nodes = audio_nodes(kind)?;
-                if nodes.is_empty() {
-                    return Err(format!("no audio {kind} found").into());
-                }
-                let current = nodes.iter().position(|node| node.default).unwrap_or(0);
-                nodes[(current + 1) % nodes.len()].id
+            let target_kind = &kind[..kind.len() - 1];
+            if value == "next" {
+                audio_next(target_kind)?;
             } else {
-                value
+                let id = value
                     .parse::<u32>()
-                    .map_err(|_| "audio id must be a number or next")?
-            };
-            audio_set_default(&kind[..kind.len() - 1], id)?;
+                    .map_err(|_| "audio id must be a number or next")?;
+                audio_set_default(target_kind, id)?;
+            }
         }
         "mute" | "mic-mute" => {
             let node = if action == "mute" {
@@ -1663,7 +1699,7 @@ mod tests {
 
     #[test]
     fn parses_audio_nodes_and_defaults() {
-        let text = "Audio\n ├─ Devices:\n │      42. Built-in Audio [alsa]\n ├─ Sinks:\n │  *   52. Speakers [vol: 0.50]\n │      57. HDMI / DisplayPort [vol: 1.00]\n ├─ Sources:\n │  *   53. Microphone [vol: 1.00]\n ├─ Filters:\n";
+        let text = "Audio\n ├─ Devices:\n │      42. Built-in Audio [alsa]\n ├─ Sinks:\n │  *   52. Speakers [vol: 0.50]\n │      57. HDMI / DisplayPort [vol: 1.00]\n ├─ Sources:\n │  *   53. Microphone [vol: 1.00]\n ├─ Filters:\nVideo\n ├─ Sources:\n │  *   86. Webcam (V4L2)\n";
         let outputs = audio_nodes_from(text, "outputs");
         assert_eq!(
             outputs,
