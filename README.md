@@ -1,13 +1,15 @@
 # NIRUWM
 
-Small Rust/X11 tiling window manager with per-monitor workspaces, seven layouts,
-configurable shortcuts and four NIRU themes. Supports **Void glibc, Debian and
-Arch Linux**; release binaries target x86_64/glibc.
+Small Rust/X11 tiling window manager for the NIRU X11 desktop, with
+per-monitor workspaces, seven layouts, configurable shortcuts, themes and the
+`niructl`/`niruidle` session tools.
+
+Part of the [NIRUX suite](https://github.com/nirucon/nirux): [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot).
 
 ## Install
 
-Use [NIRUX](https://github.com/nirucon/nirux#install) for the complete desktop
-and OS dependencies. On an existing X11 system, install the WM/session and pinned bar:
+For the complete desktop and OS dependencies, use [NIRUX](https://github.com/nirucon/nirux#install).
+To install NIRUWM and its session tools on an existing X11 system:
 
 ```sh
 git clone https://github.com/nirucon/niruwm
@@ -15,29 +17,33 @@ cd niruwm
 ./install.sh --register-session
 ```
 
-Choose **NIRUWM** at login. `./install.sh --build` requires Rust 1.75+ and a C
-linker; it builds WM, niructl and niruidle. Install the independent bar separately.
-Maintain NIRUX-owned installations with `nirux update`.
+Choose **NIRUWM** at login. `./install.sh --build` needs Rust 1.75+ and a C
+linker. The bar is a separate component; NIRUX installs it. NIRUX-owned
+installations are maintained with `nirux update`.
 
-## Controls and settings
+## Controls
 
 | Keys | Action |
 |---|---|
-| Super+Enter / Super+B | Terminal / configured browser |
-| Super+P / Super+Shift+P | Apps / apps and desktop actions |
+| Super+Enter / Super+B | Terminal / browser |
+| Super+P / Super+Shift+P | Applications / applications and actions |
 | Super+1–9 / Super+Shift+1–9 | Select workspace / move window |
 | Super+J / Super+K | Next / previous window |
 | Super+T / Super+M | Tile / monocle |
 | Super+Shift+E / Super+Shift+S | Fullscreen / scratchpad |
 | Super+, / Super+. | Previous / next monitor |
-| Brightness keys / Super+N | Brightness / night light |
+| Super+N / brightness keys | Night light / brightness |
 | Super+Escape / Super+R | Lock / reload |
 | Super+Q / Super+Ctrl+Shift+Q | Close window / log out |
+| Super+Print / Print / Super+Shift+Print | Full / region / window screenshot |
 
-Shared settings: `~/.config/niruwm/config.toml` (XDG respected).
-See [config.example.toml](config.example.toml). Individual bindings override only
-that key; `action = "unbind"` releases a default. `nirupi_compat = true` explicitly
-enables NIRUPI helpers. Set `browser` to an installed browser.
+## Settings
+
+Shared settings live in `~/.config/niruwm/config.toml`; start from
+[config.example.toml](config.example.toml). XDG paths are respected. Individual
+bindings override only that key; `action = "unbind"` removes a default.
+`nirupi_compat = true` explicitly enables NIRUPI helpers. Set `browser` to an
+installed browser command.
 
 ```sh
 niruwm --check-config
@@ -46,39 +52,35 @@ niructl restart-bar
 niructl theme niru-nord
 ```
 
-Session options: `~/.config/niruwm/session.conf`, including
-`WELCOME_NOTIFICATION=always|once|off`; idle timing:
-`~/.config/niruui/screensaver.toml`. Notifications default to native when installed,
-with Dunst fallback. `niructl dnd on|off|toggle|status` controls whichever provider
-is running, so the launcher, keyboard and bar can share one command.
-`niructl audio outputs|sources|output ID|next|source ID|next|mute|mic-mute|volume up|down`
-provides the same provider-neutral control for PipeWire/WirePlumber.
-Microphone controls: `niructl audio mic-status` returns a read-only snapshot
-(selected input, gain and mute; missing provider/input is explicit).
-`niructl audio mic-level up|down|set N` adjusts input gain up to 100% without
-unmuting it. `niructl audio mic-mute [on|off|toggle]` changes mute explicitly.
-These are shared by the bar and `nirulauncher --microphone`; gain does not
-indicate that an application is recording. Provider queries have deadlines.
-`niructl bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC`
-uses BlueZ `bluetoothctl`; status/list are read-only, and connect verifies that
-BlueZ reported the device connected. `nirulauncher --bluetooth` provides the
-keyboard device/power selector.
-`niructl display list|save NAME|preview NAME|apply NAME|keep|revert|status`
-applies validated RandR profiles from `~/.config/niruwm/displays.toml`; preview
-keeps the previous layout and reverts after the deadline or on failure.
-`niructl powerprofile status|list|set NAME|next` reads/changes
-power-profiles-daemon profiles, reporting the AC/battery source and rejecting
-unsupported names.
-`niructl explain [--launcher]` reports missing audio/backlight/notifier/sleep
-protection, display state, weather configuration and installed-vs-running WM
-versions without changing anything. `niructl mode focus|presentation|stop|status`
-provides timed DND/keep-awake, and `niructl recipe list|run NAME` launches an
-app group into workspace/layout targets. Themes: Noir, Nord, Satie, Carl Larsson and custom TOML files.
-On a theme change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` is
-run when present. NIRUX uses it to update kitty/fish colours; NIRUWM itself does
-not depend on it.
+Session options live in `~/.config/niruwm/session.conf`. Idle timing lives in
+`~/.config/niruui/screensaver.toml`. Notifications use NIRUNOTIFY when installed,
+with Dunst fallback.
 
-[Roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md) ·
-[Hardware/session notes](docs/BARE-METAL.md) · [X11 tests](tests/x11.rs)
+`niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
+display profiles, power profiles, DND, diagnostics, work modes and workspace
+recipes. Examples:
+
+```sh
+niructl audio outputs
+niructl audio mic-status
+niructl bluetooth status
+niructl display preview Desk 15
+niructl powerprofile set balanced
+niructl explain
+niructl mode focus
+niructl recipe run Development
+```
+
+Themes: Niru Noir, Nord, Satie, Carl Larsson and custom TOML files. On a theme
+change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when
+present; NIRUX uses it to update terminal colours.
+
+## Development
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
 
 MIT. Copyright 2026 Nicklas Rudolfsson.
