@@ -20,6 +20,7 @@ mod session_state;
 
 use chrono::{Local, TimeZone, Timelike};
 use config::{Config, Result, Theme};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
@@ -38,6 +39,7 @@ theme NAME | themes | monitors | reload | restart-bar | quit | save | save-sessi
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
+display list|save NAME|preview NAME|apply NAME|keep|revert|status | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
@@ -1186,6 +1188,423 @@ fn bluetooth(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct DisplayOutput {
+    name: String,
+    #[serde(default = "display_preferred_mode")]
+    mode: String,
+    #[serde(default = "display_zero_position")]
+    position: String,
+    #[serde(default = "display_normal_rotation")]
+    rotation: String,
+    #[serde(default)]
+    primary: bool,
+}
+
+fn display_preferred_mode() -> String {
+    "preferred".into()
+}
+fn display_zero_position() -> String {
+    "0x0".into()
+}
+fn display_normal_rotation() -> String {
+    "normal".into()
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+struct DisplayProfile {
+    name: String,
+    #[serde(default)]
+    outputs: Vec<DisplayOutput>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+struct DisplayFile {
+    #[serde(default)]
+    profile: Vec<DisplayProfile>,
+}
+
+#[derive(Clone, Debug)]
+struct DisplayOutputState {
+    name: String,
+    connected: bool,
+    modes: Vec<String>,
+    current: Option<DisplayOutput>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DisplayPreview {
+    name: String,
+    token: String,
+    expiry: u64,
+    previous: Vec<DisplayOutput>,
+}
+
+fn display_profiles_path() -> PathBuf {
+    config::directory().join("displays.toml")
+}
+fn display_preview_path() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
+        });
+    base.join("niruwm/display-preview.toml")
+}
+
+fn display_outputs() -> Result<Vec<DisplayOutputState>> {
+    let out = command("xrandr", &["--query".into()])?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut outputs: Vec<DisplayOutputState> = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with(|c: char| !c.is_whitespace()) {
+            if let Some(output) = outputs.last_mut() {
+                if let Some(mode) = line.split_whitespace().next() {
+                    if !mode.is_empty() && mode.contains('x') {
+                        output.modes.push(mode.to_string());
+                    }
+                }
+                if line.split_whitespace().any(|word| word.contains('*')) {
+                    if let Some(mode) = line.split_whitespace().next() {
+                        if let Some(current) = output.current.as_mut() {
+                            current.mode = mode.to_string();
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        let mut words = line.split_whitespace();
+        let Some(name) = words.next() else { continue };
+        let connected = line.contains(" connected");
+        let disconnected = line.contains(" disconnected");
+        if !connected && !disconnected {
+            continue;
+        }
+        let geometry = line
+            .split_whitespace()
+            .find(|word| word.contains('x') && word.contains('+') && !word.starts_with('('));
+        let primary = line.contains(" primary ");
+        let rotation = line
+            .split('(')
+            .nth(1)
+            .and_then(|inside| {
+                inside
+                    .split_whitespace()
+                    .find(|word| matches!(*word, "normal" | "left" | "inverted" | "right"))
+            })
+            .unwrap_or("normal")
+            .to_string();
+        let current = geometry.map(|geometry| {
+            let mode = geometry.split('+').next().unwrap_or(geometry);
+            DisplayOutput {
+                name: name.to_string(),
+                mode: mode.to_string(),
+                position: geometry
+                    .split_once('+')
+                    .and_then(|(_, rest)| rest.split_once('+'))
+                    .map(|(x, y)| format!("{x}x{y}"))
+                    .unwrap_or_else(display_zero_position),
+                rotation,
+                primary,
+            }
+        });
+        outputs.push(DisplayOutputState {
+            name: name.to_string(),
+            connected,
+            modes: Vec::new(),
+            current,
+        });
+    }
+    Ok(outputs)
+}
+
+fn display_resolve(
+    outputs: &[DisplayOutputState],
+    output: &DisplayOutput,
+) -> Result<DisplayOutput> {
+    let state = outputs
+        .iter()
+        .find(|state| state.name == output.name)
+        .ok_or_else(|| format!("display output {} is not connected", output.name))?;
+    if !state.connected || state.current.is_none() && state.modes.is_empty() {
+        return Err(format!("display output {} is not connected", output.name).into());
+    }
+    let mode = if output.mode == "preferred" || output.mode.is_empty() {
+        state
+            .modes
+            .first()
+            .cloned()
+            .ok_or_else(|| format!("display output {} has no modes", output.name))?
+    } else if state.modes.iter().any(|mode| mode == &output.mode) {
+        output.mode.clone()
+    } else {
+        return Err(format!(
+            "display mode {} is not available on {}",
+            output.mode, output.name
+        )
+        .into());
+    };
+    if !matches!(
+        output.rotation.as_str(),
+        "normal" | "left" | "inverted" | "right"
+    ) {
+        return Err(format!("invalid rotation {} for {}", output.rotation, output.name).into());
+    }
+    let position = output.position.trim_start_matches('+');
+    let Some((x, y)) = position.split_once('x') else {
+        return Err(format!("display position {} must be WxH", output.position).into());
+    };
+    if x.parse::<i32>().is_err() || y.parse::<i32>().is_err() {
+        return Err(format!("display position {} must be WxH", output.position).into());
+    }
+    Ok(DisplayOutput {
+        mode,
+        position: format!("{x}x{y}"),
+        ..output.clone()
+    })
+}
+
+fn display_apply(outputs: &[DisplayOutputState], profile: &DisplayProfile) -> Result<()> {
+    if profile.outputs.is_empty() {
+        return Err("display profile has no outputs".into());
+    }
+    let mut args = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for output in &profile.outputs {
+        let resolved = display_resolve(outputs, output)?;
+        if !names.insert(resolved.name.clone()) {
+            return Err(format!("display output {} is listed twice", resolved.name).into());
+        }
+        args.extend([
+            "--output".to_string(),
+            resolved.name.clone(),
+            "--mode".to_string(),
+            resolved.mode,
+            "--pos".to_string(),
+            resolved.position,
+            "--rotate".to_string(),
+            resolved.rotation,
+        ]);
+        if resolved.primary {
+            args.push("--primary".into());
+        }
+    }
+    for state in outputs {
+        if state.connected && state.current.is_some() && !names.contains(&state.name) {
+            args.extend([
+                "--output".to_string(),
+                state.name.clone(),
+                "--off".to_string(),
+            ]);
+        }
+    }
+    command("xrandr", &args)?;
+    Ok(())
+}
+
+fn display_current_layout(outputs: &[DisplayOutputState]) -> Vec<DisplayOutput> {
+    outputs
+        .iter()
+        .filter_map(|state| state.current.clone())
+        .collect()
+}
+
+fn display_read_file() -> Result<DisplayFile> {
+    let path = display_profiles_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(toml::from_str(&text)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DisplayFile::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn display_write_file(file: &DisplayFile) -> Result<()> {
+    let path = display_profiles_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    std::fs::write(&temp, toml::to_string_pretty(file)?)?;
+    std::fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn display_preview_read() -> Option<DisplayPreview> {
+    toml::from_str(&std::fs::read_to_string(display_preview_path()).ok()?).ok()
+}
+
+fn display_preview_write(state: &DisplayPreview) -> Result<()> {
+    let path = display_preview_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    std::fs::write(&temp, toml::to_string(state)?)?;
+    std::fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn display_restore(previous: &[DisplayOutput]) -> Result<()> {
+    let outputs = display_outputs()?;
+    let profile = DisplayProfile {
+        name: "previous".into(),
+        outputs: previous.to_vec(),
+    };
+    display_apply(&outputs, &profile)
+}
+
+fn display_notify(summary: &str, body: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "NIRUX", "-t", "6000", summary, body])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+fn display(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("list");
+    match action {
+        "list" => {
+            for profile in display_read_file()?.profile {
+                println!(
+                    "{}\t{}\tdisplay profile",
+                    profile.name,
+                    profile.outputs.len()
+                );
+            }
+        }
+        "save" => {
+            let name = args.get(1).ok_or("display save needs a name")?;
+            if name.is_empty() || name.chars().any(|c| c.is_control()) {
+                return Err("invalid display profile name".into());
+            }
+            let mut file = display_read_file()?;
+            let outputs = display_outputs()?;
+            let layout = display_current_layout(&outputs);
+            if layout.is_empty() {
+                return Err("no active display outputs to save".into());
+            }
+            file.profile.retain(|profile| profile.name != *name);
+            file.profile.push(DisplayProfile {
+                name: name.clone(),
+                outputs: layout,
+            });
+            display_write_file(&file)?;
+            println!("saved display profile {name}");
+        }
+        "apply" | "preview" => {
+            let name = args.get(1).ok_or("display command needs a profile name")?;
+            let profile = display_read_file()?
+                .profile
+                .into_iter()
+                .find(|p| p.name == *name)
+                .ok_or_else(|| format!("unknown display profile: {name}"))?;
+            let outputs = display_outputs()?;
+            if action == "apply" {
+                let previous = display_current_layout(&outputs);
+                if let Err(error) = display_apply(&outputs, &profile) {
+                    if !previous.is_empty() {
+                        let _ = display_restore(&previous);
+                    }
+                    return Err(error);
+                }
+                let _ = std::fs::remove_file(display_preview_path());
+                println!("applied display profile {name}");
+                return Ok(());
+            }
+            let previous = display_current_layout(&outputs);
+            if previous.is_empty() {
+                return Err("no active display layout to revert to".into());
+            }
+            if let Err(error) = display_apply(&outputs, &profile) {
+                let _ = display_restore(&previous);
+                return Err(error);
+            }
+            let seconds = args
+                .get(2)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(15)
+                .clamp(5, 120);
+            let token = format!("{}-{}", now_secs(), std::process::id());
+            let expiry = now_secs() + seconds;
+            display_preview_write(&DisplayPreview {
+                name: name.clone(),
+                token: token.clone(),
+                expiry,
+                previous,
+            })?;
+            display_notify(
+                "Display preview",
+                &format!("{name}: keep within {seconds}s or the previous layout returns"),
+            );
+            let exe = std::env::current_exe()?;
+            let _ = std::process::Command::new(exe)
+                .args(["display", "expire", &token])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            println!("previewing display profile {name} for {seconds}s");
+        }
+        "keep" => {
+            if display_preview_read().is_none() {
+                println!("no display preview active");
+            } else {
+                let _ = std::fs::remove_file(display_preview_path());
+                display_notify("Display layout kept", "Preview confirmed");
+                println!("display preview kept");
+            }
+        }
+        "revert" => {
+            let Some(state) = display_preview_read() else {
+                println!("no display preview active");
+                return Ok(());
+            };
+            display_restore(&state.previous)?;
+            let _ = std::fs::remove_file(display_preview_path());
+            display_notify("Display layout reverted", "Previous layout restored");
+            println!("display preview reverted");
+        }
+        "expire" => {
+            let Some(token) = args.get(1) else {
+                return Err("display expire needs a token".into());
+            };
+            let Some(state) = display_preview_read() else {
+                return Ok(());
+            };
+            if state.token != *token {
+                return Ok(());
+            }
+            let wait = state.expiry.saturating_sub(now_secs());
+            if wait > 0 {
+                std::thread::sleep(Duration::from_secs(wait));
+            }
+            let Some(state) = display_preview_read() else {
+                return Ok(());
+            };
+            if state.token != *token {
+                return Ok(());
+            }
+            display_restore(&state.previous)?;
+            let _ = std::fs::remove_file(display_preview_path());
+            display_notify("Display preview expired", "Previous layout restored");
+        }
+        "status" => match display_preview_read() {
+            Some(state) if state.expiry > now_secs() => {
+                println!(
+                    "display preview {} remaining {}s",
+                    state.name,
+                    state.expiry - now_secs()
+                );
+            }
+            _ => println!("display preview off"),
+        },
+        _ => return Err(USAGE.into()),
+    }
+    Ok(())
+}
+
 fn wallpaper_config_path() -> PathBuf {
     config::directory().join("config.toml")
 }
@@ -2159,6 +2578,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "bluetooth" {
         return bluetooth(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "display" {
+        return display(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "mode" {
         return mode(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -2297,6 +2719,7 @@ fn run() -> Result<()> {
             | "dnd"
             | "audio"
             | "bluetooth"
+            | "display"
             | "mode"
             | "idle"
     ) {

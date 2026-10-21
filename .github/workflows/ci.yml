@@ -27,13 +27,15 @@ jobs:
       - run: cargo test --locked
       - name: Key overrides, helper reaping and fullscreen regressions
         run: |
-          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm
+          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm x11-xserver-utils
           xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' cargo test --locked --test x11 -- --ignored --test-threads=1
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
       - name: Offline microphone and Bluetooth controls
         run: |
           sh tests/audio-microphone.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
           sh tests/bluetooth.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
+      - name: Display profile lifecycle (Xvfb/RandR)
+        run: sh tests/display-profiles.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Build pinned bar and collect static test artifacts
         run: |
           git clone --depth 1 --branch "v$(cat nirubar-version)" https://github.com/nirucon/nirubar /tmp/nirubar-build

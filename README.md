@@ -63,6 +63,9 @@ indicate that an application is recording. Provider queries have deadlines.
 uses BlueZ `bluetoothctl`; status/list are read-only, and connect verifies that
 BlueZ reported the device connected. `nirulauncher --bluetooth` provides the
 keyboard device/power selector.
+`niructl display list|save NAME|preview NAME|apply NAME|keep|revert|status`
+applies validated RandR profiles from `~/.config/niruwm/displays.toml`; preview
+keeps the previous layout and reverts after the deadline or on failure.
 `niructl explain [--launcher]` reports missing audio/backlight/notifier/sleep
 protection, display state, weather configuration and installed-vs-running WM
 versions without changing anything. `niructl mode focus|presentation|stop|status`
