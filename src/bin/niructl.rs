@@ -733,23 +733,25 @@ fn audio_default(kind: &str) -> Result<Option<u32>> {
 }
 
 fn audio_set_default(kind: &str, id: u32) -> Result<()> {
+    let label = kind.trim_end_matches('s');
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
     command(&wpctl, &["set-default".into(), id.to_string()])?;
     std::thread::sleep(Duration::from_millis(150));
     if audio_default(kind)? != Some(id) {
         return Err(format!(
-            "audio {kind} {id} did not become the default; the device may be unavailable"
+            "audio {label} {id} did not become the default; the device may be unavailable"
         )
         .into());
     }
-    println!("default {kind}: {id}");
+    println!("default {label}: {id}");
     Ok(())
 }
 
 fn audio_next(kind: &str) -> Result<()> {
+    let label = kind.trim_end_matches('s');
     let nodes = audio_nodes(kind)?;
     if nodes.len() < 2 {
-        println!("only one audio {kind} is available");
+        println!("only one audio {label} is available");
         return Ok(());
     }
     let current = nodes.iter().position(|node| node.default).unwrap_or(0);
@@ -759,11 +761,11 @@ fn audio_next(kind: &str) -> Result<()> {
         command(&wpctl, &["set-default".into(), id.to_string()])?;
         std::thread::sleep(Duration::from_millis(150));
         if audio_default(kind)? == Some(id) {
-            println!("default {kind}: {id}");
+            println!("default {label}: {id}");
             return Ok(());
         }
     }
-    Err(format!("no other audio {kind} could become the default").into())
+    Err(format!("no other audio {label} could become the default").into())
 }
 
 fn audio(args: &[String]) -> Result<()> {
@@ -788,14 +790,13 @@ fn audio(args: &[String]) -> Result<()> {
                 "sources"
             };
             let value = args.get(1).ok_or(USAGE)?;
-            let target_kind = &kind[..kind.len() - 1];
             if value == "next" {
-                audio_next(target_kind)?;
+                audio_next(kind)?;
             } else {
                 let id = value
                     .parse::<u32>()
                     .map_err(|_| "audio id must be a number or next")?;
-                audio_set_default(target_kind, id)?;
+                audio_set_default(kind, id)?;
             }
         }
         "mute" | "mic-mute" => {
