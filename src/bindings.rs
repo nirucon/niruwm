@@ -206,14 +206,9 @@ impl Action {
         add("super+shift+c", "idle_toggle");
         add("super+shift+w", "save_session");
         add("super+g", "toggle_gaps");
-        add(
-            "super+Print",
-            "shell mkdir -p \"$HOME/Pictures\" && maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
-        );
-        add(
-            "Print",
-            "shell mkdir -p \"$HOME/Pictures\" && maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\"",
-        );
+        add("super+Print", "shell nirushot --full");
+        add("Print", "shell nirushot --region");
+        add("super+shift+Print", "shell nirushot --window");
 
         // ── Hardware media keys ──────────────────────────────────────────
         // Bound without a modifier, as they are on a laptop keyboard. They

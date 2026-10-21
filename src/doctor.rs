@@ -78,7 +78,7 @@ const NEEDS: &[Need] = &[
     },
     Need {
         name: "maim",
-        why: "Super+Print screenshot",
+        why: "maim fallback for screenshots",
         required: false,
         arch: "maim",
         debian: "maim",

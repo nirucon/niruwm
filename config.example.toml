@@ -551,8 +551,12 @@ action = "launcher_unified"
 
 [[keys]]
 keys = "super+Print"
-action = "shell mkdir -p \"$HOME/Pictures\" && maim \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""
+action = "shell nirushot --full"
 
 [[keys]]
 keys = "Print"
-action = "shell mkdir -p \"$HOME/Pictures\" && maim -s \"$HOME/Pictures/screenshot-$(date +%F_%H-%M-%S).png\""
+action = "shell nirushot --region"
+
+[[keys]]
+keys = "super+shift+Print"
+action = "shell nirushot --window"
