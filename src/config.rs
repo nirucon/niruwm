@@ -261,6 +261,8 @@ pub struct AutostartConfig {
     pub enabled: bool,
     /// Seconds to wait after each workspace group before switching to the next.
     pub settle_seconds: u32,
+    /// How long to wait for a launched program's window before moving on.
+    pub window_timeout_ms: u64,
     /// Workspace to return to when the sequence finishes. 0 leaves the last one.
     pub return_workspace: u32,
     /// Applications to start, grouped by 1-based workspace.
@@ -272,6 +274,7 @@ impl Default for AutostartConfig {
         Self {
             enabled: true,
             settle_seconds: 2,
+            window_timeout_ms: 5000,
             return_workspace: 1,
             apps: Vec::new(),
         }
@@ -283,6 +286,11 @@ impl Default for AutostartConfig {
 pub struct AutostartApp {
     /// 1-based workspace number.
     pub workspace: u32,
+    /// Optional substring matched against WM_CLASS instance/class. Without it,
+    /// autostart keeps the legacy fixed spacing and does not wait for a window.
+    #[allow(dead_code)] // read by niructl, not by the WM binary
+    #[serde(default)]
+    pub class: Option<String>,
     /// Argument list, never passed through a shell.
     pub command: Vec<String>,
 }
@@ -572,6 +580,9 @@ impl Config {
         }
         if self.autostart.return_workspace > 9 {
             return Err("autostart.return_workspace must be between 0 and 9".into());
+        }
+        if !(500..=30_000).contains(&self.autostart.window_timeout_ms) {
+            return Err("autostart.window_timeout_ms must be between 500 and 30000".into());
         }
         for app in &self.autostart.apps {
             if !(1..=9).contains(&app.workspace) {

@@ -117,14 +117,22 @@ theme_dir = "~/Pictures/Wallpapers/NIRU"
 enabled = false
 # Seconds to wait after each workspace group before moving to the next one.
 settle_seconds = 2
+# How long to wait for a matched window before moving on. Only used when an
+# app has a `class`; entries without one keep the legacy fixed spacing.
+window_timeout_ms = 5000
 # Return here when the sequence finishes. 0 leaves the last workspace active.
 return_workspace = 1
+# `class` is an optional case-insensitive substring of WM_CLASS. With it,
+# autostart waits for that app's window (even a slow starter) and moves it to
+# this workspace. Without it, the app opens normally after a short delay.
 # [[autostart.apps]]
 # workspace = 1
+# class = "kitty"
 # command = ["kitty"]
 #
 # [[autostart.apps]]
 # workspace = 3
+# class = "helium"
 # command = ["helium"]
 
 

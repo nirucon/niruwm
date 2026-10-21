@@ -21,10 +21,11 @@ mod session_state;
 use chrono::{Local, Timelike};
 use config::{Config, Result, Theme};
 use std::{
+    collections::HashSet,
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use x11rb::{
     connection::{Connection, RequestConnection as _},
@@ -1119,6 +1120,66 @@ fn switch_tag(
     Err(format!("window manager did not switch to workspace {workspace}").into())
 }
 
+fn client_windows(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+) -> Vec<Window> {
+    c.get_property(
+        false,
+        root,
+        atom("_NET_CLIENT_LIST").unwrap_or(0),
+        AtomEnum::WINDOW,
+        0,
+        4096,
+    )
+    .ok()
+    .and_then(|cookie| cookie.reply().ok())
+    .and_then(|reply| reply.value32().map(|values| values.collect()))
+    .unwrap_or_default()
+}
+
+fn window_class(c: &x11rb::rust_connection::RustConnection, win: Window) -> Option<String> {
+    let reply = c
+        .get_property(false, win, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 1024)
+        .ok()?
+        .reply()
+        .ok()?;
+    let bytes = reply.value;
+    let mut parts = bytes.split(|b| *b == 0).filter(|part| !part.is_empty());
+    let instance = String::from_utf8_lossy(parts.next()?).to_ascii_lowercase();
+    let class = parts
+        .next()
+        .map(|part| String::from_utf8_lossy(part).to_ascii_lowercase())
+        .unwrap_or_default();
+    Some(format!("{instance} {class}"))
+}
+
+fn move_window_to_workspace(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    win: Window,
+    workspace: u32,
+) -> Result<()> {
+    let desktop = workspace.saturating_sub(1);
+    let event = ClientMessageEvent::new(32, win, atom("_NET_WM_DESKTOP")?, [desktop, 2, 0, 0, 0]);
+    c.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )?;
+    c.flush()?;
+    for _ in 0..100 {
+        if property_u32(c, win, atom("_NET_WM_DESKTOP")?) == Some(desktop) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Err(format!("window did not move to workspace {workspace}").into())
+}
+
 fn autostart(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
@@ -1138,22 +1199,80 @@ fn autostart(
 
     let mut index = 0;
     let mut last_workspace = 0u32;
-    while index < apps.len() {
+    let mut user_moved = false;
+    while index < apps.len() && !user_moved {
         let workspace = apps[index].workspace;
+        if workspace == 0 || workspace > 9 {
+            eprintln!("niructl: autostart workspace {workspace} is outside 1..9");
+            while index < apps.len() && apps[index].workspace == workspace {
+                index += 1;
+            }
+            continue;
+        }
         switch_tag(c, root, atom, workspace)?;
+        if current_tag(c, root, atom) != Some(workspace - 1) {
+            user_moved = true;
+            break;
+        }
         last_workspace = workspace;
         while index < apps.len() && apps[index].workspace == workspace {
-            let command = &apps[index].command;
+            let app = &apps[index];
+            let command = &app.command;
             if let Some((program, arguments)) = command.split_first() {
+                let before: HashSet<Window> = client_windows(c, root, atom).into_iter().collect();
                 match std::process::Command::new(program).args(arguments).spawn() {
                     Ok(_) => {}
-                    Err(e) => eprintln!("niructl: autostart {program}: {e}"),
+                    Err(e) => {
+                        eprintln!("niructl: autostart {program}: {e}");
+                        index += 1;
+                        continue;
+                    }
                 }
-                // Give the window manager time to see the first window before
-                // the next program opens on the same workspace.
-                std::thread::sleep(Duration::from_millis(250));
+                if let Some(wanted) = app.class.as_deref().filter(|wanted| !wanted.is_empty()) {
+                    let wanted = wanted.to_ascii_lowercase();
+                    let deadline =
+                        Instant::now() + Duration::from_millis(cfg.autostart.window_timeout_ms);
+                    let mut placed = false;
+                    while Instant::now() < deadline {
+                        if current_tag(c, root, atom) != Some(workspace - 1) {
+                            user_moved = true;
+                            break;
+                        }
+                        for win in client_windows(c, root, atom) {
+                            if before.contains(&win) {
+                                continue;
+                            }
+                            if !window_class(c, win)
+                                .map(|class| class.contains(&wanted))
+                                .unwrap_or(false)
+                            {
+                                continue;
+                            }
+                            move_window_to_workspace(c, root, atom, win, workspace)?;
+                            placed = true;
+                            break;
+                        }
+                        if placed {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    if !placed && !user_moved {
+                        eprintln!(
+                            "niructl: autostart {program}: no window matching {wanted:?} within {} ms",
+                            cfg.autostart.window_timeout_ms
+                        );
+                    }
+                } else {
+                    // A command without a window match keeps the old bounded
+                    // spacing. This supports scripts and single-instance apps.
+                    std::thread::sleep(Duration::from_millis(250));
+                }
             }
             index += 1;
+        }
+        if user_moved {
+            break;
         }
         if cfg.autostart.settle_seconds > 0 {
             std::thread::sleep(Duration::from_secs(u64::from(cfg.autostart.settle_seconds)));
@@ -1161,7 +1280,10 @@ fn autostart(
     }
 
     let return_to = cfg.autostart.return_workspace;
-    if return_to > 0 && current_tag(c, root, atom) == Some(last_workspace.saturating_sub(1)) {
+    if !user_moved
+        && return_to > 0
+        && current_tag(c, root, atom) == Some(last_workspace.saturating_sub(1))
+    {
         switch_tag(c, root, atom, return_to)?;
     }
     Ok(())

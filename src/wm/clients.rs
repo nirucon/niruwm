@@ -699,22 +699,31 @@ impl Wm {
 
     /// Move the focused window to a global desktop, changing monitor if needed.
     pub(crate) fn move_to_global(&mut self, global: u32) -> Result<()> {
+        if let Some(w) = self.focus {
+            self.move_window_to_global(w, global)?;
+        } else {
+            self.arrange()?;
+        }
+        Ok(())
+    }
+
+    /// Move one specific managed window to a global desktop. Used by the
+    /// standard `_NET_WM_DESKTOP` request and by autostart placement.
+    pub(crate) fn move_window_to_global(&mut self, w: Window, global: u32) -> Result<()> {
         let Some((monitor, workspace)) = crate::monitor::find_global(&self.monitors, global) else {
             return Ok(());
         };
-        if let Some(w) = self.focus {
-            let monitor_name = self
-                .monitors
-                .get(monitor)
-                .map(|m| m.name.clone())
-                .unwrap_or_default();
-            if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
-                c.monitor = monitor;
-                c.monitor_name = monitor_name;
-                c.tag = workspace as u32;
-            }
-            self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[global])?;
+        let monitor_name = self
+            .monitors
+            .get(monitor)
+            .map(|m| m.name.clone())
+            .unwrap_or_default();
+        if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+            c.monitor = monitor;
+            c.monitor_name = monitor_name;
+            c.tag = workspace as u32;
         }
+        self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[global])?;
         self.arrange()
     }
 

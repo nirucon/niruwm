@@ -189,6 +189,10 @@ impl Wm {
     /// Returns `false` when the WM should exit.
     fn client_message(&mut self, e: ClientMessageEvent) -> Result<bool> {
         let d = e.data.as_data32();
+        if e.type_ == self.atom("_NET_WM_DESKTOP") {
+            self.move_window_to_global(e.window, d[0])?;
+            return Ok(true);
+        }
         if e.type_ == self.atom("_NIRUWM_COMMAND") {
             if d[0] == 8 {
                 self.start_bar();
