@@ -1,10 +1,27 @@
 # NIRUWM
 
-Small Rust/X11 tiling window manager for the NIRU X11 desktop, with
-per-monitor workspaces, seven layouts, configurable shortcuts, themes and the
-`niructl`/`niruidle` session tools.
+**Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
 
-Part of the [NIRUX suite](https://github.com/nirucon/nirux): [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot).
+**Early beta.** A small Rust/X11 tiling window manager and session layer for the
+NIRU desktop. It provides per-monitor workspaces, seven layouts, configurable
+shortcuts, floating and fullscreen windows, a scratchpad, session restore,
+themes and the `niructl`/`niruidle` tools.
+
+## Features
+
+- Seven layouts: tile, left, monocle, centered, centered-floating, fibonacci and
+  floating.
+- Nine workspaces per monitor, ten via `Super+0`, with independent monitor focus.
+- Tiling, floating, fullscreen, scratchpad, master ratio, master count, gaps and
+  window swapping.
+- dwm-style mouse move/resize with **Super+left-drag** and **Super+right-drag**.
+- Session save/restore, autostart, workspace recipes and focus/presentation modes
+  through `niructl`.
+- Native notification, DND, audio, microphone, Bluetooth, display-profile, power-
+  profile, brightness, night-light and screenshot integration.
+- Shared NIRU themes, font metrics and appearance contract.
+- `niructl`: provider-neutral controls, diagnostics, work modes and recipes.
+- `niruidle`: idle, lock and DPMS timing without a separate idle daemon.
 
 ## Install
 
@@ -21,29 +38,117 @@ Choose **NIRUWM** at login. `./install.sh --build` needs Rust 1.75+ and a C
 linker. The bar is a separate component; NIRUX installs it. NIRUX-owned
 installations are maintained with `nirux update`.
 
-## Controls
+## Keybindings
+
+### Applications and session
 
 | Keys | Action |
 |---|---|
-| Super+Enter / Super+B | Terminal / browser |
-| Super+P / Super+Shift+P | Applications / applications and actions |
-| Super+1–9 / Super+Shift+1–9 | Select workspace / move window |
+| Super+Enter | Terminal |
+| Super+Shift+Enter | Alternative terminal |
+| Super+B | Browser |
+| Super+P | Application launcher |
+| Super+Shift+P | Applications, windows and actions |
+| Super+Shift+M | Unified launcher |
+| Super+W | Window switcher |
+| Super+Shift+F | File manager |
+| Super+Escape | Lock |
+| Super+Shift+R | Reload |
+| Super+R / Super+Ctrl+Shift+R | Reload |
+| Super+Shift+D | Toggle DND |
+| Super+Shift+C | Toggle idle inhibition |
+| Super+Shift+W | Save session |
+| Super+G | Toggle gaps |
+| Super+N | Toggle night light |
+| Super+Q | Close window |
+| Super+Ctrl+Shift+Q | Log out |
+
+### Layouts
+
+| Keys | Action |
+|---|---|
+| Super+T | Tile |
+| Super+Y | Left stack |
+| Super+M | Monocle |
+| Super+C | Centered |
+| Super+U | Centered floating master |
+| Super+F | Floating layout |
+| Super+Ctrl+E | Fibonacci |
+| Super+Ctrl+, / Super+Ctrl+. | Previous / next layout |
+| Super+Shift+Space | Toggle floating |
+| Super+Shift+E | Toggle fullscreen |
+| Super+Shift+S | Scratchpad |
+| Super+H / Super+L | Decrease / increase master ratio |
+| Super+I / Super+D | Increase / decrease master count |
+| Super+Shift+J / Super+Shift+K | Swap with next / previous window |
+
+### Focus and windows
+
+| Keys | Action |
+|---|---|
 | Super+J / Super+K | Next / previous window |
-| Super+T / Super+M | Tile / monocle |
-| Super+Shift+E / Super+Shift+S | Fullscreen / scratchpad |
+| Super+Right or Down | Next window |
+| Super+Left or Up | Previous window |
+| Super+Shift+Right or Down | Move window next |
+| Super+Shift+Left or Up | Move window previous |
 | Super+, / Super+. | Previous / next monitor |
-| Super+N / brightness keys | Night light / brightness |
-| Super+Escape / Super+R | Lock / reload |
-| Super+Q / Super+Ctrl+Shift+Q | Close window / log out |
-| Super+Print / Print / Super+Shift+Print | Full / region / window screenshot |
+| Super+Shift+, / Super+Shift+. | Move window to previous / next monitor |
+
+### Workspaces
+
+| Keys | Action |
+|---|---|
+| Super+1…9 | Select workspace 1…9 |
+| Super+0 | Select workspace 10 |
+| Super+Shift+1…9 | Move window to workspace 1…9 |
+| Super+Shift+0 | Move window to workspace 10 |
+| Super+Ctrl+1…9 | Toggle workspace 1…9 on the current view |
+| Super+Ctrl+Shift+1…9 | Toggle window on workspace 1…9 and move it there |
+| Super+Tab / Super+Shift+Tab | Next / previous workspace |
+
+### Floating windows
+
+| Keys | Action |
+|---|---|
+| Super+Ctrl+Left / Right / Up / Down | Move floating window |
+| Super+Ctrl+Shift+Left / Right | Resize floating window horizontally |
+| Super+Ctrl+Shift+Up / Down | Resize floating window vertically |
+
+### Screenshots and hardware keys
+
+| Keys | Action |
+|---|---|
+| Super+Print | Full-screen capture and review |
+| Print | Region capture and review |
+| Super+Shift+Print | Active-window capture and review |
+| XF86AudioRaiseVolume / LowerVolume | Volume up / down |
+| XF86AudioMute | Mute |
+| XF86AudioPlay / Pause | Play / pause |
+| XF86AudioNext / Prev | Next / previous track |
+| XF86MonBrightnessUp / Down | Brightness up / down |
+
+### Mouse
+
+| Input | Action |
+|---|---|
+| Super+left-drag | Move window; a tiled window becomes floating |
+| Super+right-drag | Resize from the nearest corner |
+| Click title/bar module | Normal application interaction; no Super required |
+
+### Optional NIRUPI compatibility
+
+Set `nirupi_compat = true` to add Super+Shift+H (keys), Super+Shift+Escape
+(suspend), Super+Shift+Q (power), Super+Ctrl+T (theme), Super+Shift+L
+(keyboard), Super+Shift+T (touchpad), Super+V (clipboard), Super+S (SSH),
+Super+Ctrl+Shift+B (bar mode), Super+Shift+Z (recording) and Super+Alt+K
+(keybinding help). These require NIRUPI helpers.
 
 ## Settings
 
 Shared settings live in `~/.config/niruwm/config.toml`; start from
 [config.example.toml](config.example.toml). XDG paths are respected. Individual
-bindings override only that key; `action = "unbind"` removes a default.
-`nirupi_compat = true` explicitly enables NIRUPI helpers. Set `browser` to an
-installed browser command.
+bindings override only that key; `action = "unbind"` removes a default. Set
+`browser` to an installed browser command.
 
 ```sh
 niruwm --check-config
@@ -58,7 +163,7 @@ with Dunst fallback.
 
 `niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
 display profiles, power profiles, DND, diagnostics, work modes and workspace
-recipes. Examples:
+recipes:
 
 ```sh
 niructl audio outputs
@@ -74,6 +179,10 @@ niructl recipe run Development
 Themes: Niru Noir, Nord, Satie, Carl Larsson and custom TOML files. On a theme
 change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when
 present; NIRUX uses it to update terminal colours.
+
+## NIRUX suite
+
+[NIRUX](https://github.com/nirucon/nirux) · [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot)
 
 ## Development
 
