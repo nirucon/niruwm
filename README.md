@@ -188,6 +188,8 @@ Compositor: `niructl compositor status|on|off|toggle` controls picom. Inactive
 window transparency and shadows are configured in `~/.config/picom.conf`; the
 toggle does not rewrite that file. A conservative starting point is
 `inactive-opacity = 0.94`, `active-opacity = 1.0` and a small shadow radius.
+Floating windows can opt into centered placement with a `[[rules]]` entry:
+`class = "localsend"`, `floating = true`, `center = true`.
 
 Themes: Niru Noir, Nord, Satie, Carl Larsson and custom TOML files. On a theme
 change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when

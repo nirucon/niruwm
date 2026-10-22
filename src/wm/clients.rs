@@ -161,6 +161,19 @@ impl Wm {
             self.restore_focus = Some((w, monitor, tag));
         }
 
+        if floating && rule.as_ref().and_then(|r| r.center).unwrap_or(false) {
+            let screen = self
+                .monitors
+                .get(monitor)
+                .map(|m| m.rect)
+                .unwrap_or_else(|| self.work_area());
+            if let Some(c) = self.clients.last_mut() {
+                c.geom.x = screen.x + (screen.w as i16 - c.geom.w as i16) / 2;
+                c.geom.y = screen.y + (screen.h as i16 - c.geom.h as i16) / 2;
+                c.geom.x = c.geom.x.max(screen.x);
+                c.geom.y = c.geom.y.max(screen.y);
+            }
+        }
         if is_scratchpad {
             let screen = self
                 .monitors

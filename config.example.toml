@@ -255,6 +255,12 @@ update_check_minutes = 30
 # the bar without any other program. Set false if another tray is running.
 tray = true
 
+# ── Window rules ────────────────────────────────────────────────────────────
+# [[rules]]
+# class = "localsend"
+# floating = true
+# center = true
+
 # ── Key bindings ────────────────────────────────────────────────────────────
 # Mouse: hold Super and drag with button 1 to move a window (a tiled window
 # becomes floating), or button 3 to resize it from the nearest corner.

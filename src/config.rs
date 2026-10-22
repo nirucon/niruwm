@@ -124,6 +124,9 @@ pub struct Rule {
     /// Open floating instead of tiled.
     #[allow(dead_code)]
     pub floating: Option<bool>,
+    /// Center a floating window on its monitor when it first maps.
+    #[allow(dead_code)]
+    pub center: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
