@@ -66,7 +66,7 @@ press "" "1"
 ok "super+1 returns"
 
 press "shift" "Tab"
-[ "$(tagnow)" = "8" ] || fail "super+shift+Tab did not wrap to 9 (got $(tagnow))"
+[ "$(tagnow)" = "9" ] || fail "super+shift+Tab did not wrap to 10 (got $(tagnow))"
 ok "super+shift+Tab wraps backwards"
 press "" "1"
 
