@@ -193,6 +193,7 @@ impl Action {
         // Prefer the native launcher; the configured app launcher is fallback.
         add("super+p", "launcher");
         add("super+shift+p", "launcher_unified");
+        add("super+shift+b", "launcher_unified");
         // The old NIRUPI menu key now opens the suite launcher. NIRUPI's own
         // menu is available through the compatibility profile.
         add("super+shift+m", "launcher_unified");
