@@ -1,6 +1,6 @@
 //! Remember the windows of a session and bring them back.
 //!
-//! The point of nine workspaces is that they accumulate: the browser on one,
+//! The point of ten workspaces is that they accumulate: the browser on one,
 //! the editor on another, a terminal you left in the third. Closing the
 //! session throws that away, and rebuilding it by hand every morning is the
 //! cost that makes a tiling desktop feel like work.

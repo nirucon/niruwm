@@ -191,7 +191,7 @@ pub struct MonitorsConfig {
 pub struct MonitorProfile {
     /// RandR output name, for example `eDP-1` or `HDMI-1`.
     pub name: String,
-    /// Workspace labels this screen shows instead of 1..9.
+    /// Workspace labels this screen shows instead of 1..10.
     pub workspaces: Vec<String>,
     /// When true, this screen receives focus at login and opens new windows
     /// when the pointer is outside every screen.
@@ -202,7 +202,7 @@ pub struct MonitorProfile {
 impl Default for MonitorsConfig {
     fn default() -> Self {
         Self {
-            workspaces: 9,
+            workspaces: 10,
             profiles: Vec::new(),
         }
     }
@@ -326,7 +326,7 @@ pub struct Bar {
     pub modules: Vec<String>,
     /// Visibility of the optional microphone module. Read by NIRUBAR.
     pub microphone_visibility: String,
-    /// Workspace labels shown instead of 1..9.
+    /// Workspace labels shown instead of 1..10.
     pub tags: Vec<String>,
     /// Show the date, the time, or both.
     pub show_date: bool,
@@ -407,7 +407,7 @@ impl Default for Bar {
                 "battery".into(),
                 "clock".into(),
             ],
-            tags: (1..=9).map(|n| n.to_string()).collect(),
+            tags: (1..=10).map(|n| n.to_string()).collect(),
             microphone_visibility: "always".into(),
             show_date: true,
             show_time: true,
@@ -606,8 +606,8 @@ impl Config {
                 return Err("recipe name must not be empty".into());
             }
             for app in &recipe.apps {
-                if app.workspace == 0 || app.workspace > 9 {
-                    return Err("recipe workspace must be between 1 and 9".into());
+                if app.workspace == 0 || app.workspace > 10 {
+                    return Err("recipe workspace must be between 1 and 10".into());
                 }
                 if app.command.is_empty() {
                     return Err("recipe command must not be empty".into());
@@ -615,15 +615,15 @@ impl Config {
             }
         }
         for app in &self.autostart.apps {
-            if !(1..=9).contains(&app.workspace) {
-                return Err("autostart.apps workspace must be between 1 and 9".into());
+            if !(1..=10).contains(&app.workspace) {
+                return Err("autostart.apps workspace must be between 1 and 10".into());
             }
             if app.command.is_empty() {
                 return Err("autostart.apps command must not be empty".into());
             }
         }
-        if self.bar.tags.len() > 9 {
-            return Err("bar.tags has more than nine entries".into());
+        if self.bar.tags.len() > 10 {
+            return Err("bar.tags has more than ten entries".into());
         }
         for m in &self.bar.modules {
             // The bar owns this list; the window manager only has to accept

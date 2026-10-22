@@ -171,7 +171,7 @@ device = ""
 step = 5
 
 # ── Monitors ────────────────────────────────────────────────────────────────
-# Automatic by default: every connected screen gets its own nine workspaces,
+# Automatic by default: every connected screen gets its own ten workspaces,
 # like dwm. Plug a screen in or out and NIRUWM follows.
 #
 # `profiles` overrides one screen by its RandR name (see `xrandr --listmonitors`
@@ -179,7 +179,7 @@ step = 5
 # different count, or be the one that holds focus at login.
 
 [monitors]
-workspaces = 9
+workspaces = 10
 
 # [[monitors.profiles]]
 # name = "HDMI-1"
@@ -217,11 +217,11 @@ modules = ["workspaces", "media", "volume", "brightness", "network", "mode", "ba
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).
 # Middle: input selector (nirulauncher --microphone).
-# Workspace labels. Shown instead of 1..9. Fewer than nine entries is fine:
+# Workspace labels. Shown instead of 1..10. Fewer than ten entries is fine:
 # the rest keep their number. Glyphs and words both work.
 #   tags = ["web", "code", "chat", "", "", "", "", "", ""]
 #   tags = ["\u{f269}", "\u{f121}", "\u{f086}", "", "", "", "", "", ""]
-tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 # Width of one workspace cell, in pixels.
 cell_width = 30
 # Show the focused window title between the workspaces and the status.

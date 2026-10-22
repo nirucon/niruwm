@@ -26,6 +26,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
+    process::Stdio,
     time::{Duration, Instant},
 };
 use x11rb::{
@@ -37,6 +38,7 @@ use x11rb::{
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
 theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
+compositor on|off|toggle|status | \
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 display list|save NAME|preview NAME|apply NAME|keep|revert|status | \
@@ -177,6 +179,64 @@ fn brightness(args: &[String]) -> Result<()> {
         ),
         percent,
     );
+    Ok(())
+}
+
+fn compositor_running() -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-x", "picom"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn compositor(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    let quiet = args.iter().any(|arg| arg == "--quiet");
+    let running = compositor_running();
+    match action {
+        "status" => println!("{}", if running { "on" } else { "off" }),
+        "on" => {
+            if running {
+                println!("on");
+                return Ok(());
+            }
+            if !which("picom") {
+                return Err("picom is not installed".into());
+            }
+            std::process::Command::new("picom")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("cannot start picom: {e}"))?;
+            if !quiet {
+                notify("Compositor", "on", None);
+            }
+            println!("on");
+        }
+        "off" => {
+            if running {
+                let _ = std::process::Command::new("pkill")
+                    .args(["-x", "picom"])
+                    .status();
+                if !quiet {
+                    notify("Compositor", "off", None);
+                }
+            }
+            println!("off");
+        }
+        "toggle" => {
+            if running {
+                compositor(&["off".to_string(), "--quiet".to_string()])
+            } else {
+                compositor(&["on".to_string()])
+            }?;
+        }
+        _ => return Err("compositor needs on, off, toggle or status".into()),
+    }
     Ok(())
 }
 
@@ -2044,8 +2104,8 @@ fn switch_tag(
     atom: &dyn Fn(&str) -> Result<Atom>,
     workspace: u32,
 ) -> Result<()> {
-    if workspace == 0 || workspace > 9 {
-        return Err("autostart workspace must be between 1 and 9".into());
+    if workspace == 0 || workspace > 10 {
+        return Err("autostart workspace must be between 1 and 10".into());
     }
     let tag = workspace - 1;
     send(c, root, atom("_NIRUWM_COMMAND")?, [1, tag, 0, 0, 0])?;
@@ -2348,7 +2408,7 @@ fn launch_sequence(
     while index < apps.len() && !user_moved {
         let workspace = apps[index].workspace;
         if workspace == 0 || workspace > 9 {
-            eprintln!("niructl: autostart workspace {workspace} is outside 1..9");
+            eprintln!("niructl: autostart workspace {workspace} is outside 1..10");
             while index < apps.len() && apps[index].workspace == workspace {
                 index += 1;
             }
@@ -2755,6 +2815,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "nightlight" {
         return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "compositor" {
+        return compositor(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "idle" {
         return idle(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -2878,6 +2941,7 @@ fn run() -> Result<()> {
             | "layouts"
             | "brightness"
             | "nightlight"
+            | "compositor"
             | "lock"
             | "screensaver"
             | "logout"
@@ -3184,8 +3248,8 @@ fn session_from_file(cmd: &str) -> Result<()> {
 
 fn parse_tag(args: &[String]) -> Result<u32> {
     let n: u32 = args.get(1).ok_or(USAGE)?.parse()?;
-    if !(1..=9).contains(&n) {
-        return Err("tag must be 1..9".into());
+    if !(1..=10).contains(&n) {
+        return Err("tag must be 1..10".into());
     }
     Ok(n - 1)
 }

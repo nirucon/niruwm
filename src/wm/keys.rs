@@ -702,13 +702,12 @@ impl Wm {
 
 /// Map a binding's tag number to a zero-based workspace index.
 ///
-/// Users write `1`..`9` for the nine workspaces; `10` is the `0` key, which
-/// dwm binds to the last tag.
+/// Users write `1`..`10`; `10` is the `0` key, which dwm binds to the last tag.
 pub(crate) fn tag_index(n: u32) -> u32 {
     match n {
         0 => 0,
-        1..=9 => n - 1,
-        _ => 8,
+        1..=10 => n - 1,
+        _ => 9,
     }
 }
 
@@ -899,6 +898,6 @@ mod tests {
         assert_eq!(tag_index(1), 0);
         assert_eq!(tag_index(3), 2);
         assert_eq!(tag_index(9), 8);
-        assert_eq!(tag_index(10), 8, "the 0 key selects the last workspace");
+        assert_eq!(tag_index(10), 9, "the 0 key selects workspace 10");
     }
 }

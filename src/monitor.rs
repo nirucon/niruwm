@@ -5,7 +5,7 @@
 //! own workspace set there, the way dwm does.
 //!
 //! The default is automatic: each connected screen is one monitor and gets the
-//! nine workspaces. `[monitors]` in the config can name screens and give each
+//! ten workspaces. `[monitors]` in the config can name screens and give each
 //! its own number of workspaces, which is what a fixed desk setup wants.
 
 use crate::layout::Rect;
@@ -78,9 +78,9 @@ pub struct MonitorConfig {
 impl Default for MonitorConfig {
     fn default() -> Self {
         Self {
-            // Nine workspaces per screen, like dwm and like NIRUWM before it
+            // Ten workspaces per screen, like dwm with an extra tag
             // learned about monitors.
-            workspaces: 9,
+            workspaces: 10,
             named: HashMap::new(),
             primary: None,
         }
@@ -175,14 +175,14 @@ mod tests {
     }
 
     #[test]
-    fn a_laptop_gets_one_monitor_with_nine_workspaces() {
+    fn a_laptop_gets_one_monitor_with_ten_workspaces() {
         let (m, many) = build(
             vec![("eDP-1".into(), rect(0, 0, 1920, 1080), true)],
             &MonitorConfig::default(),
         );
         assert_eq!(m.len(), 1);
         assert!(!many);
-        assert_eq!(m[0].workspaces.len(), 9);
+        assert_eq!(m[0].workspaces.len(), 10);
         assert_eq!(m[0].active_name(), "1");
     }
 
@@ -232,7 +232,7 @@ mod tests {
             ],
             &cfg,
         );
-        assert_eq!(m[0].workspaces.len(), 9);
+        assert_eq!(m[0].workspaces.len(), 10);
         assert_eq!(m[1].workspaces, vec!["web", "code", "chat"]);
     }
 
@@ -274,13 +274,13 @@ mod tests {
             &MonitorConfig::default(),
         );
         assert_eq!(offset(&m, 0), 0);
-        assert_eq!(offset(&m, 1), 9);
-        assert_eq!(global_active(&m, 1), 9);
+        assert_eq!(offset(&m, 1), 10);
+        assert_eq!(global_active(&m, 1), 10);
         assert_eq!(find_global(&m, 0), Some((0, 0)));
-        assert_eq!(find_global(&m, 8), Some((0, 8)));
-        assert_eq!(find_global(&m, 9), Some((1, 0)));
-        assert_eq!(find_global(&m, 17), Some((1, 8)));
-        assert_eq!(find_global(&m, 18), None);
+        assert_eq!(find_global(&m, 9), Some((0, 9)));
+        assert_eq!(find_global(&m, 10), Some((1, 0)));
+        assert_eq!(find_global(&m, 19), Some((1, 9)));
+        assert_eq!(find_global(&m, 20), None);
     }
 
     #[test]

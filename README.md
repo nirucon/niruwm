@@ -11,7 +11,7 @@ themes and the `niructl`/`niruidle` tools.
 
 - Seven layouts: tile, left, monocle, centered, centered-floating, fibonacci and
   floating.
-- Nine workspaces per monitor, ten via `Super+0`, with independent monitor focus.
+- Ten workspaces per monitor, selected with `Super+1`…`Super+0`.
 - Tiling, floating, fullscreen, scratchpad, master ratio, master count, gaps and
   window swapping.
 - dwm-style mouse move/resize with **Super+left-drag** and **Super+right-drag**.
@@ -183,6 +183,11 @@ Without `dbus-send`, power actions use `systemctl` or a capability-checked
 elogind `loginctl`; rejected requests are never retried through another
 backend. Logout remains a `loginctl` session operation, and suspend still
 requires verified screen-lock readiness.
+
+Compositor: `niructl compositor status|on|off|toggle` controls picom. Inactive
+window transparency and shadows are configured in `~/.config/picom.conf`; the
+toggle does not rewrite that file. A conservative starting point is
+`inactive-opacity = 0.94`, `active-opacity = 1.0` and a small shadow radius.
 
 Themes: Niru Noir, Nord, Satie, Carl Larsson and custom TOML files. On a theme
 change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when
