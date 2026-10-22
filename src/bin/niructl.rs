@@ -376,40 +376,63 @@ fn spawn_action(program: &str, args: &[&str]) -> Result<()> {
 
 /// A login/power action with an explicit backend and no shell.
 fn login_action(action: &str) -> Result<()> {
-    if which("loginctl") {
+    if action == "logout" && which("loginctl") {
         let mut args: Vec<String> = Vec::new();
-        match action {
-            "logout" => {
-                if let Ok(session) = std::env::var("XDG_SESSION_ID") {
-                    if !session.is_empty() {
-                        args.push("terminate-session".into());
-                        args.push(session);
-                    }
-                }
-                if args.is_empty() {
-                    let user = std::env::var("USER").map_err(|_| "USER is not set")?;
-                    args.push("terminate-user".into());
-                    args.push(user);
-                }
+        if let Ok(session) = std::env::var("XDG_SESSION_ID") {
+            if !session.is_empty() {
+                args.push("terminate-session".into());
+                args.push(session);
             }
-            "suspend" | "reboot" => args.push(action.into()),
-            // logind has no `shutdown` verb; the power-off action is `poweroff`.
-            "shutdown" => args.push("poweroff".into()),
-            _ => return Err(format!("unknown login action: {action}").into()),
+        }
+        if args.is_empty() {
+            let user = std::env::var("USER").map_err(|_| "USER is not set")?;
+            args.push("terminate-user".into());
+            args.push(user);
         }
         command("loginctl", &args)?;
         return Ok(());
     }
-    if action != "logout" && which("systemctl") {
-        let verb = if action == "shutdown" {
-            "poweroff"
-        } else {
-            action
-        };
+    let (method, verb) = match action {
+        "shutdown" => ("PowerOff", "poweroff"),
+        "reboot" => ("Reboot", "reboot"),
+        "suspend" => ("Suspend", "suspend"),
+        "logout" => return Err("no logout backend: install loginctl (logind/elogind)".into()),
+        _ => return Err(format!("unknown login action: {action}").into()),
+    };
+    // systemd's loginctl has session commands, but NOT elogind's power verbs.
+    // Both services implement the same login1 D-Bus methods. Request normal
+    // interactive authorization and honor inhibitors; never retry a rejected
+    // request through another backend (or bypass it with sudo/force).
+    if which("dbus-send") {
+        command(
+            "dbus-send",
+            &[
+                "--system".into(),
+                "--print-reply".into(),
+                "--reply-timeout=120000".into(),
+                "--dest=org.freedesktop.login1".into(),
+                "/org/freedesktop/login1".into(),
+                format!("org.freedesktop.login1.Manager.{method}"),
+                "boolean:true".into(),
+            ],
+        )?;
+        return Ok(());
+    }
+    if which("systemctl") {
         command("systemctl", &[verb.to_string()])?;
         return Ok(());
     }
-    Err(format!("no login backend for {action}: install logind/elogind or systemd").into())
+    if which("loginctl") {
+        let help = command("loginctl", &["--help".into()])?;
+        if String::from_utf8_lossy(&help.stdout)
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(verb))
+        {
+            command("loginctl", &[verb.to_string()])?;
+            return Ok(());
+        }
+    }
+    Err(format!("no power backend for {action}: install dbus-send and logind/elogind").into())
 }
 
 fn power_action(action: &str) -> Result<()> {
@@ -3310,6 +3333,7 @@ mod tests {
         let log = |name: &str| format!("printf '%s %s\\n' '{name}' \"$*\" >> \"$CALLS\"\n");
         script(&bin, "niruscreensaver", &log("niruscreensaver"));
         script(&bin, "loginctl", &log("loginctl"));
+        script(&bin, "dbus-send", &log("dbus-send"));
         script(
             &bin,
             "dunstctl",
@@ -3335,9 +3359,11 @@ mod tests {
         desktop("screensaver", &[]).unwrap();
         wait_for("niruscreensaver --preview");
         login_action("reboot").unwrap();
-        wait_for("loginctl reboot");
+        wait_for("org.freedesktop.login1.Manager.Reboot boolean:true");
         desktop("shutdown", &[]).unwrap();
-        wait_for("loginctl poweroff");
+        wait_for("org.freedesktop.login1.Manager.PowerOff boolean:true");
+        login_action("suspend").unwrap();
+        wait_for("org.freedesktop.login1.Manager.Suspend boolean:true");
         desktop("logout", &[]).unwrap();
         wait_for("loginctl terminate-session 42");
         dnd(&["toggle".to_string()]).unwrap();

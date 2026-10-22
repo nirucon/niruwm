@@ -176,6 +176,14 @@ niructl mode focus
 niructl recipe run Development
 ```
 
+Shutdown, reboot and suspend use the shared logind/elogind login1 D-Bus API
+through `dbus-send`, with normal interactive authorization and inhibitor
+checks. Systemd's `loginctl` does not implement elogind's power commands.
+Without `dbus-send`, power actions use `systemctl` or a capability-checked
+elogind `loginctl`; rejected requests are never retried through another
+backend. Logout remains a `loginctl` session operation, and suspend still
+requires verified screen-lock readiness.
+
 Themes: Niru Noir, Nord, Satie, Carl Larsson and custom TOML files. On a theme
 change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when
 present; NIRUX uses it to update terminal colours.

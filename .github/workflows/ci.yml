@@ -35,6 +35,7 @@ jobs:
           sh tests/audio-microphone.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
           sh tests/bluetooth.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
           sh tests/power-profile.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
+          sh tests/power-actions.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Display profile lifecycle (Xvfb/RandR)
         run: sh tests/display-profiles.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Build pinned bar and collect static test artifacts
@@ -56,7 +57,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh
+            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh
 
   session:
     needs: verify
@@ -123,6 +124,10 @@ jobs:
       - name: Session smoke test
         shell: sh
         run: sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+
+      - name: Offline systemd and elogind power actions
+        shell: sh
+        run: sh tests/power-actions.sh /tmp/niru/bin/niructl
 
       - name: Replay scripts
         shell: sh

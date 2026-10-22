@@ -85,6 +85,7 @@ jobs:
           sh niruwm/tests/audio-microphone.sh /tmp/niru/bin/niructl
           sh niruwm/tests/bluetooth.sh /tmp/niru/bin/niructl
           sh niruwm/tests/power-profile.sh /tmp/niru/bin/niructl
+          sh niruwm/tests/power-actions.sh /tmp/niru/bin/niructl
           sh niruwm/tests/display-profiles.sh /tmp/niru/bin/niructl
 
       - name: Collect assets
