@@ -240,6 +240,23 @@ fn compositor(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn gamma_signature() -> Option<String> {
+    let out = std::process::Command::new("xrandr")
+        .arg("--verbose")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("Gamma:"))
+        .collect();
+    (!lines.is_empty()).then(|| lines.join("|"))
+}
+
 fn nightlight_state() -> std::path::PathBuf {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
@@ -307,6 +324,7 @@ fn nightlight(args: &[String]) -> Result<()> {
     let location = format!("{latitude}:{longitude}");
     let state = nightlight_state();
     let apply = |kelvin: u32| -> Result<()> {
+        let before = gamma_signature();
         command(
             "gammastep",
             &[
@@ -319,6 +337,17 @@ fn nightlight(args: &[String]) -> Result<()> {
                 "-o".into(),
             ],
         )?;
+        if let (Some(before), Some(after)) = (before, gamma_signature()) {
+            if before == after {
+                let _ = std::fs::remove_file(&state);
+                notify(
+                    "Night light",
+                    "this display did not accept the gamma change",
+                    None,
+                );
+                return Err("the display did not accept the XRandR gamma change".into());
+            }
+        }
         if let Some(parent) = state.parent() {
             std::fs::create_dir_all(parent)?;
         }
