@@ -10,6 +10,9 @@ expect tag 1
 key super+9
 wait 400
 expect tag 9
+key super+0
+wait 400
+expect tag 10
 key super+Tab
 wait 400
 expect tag 1
