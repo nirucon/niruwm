@@ -146,7 +146,10 @@ Super+Ctrl+Shift+B (bar mode), Super+Shift+Z (recording) and Super+Alt+K
 ## Settings
 
 Shared settings live in `~/.config/niruwm/config.toml`; start from
-[config.example.toml](config.example.toml). XDG paths are respected. Individual
+[config.example.toml](config.example.toml). XDG paths are respected. The default
+workspace labels are numbers 1–10. To use icons or names, edit the `[bar] tags`
+line using the commented icon/text presets in the example; key bindings stay the
+same. Individual
 bindings override only that key; `action = "unbind"` removes a default. Set
 `browser` to an installed browser command.
 

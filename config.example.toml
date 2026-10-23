@@ -217,11 +217,19 @@ modules = ["workspaces", "media", "volume", "brightness", "network", "mode", "ba
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).
 # Middle: input selector (nirulauncher --microphone).
-# Workspace labels. Shown instead of 1..10. Fewer than ten entries is fine:
-# the rest keep their number. Glyphs and words both work.
-#   tags = ["web", "code", "chat", "", "", "", "", "", ""]
-#   tags = ["\u{f269}", "\u{f121}", "\u{f086}", "", "", "", "", "", ""]
+# Workspace labels. Numbered labels are the default.
+#
+# Numbered (default):
 tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+#
+# Icon labels: comment out the numbered line and uncomment this one. Use a
+# Nerd Font; the bar falls back to text per glyph. Super+1…0 still selects
+# workspace 1…10.
+# tags = ["\uf015", "\uf121", "\uf086", "\uf0c0", "\uf001", "\uf03d", "\uf0f3", "\uf0ac", "\uf013", "\uf02d"]
+#
+# Text labels: comment out the numbered line and uncomment this one. Empty
+# entries keep the numeric label for that workspace.
+# tags = ["web", "code", "chat", "term", "media", "", "", "", "", ""]
 # Width of one workspace cell, in pixels.
 cell_width = 30
 # Show the focused window title between the workspaces and the status.
