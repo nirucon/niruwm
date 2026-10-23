@@ -182,9 +182,16 @@ fn brightness(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn session_user() -> Option<String> {
+    std::env::var("USER").ok().filter(|user| !user.is_empty())
+}
+
 fn compositor_running() -> bool {
+    let Some(user) = session_user() else {
+        return false;
+    };
     std::process::Command::new("pgrep")
-        .args(["-x", "picom"])
+        .args(["-u", &user, "-x", "picom"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -206,22 +213,34 @@ fn compositor(args: &[String]) -> Result<()> {
             if !which("picom") {
                 return Err("picom is not installed".into());
             }
-            std::process::Command::new("picom")
+            let mut child = std::process::Command::new("picom")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|e| format!("cannot start picom: {e}"))?;
-            if !quiet {
-                notify("Compositor", "on", None);
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if compositor_running() {
+                    if !quiet {
+                        notify("Compositor", "on", None);
+                    }
+                    println!("on");
+                    return Ok(());
+                }
+                if child.try_wait().ok().flatten().is_some() {
+                    return Err("picom exited during startup; check its config/backend".into());
+                }
             }
-            println!("on");
+            return Err("picom did not stay running".into());
         }
         "off" => {
             if running {
-                let _ = std::process::Command::new("pkill")
-                    .args(["-x", "picom"])
-                    .status();
+                if let Some(user) = session_user() {
+                    let _ = std::process::Command::new("pkill")
+                        .args(["-u", &user, "-x", "picom"])
+                        .status();
+                }
                 if !quiet {
                     notify("Compositor", "off", None);
                 }
