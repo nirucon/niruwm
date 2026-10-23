@@ -15,8 +15,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Wallpaper tools in order of preference. `xsetroot` is the fallback: it
-/// cannot draw an image, but it still sets the Niru Noir background.
 /// Look up a program in PATH without spawning anything.
 fn which(name: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
@@ -113,9 +111,14 @@ impl Wallpaper {
             return Ok(None);
         }
         let Some(path) = self.theme_image() else {
+            eprintln!(
+                "niruwm: no wallpaper image for theme {}; checked {} and XDG Pictures/Wallpapers/NIRU",
+                self.theme,
+                self.theme_dir.display()
+            );
             return Ok(None);
         };
-        set_image(&path, &self.scale);
+        set_image(&path, &self.scale)?;
         if self.mode == Mode::Fixed {
             self.image = Some(path.clone());
         }
@@ -129,7 +132,7 @@ impl Wallpaper {
         self.apply_theme()
     }
 
-    fn theme_image(&self) -> Option<PathBuf> {
+    pub fn theme_image(&self) -> Option<PathBuf> {
         let slug = self.theme.strip_prefix("niru-").unwrap_or(&self.theme);
         if slug.is_empty() {
             return None;
@@ -172,7 +175,7 @@ impl Wallpaper {
             Mode::Random => self.pick(),
         };
         if let Some(path) = &chosen {
-            set_image(path, &self.scale);
+            set_image(path, &self.scale)?;
         }
         self.last_change = Instant::now();
         Ok(chosen)
@@ -268,8 +271,9 @@ fn expand_home(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// Set an image with the first available tool, falling back to a solid colour.
-fn set_image(path: &Path, scale: &str) {
+/// Set an image with the first working tool and report failures to the caller.
+fn set_image(path: &Path, scale: &str) -> Result<()> {
+    let mut failures = Vec::new();
     for tool in TOOLS {
         if !which(tool) {
             continue;
@@ -278,21 +282,24 @@ fn set_image(path: &Path, scale: &str) {
         let mut cmd = vec![tool.to_string()];
         cmd.extend(args.iter().map(|s| s.to_string()));
         cmd.push(path.display().to_string());
-        if std::process::Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            return;
+        match std::process::Command::new(&cmd[0]).args(&cmd[1..]).status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => failures.push(format!("{tool}: {status}")),
+            Err(e) => failures.push(format!("{tool}: {e}")),
         }
     }
-    // No image tool: keep a dark root rather than leave the previous picture.
-    if which("xsetroot") {
-        let _ = std::process::Command::new("xsetroot")
-            .args(["-solid", "#0f0f10"])
-            .status();
+    if failures.is_empty() {
+        return Err(
+            "no wallpaper image setter available; install feh, hsetroot, nitrogen or xwallpaper"
+                .into(),
+        );
     }
+    Err(format!(
+        "could not set wallpaper {}: {}",
+        path.display(),
+        failures.join("; ")
+    )
+    .into())
 }
 
 #[cfg(test)]

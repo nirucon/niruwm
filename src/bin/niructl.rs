@@ -17,6 +17,9 @@ mod monitor;
 #[path = "../session_state.rs"]
 #[allow(dead_code)] // niructl reads the list, it never writes one
 mod session_state;
+#[path = "../wallpaper.rs"]
+#[allow(dead_code)] // status resolves assets without applying a wallpaper.
+mod wallpaper;
 
 use chrono::{Local, TimeZone, Timelike};
 use config::{Config, Result, Theme};
@@ -2043,6 +2046,27 @@ fn wallpaper_status() -> Result<()> {
     println!("file={}", wallpaper.file);
     println!("dir={}", wallpaper.dir);
     println!("theme_dir={}", wallpaper.theme_dir);
+    println!("theme={}", cfg.theme);
+    let resolved = wallpaper::Wallpaper::new(wallpaper, &cfg.theme).theme_image();
+    println!(
+        "theme_image={}",
+        resolved
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    );
+    let following = if !wallpaper.enabled {
+        "disabled"
+    } else if !wallpaper.follow_theme {
+        "follow-theme-off"
+    } else if wallpaper.mode == "single" {
+        "single-file-override (use: niructl wallpaper follow-theme on)"
+    } else if resolved.is_none() {
+        "theme-image-missing"
+    } else {
+        "enabled"
+    };
+    println!("theme_following={following}");
     Ok(())
 }
 
@@ -2129,6 +2153,16 @@ fn wallpaper_update(args: &[String]) -> Result<()> {
                 _ => return Err("follow-theme must be on or off".into()),
             };
             document["wallpaper"]["follow_theme"] = toml_edit::value(enabled);
+            // Explicitly enabling theme following must actually enable it.
+            // A previous manual selection sets mode=single, which otherwise
+            // silently overrides follow_theme=true forever. Keep its file so
+            // the user can return to it with `wallpaper mode single`.
+            if enabled {
+                document["wallpaper"]["enabled"] = toml_edit::value(true);
+                if document["wallpaper"]["mode"].as_str() == Some("single") {
+                    document["wallpaper"]["mode"] = toml_edit::value("fixed");
+                }
+            }
         }
         _ => return Err(USAGE.into()),
     }

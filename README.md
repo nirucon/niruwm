@@ -158,6 +158,31 @@ Session options live in `~/.config/niruwm/session.conf`. Idle timing lives in
 `~/.config/niruui/screensaver.toml`. Notifications use NIRUNOTIFY when installed,
 with Dunst fallback.
 
+For a TTY login, run `startx "$HOME/.local/bin/niruwm-session"` (or plain
+`startx` when `.xinitrc` selects NIRUWM). The session keeps a valid login-provided
+`XDG_RUNTIME_DIR`; without one it uses a private, mode-700 directory under
+`${XDG_CACHE_HOME:-$HOME/.cache}/niruwm/runtime` before starting D-Bus/audio.
+Startup errors and WM errors are recorded in
+`${XDG_STATE_HOME:-$HOME/.local/state}/niruwm/session.log`.
+
+### Theme wallpapers
+
+`niructl wallpaper status` shows the configured theme, resolved theme image and
+whether wallpaper following is disabled, overridden by a single file, or missing
+an asset. Image setter failures are reported in the session log. NIRUX installs
+`feh` and the theme images; localized XDG Pictures paths are supported.
+
+Selecting a file with `niructl wallpaper set PATH` keeps that file across theme
+changes. To explicitly return to theme wallpapers:
+
+```sh
+niructl wallpaper follow-theme on
+niructl theme niru-nord
+```
+
+This enables wallpapers and changes a single-file override to fixed mode; the
+manual file remains in the config for `niructl wallpaper mode single`.
+
 `niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
 display profiles, power profiles, DND, diagnostics, work modes and workspace
 recipes:

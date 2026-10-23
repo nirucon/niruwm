@@ -57,7 +57,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh
+            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh
 
   session:
     needs: verify
@@ -68,10 +68,10 @@ jobs:
         include:
           - distro: debian
             image: debian:bookworm-slim
-            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xvfb x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
+            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xvfb xinit xauth feh dbus x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
             image: archlinux:base
-            setup: pacman -Syu --noconfirm --needed ca-certificates curl git xorg-server-xvfb xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
+            setup: pacman -Syu --noconfirm --needed ca-certificates curl git xorg-server-xvfb xorg-xinit xorg-xauth feh dbus xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
           - distro: void
             image: voidlinux/voidlinux:latest
             setup: |
@@ -82,7 +82,7 @@ jobs:
                 done
               done
               xbps-install -Suy xbps && xbps-install -Suy
-              xbps-install -Sy ca-certificates curl git xorg-server-xvfb xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
+              xbps-install -Sy ca-certificates curl git xorg-server-xvfb xinit xauth feh dbus xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
     container: ${{ matrix.image }}
     steps:
       # Void ships no libstdc++ by default, and the runner's Node needs it
@@ -124,6 +124,18 @@ jobs:
       - name: Session smoke test
         shell: sh
         run: sh tests/session-smoke.sh /tmp/niru/bin /tmp/niru
+
+      - name: Normal-user startx and wallpaper regression
+        shell: sh
+        run: |
+          mkdir -p /tmp/niru-wallpaper-assets
+          for theme in noir nord; do
+            curl -fL --retry 3 "https://raw.githubusercontent.com/nirucon/nirux/main/wallpaper/nirux-wallpaper-$theme-4k.png" -o "/tmp/niru-wallpaper-assets/nirux-wallpaper-$theme-4k.png"
+          done
+          # Root and a pre-created XDG_RUNTIME_DIR hid the Void TTY failure.
+          # Run these checks as a real unprivileged account with neither.
+          su -s /bin/sh nobody -c "sh '$PWD/tests/session-startup.sh'"
+          su -s /bin/sh nobody -c "sh '$PWD/tests/wallpaper-session.sh' /tmp/niru/bin /tmp/niru-wallpaper-assets"
 
       - name: Offline systemd and elogind power actions
         shell: sh
