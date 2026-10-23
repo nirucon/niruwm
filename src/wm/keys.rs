@@ -199,9 +199,16 @@ impl Wm {
                     LayoutId::Floating => Layout::Floating,
                     LayoutId::Fibonacci => Layout::Fibonacci,
                 };
+                self.publish_layout()?;
             }
-            Action::LayoutNext => self.layout = self.layout.next(),
-            Action::LayoutPrev => self.layout = self.layout.prev(),
+            Action::LayoutNext => {
+                self.layout = self.layout.next();
+                self.publish_layout()?;
+            }
+            Action::LayoutPrev => {
+                self.layout = self.layout.prev();
+                self.publish_layout()?;
+            }
             // Master count is per screen: changing it on one monitor must not
             // rearrange the other.
             Action::IncMaster => return self.change_master(1).map(|_| true),

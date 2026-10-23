@@ -86,7 +86,6 @@ pub enum Layout {
 
 impl Layout {
     /// Short name used in the config and on the command line.
-    #[allow(dead_code)] // printed by niructl and used by the WM
     pub fn name(self) -> &'static str {
         match self {
             Layout::Tile => "tile",

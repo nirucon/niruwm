@@ -3064,11 +3064,25 @@ fn run() -> Result<()> {
             })
             .map(|r| String::from_utf8_lossy(&r.value).to_string())
             .unwrap_or_else(|| "none".into());
+        let layout = c
+            .get_property(
+                false,
+                root,
+                atom("_NIRUWM_LAYOUT")?,
+                atom("UTF8_STRING")?,
+                0,
+                64,
+            )
+            .ok()
+            .and_then(|r| r.reply().ok())
+            .map(|r| String::from_utf8_lossy(&r.value).trim().to_string())
+            .unwrap_or_else(|| "tile".into());
         println!(
-            "wm={} tag={} theme={}",
+            "wm={} tag={} theme={} layout={}",
             wm,
             tag + 1,
-            Theme::load(&Config::load()?.theme)?.name
+            Theme::load(&Config::load()?.theme)?.name,
+            layout
         );
         println!(
             "brightness={}",

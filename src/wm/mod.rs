@@ -237,6 +237,7 @@ impl Wm {
             "_NIRUWM_CONFIG_ACK",
             "_NIRUWM_ACK_CONTROL",
             "_NIRUWM_THEME",
+            "_NIRUWM_LAYOUT",
             "_NIRUWM_BAR_CONTROL",
             "_NIRUWM_BAR_RESTART_SERIAL",
             "_NIRUWM_QUIT",
@@ -401,6 +402,19 @@ impl Wm {
             &[1],
         )?;
         self.publish_theme()?;
+        self.publish_layout()?;
+        Ok(())
+    }
+
+    /// Publish the layout that is actually in effect for the focused screen.
+    fn publish_layout(&self) -> Result<()> {
+        self.c.change_property8(
+            PropMode::REPLACE,
+            self.root,
+            self.atom("_NIRUWM_LAYOUT"),
+            self.atom("UTF8_STRING"),
+            self.layout.name().as_bytes(),
+        )?;
         Ok(())
     }
 
