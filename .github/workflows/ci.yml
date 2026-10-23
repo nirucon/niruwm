@@ -134,8 +134,10 @@ jobs:
           done
           # Root and a pre-created XDG_RUNTIME_DIR hid the Void TTY failure.
           # Run these checks as a real unprivileged account with neither.
-          su -s /bin/sh nobody -c "sh '$PWD/tests/session-startup.sh'"
-          su -s /bin/sh nobody -c "sh '$PWD/tests/wallpaper-session.sh' /tmp/niru/bin /tmp/niru-wallpaper-assets"
+          # Arch's nobody account is expired, so use a disposable account.
+          id nirutest >/dev/null 2>&1 || useradd -m -s /bin/sh nirutest
+          su -s /bin/sh nirutest -c "sh '$PWD/tests/session-startup.sh'"
+          su -s /bin/sh nirutest -c "sh '$PWD/tests/wallpaper-session.sh' /tmp/niru/bin /tmp/niru-wallpaper-assets"
 
       - name: Offline systemd and elogind power actions
         shell: sh

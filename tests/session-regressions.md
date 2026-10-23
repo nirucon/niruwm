@@ -34,8 +34,9 @@ NIRUBAR 0.18.35, real startx/xinit, Xvfb and feh.
   file in the config and applies the selected theme wallpaper.
 - Failed setters leave the previous wallpaper intact and log the tool errors.
 
-The distro CI matrix now runs these regressions as `nobody`, in addition to
-the existing session/keyboard checks. `wallpaper-session.sh` takes a directory
+The distro CI matrix now runs these regressions as a disposable unprivileged
+account, in addition to the existing session/keyboard checks.
+`wallpaper-session.sh` takes a directory
 containing `nirux-wallpaper-noir-4k.png` and `nirux-wallpaper-nord-4k.png`.
 
 ```sh
