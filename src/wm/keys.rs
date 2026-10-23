@@ -116,11 +116,7 @@ impl Wm {
                 self.start_terminal(cmd);
             }
             Action::Browser => {
-                let cmd = if self.cfg.nirupi_compat && self.browser_present() {
-                    vec!["nirupi-browser".into()]
-                } else {
-                    self.cfg.browser.clone()
-                };
+                let cmd = self.cfg.browser.clone();
                 self.start(&cmd);
             }
             Action::Launcher => {
@@ -132,12 +128,8 @@ impl Wm {
                 }
             }
             Action::LauncherUnified => {
-                // Prefer the suite's action launcher. NIRUPI's combined
-                // launcher is only an explicit compatibility fallback.
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--actions".into()]);
-                } else if self.cfg.nirupi_compat && self.helper_present("nirupi-launch.sh") {
-                    self.shell("$HOME/.local/bin/nirupi-launch.sh");
                 } else {
                     let cmd = self.cfg.launcher.clone();
                     self.start(&cmd);
@@ -172,10 +164,8 @@ impl Wm {
                 self.media_key(&name);
             }
             Action::WindowSwitcher => {
-                if self.cfg.nirupi_compat && self.helper_present("nirupi-window.sh") {
-                    self.shell("$HOME/.local/bin/nirupi-window.sh");
-                } else if self.command_present("rofi") {
-                    self.start(&["rofi".into(), "-show".into(), "window".into()]);
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--windows".into()]);
                 }
             }
             Action::Start(cmd) => {
@@ -302,9 +292,9 @@ impl Wm {
 
     /// Run a shell command detached from the WM process.
     ///
-    /// `sh -c` is used so a command may use `$HOME`, pipes or `&&` as written
-    /// in NIRUPI's helper scripts. The child is not waited for: a launcher
-    /// that stays open must not block the event loop.
+    /// `sh -c` is used so a command may use `$HOME`, pipes or `&&`. The child
+    /// is not waited for: a launcher that stays open must not block the event
+    /// loop.
     fn shell(&mut self, cmd: &str) {
         self.spawn_detached(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
     }
@@ -643,8 +633,7 @@ impl Wm {
         self.start(&cmd);
     }
 
-    /// Lock the screen. Preference order: nirulock, NIRUPI's wrapper when the
-    /// compatibility profile is on, then slock.
+    /// Lock the screen. Preference order: nirulock, then slock.
     ///
     /// Never fails silently: if nothing is installed the user gets a message
     /// instead of a key that appears broken.
@@ -653,11 +642,7 @@ impl Wm {
         // not always have `~/.local/bin` in PATH, and a bare name then fell
         // through to slock, which does not speak the NIRU lock protocol.
         let home = std::env::var("HOME").unwrap_or_default();
-        let mut candidates = vec![format!("{home}/.local/bin/nirulock")];
-        if self.cfg.nirupi_compat {
-            candidates.push(format!("{home}/.local/bin/nirupi-lock.sh"));
-        }
-        candidates.push("slock".to_string());
+        let candidates = vec![format!("{home}/.local/bin/nirulock"), "slock".to_string()];
         for candidate in candidates {
             let present = if candidate.contains('/') {
                 std::path::Path::new(&candidate).is_file()
@@ -669,11 +654,7 @@ impl Wm {
                 return;
             }
         }
-        let body = if self.cfg.nirupi_compat {
-            "No screen locker found: install nirulock, nirupi-lock or slock"
-        } else {
-            "No screen locker found: install nirulock or slock"
-        };
+        let body = "No screen locker found: install nirulock or slock";
         self.spawn_detached(&[
             "notify-send".into(),
             "-a".into(),
@@ -682,17 +663,6 @@ impl Wm {
             body.into(),
         ]);
         eprintln!("niruwm: {body}");
-    }
-
-    fn browser_present(&self) -> bool {
-        self.helper_present("nirupi-browser")
-    }
-
-    fn helper_present(&self, name: &str) -> bool {
-        let path = std::path::Path::new(&std::env::var("HOME").unwrap_or_default())
-            .join(".local/bin")
-            .join(name);
-        path.is_file()
     }
 
     fn command_present(&self, name: &str) -> bool {
@@ -715,14 +685,13 @@ pub(crate) fn tag_index(n: u32) -> u32 {
 ///
 /// They change the volume and then show the result, because a key that only
 /// changes something you cannot see is not feedback. `notify-send` reaches
-/// whatever notification daemon is running (dunst, NIRUPI's, or the desktop's),
-/// and silence is acceptable when none is.
+/// whatever notification daemon is running, and silence is acceptable when
+/// none is.
 /// Volume key commands.
 ///
 /// They change the volume and then show the result, because a key that changes
 /// something invisible is not feedback. `notify-send` reaches whatever
-/// notification daemon runs (dunst, NIRUPI's, or none, in which case the call
-/// is silent).
+/// notification daemon runs, or is silent when none is.
 ///
 /// One notification is replaced by the next instead of stacking: pressing the
 /// key five times shows one bubble with the final level, not five. That is what

@@ -1,5 +1,5 @@
 #!/bin/sh
-# NIRUWM installer — offline-first, never touches a NIRUPI installation.
+# NIRUWM installer — offline-first and NIRUX-owned paths are left to NIRUX.
 #
 #   ./install.sh                  install prebuilt binaries (downloads release)
 #   ./install.sh --build          build from this checkout (needs Rust)
@@ -8,12 +8,11 @@
 #   ./install.sh --check          verify the installed session without changes
 #
 # Everything NIRUWM owns uses the "niruwm" prefix and is recorded in
-# $XDG_STATE_HOME/niruwm/manifest.tsv. Files owned by NIRUPI (dwm,
-# dwm-status.sh, nirupi-session, ~/.xinitrc, the nirupi manifest) are never
-# read for writing and never removed.
+# $XDG_STATE_HOME/niruwm/manifest.tsv. NIRUX-owned links are never overwritten
+# or removed by this standalone installer.
 set -eu
 
-VERSION="0.16.67"
+VERSION="0.16.68"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -22,17 +21,6 @@ STATEDIR="${XDG_STATE_HOME:-$HOME/.local/state}/niruwm"
 MANIFEST="$STATEDIR/manifest.tsv"
 SESSION_DIR="${NIRUWM_SESSION_DIR:-/usr/share/xsessions}"
 SESSION_FILE="$SESSION_DIR/niruwm.desktop"
-
-# Paths NIRUPI owns that a careless installer would overwrite. Listed one per
-# line because $HOME may contain spaces.
-nirupi_owned() {
-  printf '%s\n' \
-    "/usr/local/bin/nirupi-session" \
-    "$SESSION_DIR/nirupi-dwm.desktop" \
-    "$HOME/.xinitrc" \
-    "$HOME/.local/bin/dwm" \
-    "$HOME/.local/bin/dwm-status.sh"
-}
 
 usage() {
   cat <<'EOF'
@@ -49,18 +37,9 @@ EOF
 die() { printf 'niruwm install: %s\n' "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
 
-# Refuse anything that would touch a NIRUPI-owned path.
-guard_nirupi() {
+guard_owned() {
   [ -z "$1" ] && return 0
   nirux_owned "$1" && die "managed by NIRUX: $1 (use nirux update)"
-  # No pipeline: `die` inside a subshell would only exit the subshell.
-  saved_ifs=$IFS
-  IFS='
-'
-  for p in $(nirupi_owned); do
-    [ "$1" = "$p" ] && die "refusing to modify NIRUPI-owned path: $1"
-  done
-  IFS=$saved_ifs
 }
 
 nirux_owned() {
@@ -97,7 +76,7 @@ sha256() {
 # Install one file atomically, keeping a timestamped backup of an old copy.
 put() {
   src="$1"; dest="$2"; mode="${3:-0755}"
-  guard_nirupi "$dest"
+  guard_owned "$dest"
   mkdir -p "$(dirname "$dest")"
   install -m "$mode" "$src" "$dest.niruwm-new"
   mv -f "$dest.niruwm-new" "$dest"
@@ -153,7 +132,7 @@ install_release() {
   bar_version="$(cat "$dl_dir/nirubar-version")"
   [ -n "$bar_version" ] || die "empty nirubar-version metadata for v$tag"
   verify_versions "$dl_dir" "$tag" "$bar_version"
-  for b in niruwm nirubar niructl niruidle niruwm-session; do guard_nirupi "$BINDIR/$b"; done
+  for b in niruwm nirubar niructl niruidle niruwm-session; do guard_owned "$BINDIR/$b"; done
   for b in niruwm nirubar niructl niruidle niruwm-session; do
     put "$dl_dir/$b" "$BINDIR/$b"
   done
@@ -179,7 +158,7 @@ build_local() {
   say "Building from source ..."
   ( cd "$(dirname "$0")" && cargo build --release --locked )
   verify_versions "$(dirname "$0")/target/release" "$VERSION" ''
-  for b in niruwm niructl niruidle niruwm-session; do guard_nirupi "$BINDIR/$b"; done
+  for b in niruwm niructl niruidle niruwm-session; do guard_owned "$BINDIR/$b"; done
   for b in niruwm niructl niruidle; do
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
@@ -292,7 +271,7 @@ install_config() {
 }
 
 register_session() {
-  guard_nirupi "$SESSION_FILE"
+  guard_owned "$SESSION_FILE"
   # Never write a root-owned session entry by accident: SDDM would start a
   # session that cannot read the user's config, and the binaries would live in
   # /root. This happened once when the installer was run under `sudo` instead
@@ -314,7 +293,7 @@ EOF
   say "Adding $SESSION_FILE (sudo):"
   sudo install -m 0644 "$tmp" "$SESSION_FILE"
   rm -f "$tmp"
-  say "NIRUWM is now selectable in SDDM. NIRUPI DWM remains unchanged."
+  say "NIRUWM is now selectable in SDDM."
 }
 
 uninstall() {
@@ -334,7 +313,7 @@ uninstall() {
   fi
   rm -f "$MANIFEST"
   say "Configuration kept in $CONFDIR (delete it manually if you want a clean slate)."
-  say "NIRUPI files were not touched."
+  say "NIRUX-owned files were not touched."
 }
 
 check() {
@@ -343,13 +322,6 @@ check() {
     if [ -x "$BINDIR/$b" ]; then say "OK   $BINDIR/$b"; else say "FAIL missing $BINDIR/$b"; ok=1; fi
   done
   if [ -e "$SESSION_FILE" ]; then say "OK   $SESSION_FILE"; else say "INFO no SDDM entry (run --register-session)"; fi
-  saved_ifs=$IFS
-  IFS='
-'
-  for p in $(nirupi_owned); do
-    [ -e "$p" ] && say "OK   untouched NIRUPI path present: $p"
-  done
-  IFS=$saved_ifs
   "$BINDIR/niruwm" --check-config || ok=1
   if [ -x "$BINDIR/nirubar" ]; then "$BINDIR/nirubar" --check-config || ok=1; fi
   return "$ok"
@@ -378,4 +350,4 @@ case "$MODE" in
   check) check; exit $? ;;
 esac
 [ "$REGISTER" = 1 ] && register_session
-say "Done. Log out of NIRUPI DWM and choose NIRUWM in SDDM."
+say "Done. Log out and choose NIRUWM in SDDM."

@@ -29,14 +29,6 @@ const NEEDS: &[Need] = &[
         void: "kitty",
     },
     Need {
-        name: "rofi",
-        why: "NIRUPI's launcher; NIRUWM does not need it",
-        required: false,
-        arch: "rofi (optional, NIRUPI compatible)",
-        debian: "rofi (optional, NIRUPI compatible)",
-        void: "rofi (optional, NIRUPI compatible)",
-    },
-    Need {
         name: "setxkbmap",
         why: "keyboard layout",
         required: true,
@@ -101,14 +93,6 @@ const NEEDS: &[Need] = &[
         void: "nirulock (build from source)",
     },
     Need {
-        name: "nirupi-lock.sh",
-        why: "alternative lock (part of NIRUPI)",
-        required: false,
-        arch: "part of NIRUPI",
-        debian: "part of NIRUPI",
-        void: "part of NIRUPI",
-    },
-    Need {
         name: "xidlehook",
         why: "fallback idle timer; niruidle replaces it",
         required: false,
@@ -126,7 +110,6 @@ const NEEDS: &[Need] = &[
 fn lock_screen(home: &Path) -> String {
     let candidates = [
         home.join(".local/bin/nirulock"),
-        home.join(".local/bin/nirupi-lock.sh"),
         Path::new("/usr/bin/slock").to_path_buf(),
         Path::new("/usr/local/bin/slock").to_path_buf(),
         Path::new("/usr/bin/swaylock").to_path_buf(),
@@ -263,18 +246,6 @@ pub fn run() -> Result<()> {
     // is worth reporting next to everything else.
     println!();
     println!("lock screen: {}", lock_screen(Path::new(&home)));
-
-    // Session helpers NIRUPI provides, reported so the user knows why some
-    // bindings do nothing on a machine without NIRUPI.
-    let nirupi = Path::new(&home).join(".local/bin/nirupi-session").exists();
-    println!(
-        "NIRUPI helpers: {}",
-        if nirupi {
-            "present (their bindings are active)"
-        } else {
-            "not installed (those bindings do nothing)"
-        }
-    );
 
     if missing_required > 0 {
         println!();

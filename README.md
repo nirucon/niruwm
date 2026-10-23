@@ -135,13 +135,6 @@ installations are maintained with `nirux update`.
 | Super+right-drag | Resize from the nearest corner |
 | Click title/bar module | Normal application interaction; no Super required |
 
-### Optional NIRUPI compatibility
-
-Set `nirupi_compat = true` to add Super+Shift+H (keys), Super+Shift+Escape
-(suspend), Super+Shift+Q (power), Super+Ctrl+T (theme), Super+Shift+L
-(keyboard), Super+Shift+T (touchpad), Super+V (clipboard), Super+S (SSH),
-Super+Ctrl+Shift+B (bar mode), Super+Shift+Z (recording) and Super+Alt+K
-(keybinding help). These require NIRUPI helpers.
 
 ## Settings
 
@@ -155,6 +148,7 @@ bindings override only that key; `action = "unbind"` removes a default. Set
 
 ```sh
 niruwm --check-config
+niruwm --reset-config   # restore the full example; keeps .niruwm-backup
 niructl reload
 niructl restart-bar
 niructl theme niru-nord

@@ -27,7 +27,7 @@ pub struct Config {
     pub bar_height: u16,
     pub master_ratio: f32,
     pub terminal: Vec<String>,
-    /// Optional second terminal (`Super+Shift+Enter`), NIRUPI uses alacritty.
+    /// Optional second terminal (`Super+Shift+Enter`).
     pub terminal_alt: Vec<String>,
     pub browser: Vec<String>,
     pub launcher: Vec<String>,
@@ -37,10 +37,6 @@ pub struct Config {
     /// Optional bindings. When empty, the built-in table is used. Entries
     /// replace a default binding with the same keys.
     pub keys: Vec<crate::bindings::RawBinding>,
-    /// Add NIRUPI's helper shortcuts (power/theme menus, DND, caffeine,
-    /// keyboard/touchpad, SSH, clipboard, recording and suspend). Off by
-    /// default so a standalone install has no dead shortcut.
-    pub nirupi_compat: bool,
     pub wallpaper: WallpaperConfig,
     /// Optional applications to open on named workspaces after login.
     pub autostart: AutostartConfig,
@@ -215,7 +211,7 @@ impl Default for MonitorsConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct WallpaperConfig {
     /// NIRUWM sets and rotates the wallpaper only when this is true.
-    /// Leave it false when NIRUPI's wallrotate.sh should keep managing it.
+    /// Leave it false when another program should keep managing it.
     pub enabled: bool,
     /// Directory to pick pictures from.
     pub dir: String,
@@ -375,12 +371,11 @@ impl Default for Config {
             terminal: vec!["kitty".into()],
             terminal_alt: Vec::new(),
             browser: vec!["brave".into()],
-            launcher: vec!["rofi".into(), "-show".into(), "drun".into()],
+            launcher: vec!["nirulauncher".into(), "--apps".into()],
             font_path: None,
             font_size: 15.0,
             bar: Bar::default(),
             keys: Vec::new(),
-            nirupi_compat: false,
             wallpaper: WallpaperConfig::default(),
             autostart: AutostartConfig::default(),
             recipes: Vec::new(),
@@ -486,9 +481,6 @@ impl Config {
         // Overrides replace keys, not every other shortcut for the same action.
         // Use action="unbind" to explicitly release an unwanted default key.
         let mut table = crate::bindings::Action::defaults();
-        if self.nirupi_compat {
-            table.extend(crate::bindings::Action::nirupi_compat());
-        }
         for user in &self.keys {
             table.retain(|b| {
                 !(b.keys.eq_ignore_ascii_case(&user.keys)
@@ -859,6 +851,32 @@ impl Theme {
 /// built-in defaults rather than from their file. This prints the merged result
 /// with a comment for the built-in themes and the current theme name.
 #[allow(dead_code)] // used by niruwm --dump-config
+/// Replace the shared configuration with the shipped example, keeping a
+/// backup of the previous file. This removes obsolete alpha keys as well as
+/// user overrides; callers must make that explicit to the user.
+pub fn reset_to_example() -> Result<(PathBuf, Option<PathBuf>)> {
+    let path = directory().join("config.toml");
+    let original = match fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    let parent = path.parent().ok_or("configuration directory is missing")?;
+    fs::create_dir_all(parent)?;
+    let backup = if original.is_some() {
+        let backup = PathBuf::from(format!("{}.niruwm-backup", path.display()));
+        fs::write(&backup, original.as_deref().unwrap_or(""))?;
+        Some(backup)
+    } else {
+        None
+    };
+    let temp = parent.join(format!(".config.toml.{}", std::process::id()));
+    fs::write(&temp, include_str!("../config.example.toml"))?;
+    fs::rename(&temp, &path)?;
+    Ok((path, backup))
+}
+
+#[allow(dead_code)] // used by niruwm --dump-config
 pub fn dump() -> Result<String> {
     let c = Config::load()?;
     let mut out = String::from("# NIRUWM effective configuration\n");
@@ -872,7 +890,6 @@ pub fn dump() -> Result<String> {
     out.push_str(&format!("terminal = {:?}\n", c.terminal));
     out.push_str(&format!("browser = {:?}\n", c.browser));
     out.push_str(&format!("launcher = {:?}\n", c.launcher));
-    out.push_str(&format!("nirupi_compat = {}\n", c.nirupi_compat));
     out.push_str(&format!("font_size = {}\n\n", c.font_size));
     out.push_str("[monitors]\n");
     out.push_str(&format!("workspaces = {}\n", c.monitors.workspaces));
@@ -1038,24 +1055,6 @@ mod tests {
         assert_eq!(tab.action, "shell echo hi");
         // The pairing key is untouched: only what the file names changes.
         assert!(table.iter().any(|b| b.keys == "super+shift+Tab"));
-    }
-
-    #[test]
-    fn nirupi_helpers_are_an_explicit_profile() {
-        let plain = Config::default();
-        assert!(!plain.nirupi_compat);
-        assert!(!plain
-            .effective_keys()
-            .iter()
-            .any(|b| b.action == "shell nirupi-power.sh"));
-        let compat = Config {
-            nirupi_compat: true,
-            ..Config::default()
-        };
-        assert!(compat
-            .effective_keys()
-            .iter()
-            .any(|b| b.action == "shell nirupi-power.sh"));
     }
 
     #[test]

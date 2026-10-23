@@ -2,9 +2,7 @@
 # NIRUWM X11 session — the single entry point for SDDM, startx and `uvm`.
 #
 # Design rules:
-#  * Never depend on NIRUPI. Its helpers are used only when the explicit
-#    `nirupi_compat = true` profile is enabled; otherwise NIRUWM uses its own
-#    tools.
+#  * Use only the suite's own tools; no external desktop helper profile.
 #  * Never write outside $XDG_RUNTIME_DIR and the user's own cache.
 #  * Everything started here is tracked and killed on exit, so logging out
 #    leaves no bar, compositor or notification daemon behind.
@@ -15,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.65'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.68'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -31,13 +29,6 @@ done
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 NM_CONF="$CONFIG_HOME/niruwm/session.conf"
-# NIRUPI's helpers are an explicit compatibility profile, not something a
-# standalone installation silently starts.
-NIRUPI_COMPAT=0
-if [ -f "$CONFIG_HOME/niruwm/config.toml" ] &&
-   grep -Eq '^[[:space:]]*nirupi_compat[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$CONFIG_HOME/niruwm/config.toml"; then
-  NIRUPI_COMPAT=1
-fi
 SESSION_STATE="${XDG_RUNTIME_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}}"
 mkdir -p "$SESSION_STATE" 2>/dev/null || true
 
@@ -242,10 +233,7 @@ elif [ "$START_IDLE" = 1 ]; then
   # Fallback for an install without niruidle: lock on a plain timeout so the
   # screen is never left unlocked forever.
   if command -v xss-lock >/dev/null 2>&1; then
-    if [ "$NIRUPI_COMPAT" = 1 ] && [ -x "$HOME/.local/bin/nirupi-lock.sh" ]; then
-      LOCKER="$HOME/.local/bin/nirupi-lock.sh"
-    fi
-    [ -n "${LOCKER:-}" ] || LOCKER=slock
+    LOCKER=slock
     xss-lock --transfer-sleep-lock -- "$LOCKER" >/dev/null 2>&1 & LOCK_PID=$!
   fi
 fi
@@ -283,24 +271,6 @@ else
   log "lock-before-suspend provider unavailable (needs loginctl inhibit, dbus-monitor, niructl and nirulock)"
 fi
 
-# Battery guard and autostart: NIRUPI's helpers only in the explicit
-# compatibility profile. Neither is part of a standalone NIRU desktop.
-if [ "$NIRUPI_COMPAT" = 1 ]; then
-  if [ -x "$HOME/.local/bin/nirupi-battery.sh" ] && ls /sys/class/power_supply/BAT* >/dev/null 2>&1; then
-    "$HOME/.local/bin/nirupi-battery.sh" >/dev/null 2>&1 & BAT_PID=$!
-  fi
-  if [ -x "$HOME/.local/bin/nirupi-autostart.sh" ]; then
-    ( i=0
-      while [ "$i" -lt 100 ]; do
-        pgrep -u "$(id -u)" -x niruwm >/dev/null 2>&1 && break
-        sleep 0.2; i=$((i + 1))
-      done
-      sleep 1
-      NIRUPI_DETECT_WM=niruwm "$HOME/.local/bin/nirupi-autostart.sh" run
-    ) >/dev/null 2>&1 & AUTO_PID=$!
-  fi
-fi
-
 # The WM owns every bar, including restart and logout cleanup.
 
 # The shell waits for the WM and cleans up session helpers. The WM cleans up
@@ -317,7 +287,7 @@ WM_LOG="$LOG_DIR/session.log"
   printf 'exec: %s\n' "$WM"
   printf 'config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/niruwm/config.toml"
 } >>"$WM_LOG" 2>/dev/null || WM_LOG=/dev/null
-if [ "$NIRUPI_COMPAT" = 0 ] && command -v niructl >/dev/null 2>&1; then
+if command -v niructl >/dev/null 2>&1; then
   (
     i=0
     while [ "$i" -lt 100 ]; do

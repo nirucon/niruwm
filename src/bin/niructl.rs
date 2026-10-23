@@ -2548,7 +2548,7 @@ fn autostart(
     atom: &dyn Fn(&str) -> Result<Atom>,
 ) -> Result<()> {
     let cfg = Config::load()?;
-    if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() || cfg.nirupi_compat {
+    if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() {
         return Ok(());
     }
     if cfg.restore_session || !session_state::load().is_empty() {

@@ -5,8 +5,8 @@
 //! so starting or stopping a session is enough to start or stop rotation.
 //!
 //! NIRUWM only owns the wallpaper when `[wallpaper] enabled = true`. When it
-//! is off, NIRUPI's `wallrotate.sh` keeps doing whatever it does; running both
-//! would make two programs fight over the root background.
+//! is off, another program may own the root background; running both would
+//! make two programs fight over it.
 
 use crate::config::Result;
 use std::{

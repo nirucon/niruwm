@@ -3,7 +3,7 @@
 //! Watches how long the screen has been idle and runs, one after another:
 //!
 //!   1. niruscreensaver (or a blank screen when it is not installed)
-//!   2. the screen locker (nirulock, NIRUPI's wrapper, or slock)
+//!   2. the screen locker (nirulock, NIRULOCK, or slock)
 //!   3. display off
 //!
 //! Idle time comes from the X server's MIT-SCREEN-SAVER extension, so user
@@ -121,7 +121,6 @@ fn lockers() -> Vec<String> {
     vec![
         "nirulock".into(),
         format!("{home}/.local/bin/nirulock"),
-        format!("{home}/.local/bin/nirupi-lock.sh"),
         "slock".into(),
     ]
 }

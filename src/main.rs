@@ -16,6 +16,24 @@ fn main() {
         println!("NIRUWM {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    if arg == "--reset-config" {
+        match config::reset_to_example() {
+            Ok((path, backup)) => {
+                if let Some(backup) = backup {
+                    println!("Backup: {}", backup.display());
+                }
+                println!(
+                    "Reset {}. Log out/in or run: niructl reload",
+                    path.display()
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!("niruwm: {e}");
+                std::process::exit(1)
+            }
+        }
+    }
     if arg == "--check-config" {
         match Config::load().and_then(|c| Theme::load(&c.theme)) {
             Ok(t) => {
@@ -73,7 +91,7 @@ fn main() {
         return;
     }
     if !arg.is_empty() {
-        eprintln!("Usage: niruwm [--version|--check-config|--doctor|--dump-config|--replay FILE]");
+        eprintln!("Usage: niruwm [--version|--check-config|--reset-config|--doctor|--dump-config|--replay FILE]");
         std::process::exit(2)
     }
     if let Err(e) = Wm::new().and_then(|mut w| w.run()) {
