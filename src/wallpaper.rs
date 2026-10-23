@@ -134,12 +134,21 @@ impl Wallpaper {
         if slug.is_empty() {
             return None;
         }
-        for suffix in ["4k.png", "8k.png", "png", "jpg", "jpeg", "webp", "bmp"] {
-            let candidate = self
-                .theme_dir
-                .join(format!("nirux-wallpaper-{slug}-{suffix}"));
-            if candidate.is_file() {
-                return Some(candidate);
+        let mut roots = vec![self.theme_dir.clone()];
+        // Older installations may have written the English ~/Pictures default
+        // while the user's XDG Pictures directory is localized (Bilder, Kuvat,
+        // ...). Follow the actual user-dirs.dirs before giving up.
+        if let Some(pictures) = configured_pictures_dir() {
+            roots.push(pictures.join("Wallpapers/NIRU"));
+        }
+        roots.push(expand_home("~/Pictures/Wallpapers/NIRU"));
+        roots.dedup();
+        for root in roots {
+            for suffix in ["4k.png", "8k.png", "png", "jpg", "jpeg", "webp", "bmp"] {
+                let candidate = root.join(format!("nirux-wallpaper-{slug}-{suffix}"));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
             }
         }
         None
@@ -218,6 +227,27 @@ impl Wallpaper {
             ^ std::process::id() as usize;
         Some(files[seed % files.len()].clone())
     }
+}
+
+fn configured_pictures_dir() -> Option<PathBuf> {
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config")
+        });
+    let text = fs::read_to_string(config.join("user-dirs.dirs")).ok()?;
+    for line in text.lines() {
+        let Some(value) = line.strip_prefix("XDG_PICTURES_DIR=") else {
+            continue;
+        };
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() || value == "$HOME/Desktop" {
+            return None;
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        return Some(PathBuf::from(value.replace("$HOME", &home)));
+    }
+    None
 }
 
 fn is_image(path: &Path) -> bool {
