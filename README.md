@@ -3,7 +3,7 @@
 **Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
 
 **Early beta.** A small Rust/X11 tiling window manager and session layer for the
-NIRU desktop. It provides per-monitor workspaces, seven layouts, configurable
+NIRU desktop, inspired by suckless dwm's keyboard-first, config-as-text model. It provides per-monitor workspaces, seven layouts, configurable
 shortcuts, floating and fullscreen windows, a scratchpad, session restore,
 themes and the `niructl`/`niruidle` tools.
 
