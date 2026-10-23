@@ -813,6 +813,10 @@ impl Theme {
             ("niru-blue-horizon", false) => {
                 include_str!("../themes/niru-blue-horizon.toml").to_string()
             }
+            ("niru-the-norns", false) => include_str!("../themes/niru-the-norns.toml").to_string(),
+            ("niru-winter-nights", false) => {
+                include_str!("../themes/niru-winter-nights.toml").to_string()
+            }
             _ => fs::read_to_string(&user_file)?,
         };
         let mut theme: Self = toml::from_str(&text)?;
@@ -855,6 +859,8 @@ impl Theme {
             "niru-blood-of-urdr",
             "niru-root-and-stone",
             "niru-blue-horizon",
+            "niru-the-norns",
+            "niru-winter-nights",
         ]
     }
 

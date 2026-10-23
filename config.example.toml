@@ -31,7 +31,8 @@
 
 # ── Appearance ──────────────────────────────────────────────────────────────
 # Theme name. Built in: niru-noir, niru-nord, niru-satie, niru-carl-larsson,
-# niru-forest-vigil, niru-blood-of-urdr, niru-root-and-stone, niru-blue-horizon.
+# niru-forest-vigil, niru-blood-of-urdr, niru-root-and-stone, niru-blue-horizon,
+# niru-the-norns, niru-winter-nights.
 # List them with: niructl themes
 theme = "niru-noir"
 # ── Layouts ─────────────────────────────────────────────────────────────────
