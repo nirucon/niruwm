@@ -172,6 +172,14 @@ whether wallpaper following is disabled, overridden by a single file, or missing
 an asset. Image setter failures are reported in the session log. NIRUX installs
 `feh` and the theme images; localized XDG Pictures paths are supported.
 
+A config without a `[wallpaper]` section uses the built-in `enabled = false`
+default, so theme wallpapers never change while the bar still follows the theme.
+NIRUWM says so in the session log, and `niructl theme NAME` repairs such a file:
+missing sections are restored from `config.example.toml`, the previous file is
+kept as `config.toml.bak`, and a file that is not valid TOML is refused instead
+of overwritten. The repair works without an X server, so it also applies from a
+TTY or over ssh.
+
 Selecting a file with `niructl wallpaper set PATH` keeps that file across theme
 changes. To explicitly return to theme wallpapers:
 

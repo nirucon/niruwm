@@ -470,6 +470,16 @@ impl Config {
         let mut c: Self = value.clone().try_into()?;
         apply_appearance_defaults(&mut c, &value);
         c.validate()?;
+        // A missing section silently selects the built-in default. For
+        // `[wallpaper]` that default is "disabled", which stops the theme
+        // wallpaper from ever being set. Say so instead of doing nothing.
+        if value.get("wallpaper").is_none() {
+            eprintln!(
+                "niruwm: no [wallpaper] section in {}; wallpapers are disabled. \
+                 Add it with `niructl theme <name>` or `nirux repair-wallpaper`.",
+                directory().join("config.toml").display()
+            );
+        }
         Ok(c)
     }
 

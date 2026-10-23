@@ -3067,6 +3067,15 @@ fn run() -> Result<()> {
             return wallpaper(sub);
         }
     }
+    // Repair the configuration before touching X: a truncated file must be
+    // fixed even when the theme cannot be applied (no display, WM not
+    // running), otherwise the broken state survives until an unrelated
+    // reinstall happens to run.
+    if cmd == "theme" {
+        let name = args.get(1).ok_or(USAGE)?;
+        Theme::load(name)?;
+        write_theme(name)?;
+    }
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
     let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
@@ -3183,9 +3192,8 @@ fn run() -> Result<()> {
         "save-session" => (6, 0),
         "clear-session" => (7, 0),
         "theme" => {
-            let name = args.get(1).ok_or(USAGE)?;
-            Theme::load(name)?;
-            write_theme(name)?;
+            // Already validated and written above, before the X connection.
+            let _ = args.get(1).ok_or(USAGE)?;
             (4, 0)
         }
         "wallpaper" => {
@@ -3420,26 +3428,275 @@ fn property_u32(c: &x11rb::rust_connection::RustConnection, w: Window, atom: Ato
         .next()
 }
 
+/// Top-level sections every config must keep. A file written before a section
+/// existed, or truncated by an editor, would otherwise stay incomplete: the
+/// built-in defaults then silently apply, and `[wallpaper] enabled` falls back
+/// to false so theme wallpapers stop working with no message anywhere.
+///
+/// `[[keys]]` is intentionally absent: it is an array of tables that defaults
+/// to the standard bindings, so an empty or missing list is valid.
+const REQUIRED_SECTIONS: &[&str] = &[
+    "wallpaper",
+    "autostart",
+    "bar",
+    "nightlight",
+    "brightness",
+    "monitors",
+];
+
 /// Persist a theme choice without destroying the rest of the configuration.
+///
+/// The theme is the only value changed. Missing sections are added from the
+/// shipped example, so a short or truncated file is repaired instead of being
+/// preserved in its broken form, and invalid TOML is refused rather than
+/// overwritten. A backup of the previous file is kept next to it.
 fn write_theme(name: &str) -> Result<()> {
     let dir = config::directory();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
-    let mut value = match std::fs::read_to_string(&path) {
-        Ok(s) => s.parse::<toml::Value>()?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            toml::Value::Table(Default::default())
-        }
+    let original = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.into()),
     };
-    value
-        .as_table_mut()
-        .ok_or("Invalid config: expected a table")?
-        .insert("theme".into(), toml::Value::String(name.into()));
+
+    // Neither the file nor its sections may be born invalid: refuse to replace
+    // something a person wrote, because the error still describes their text.
+    let mut value: toml::Value = if original.trim().is_empty() {
+        toml::Value::Table(Default::default())
+    } else {
+        original
+            .parse()
+            .map_err(|e| format!("refusing to rewrite invalid {}: {e}", path.display()))?
+    };
+    if value.as_table().is_none() {
+        return Err(format!("refusing to rewrite {}: expected a table", path.display()).into());
+    }
+
+    let missing = ensure_sections(&mut value);
+
+    // A complete file is edited in place: re-serialising it would drop every
+    // comment, and those comments are the documentation of the options.
+    // A repaired file starts from the example so it keeps that documentation
+    // too, with the user's own values laid over it.
+    let rendered = if missing.is_empty() && !original.trim().is_empty() {
+        replace_theme_line(&original, name)?
+    } else {
+        value
+            .as_table_mut()
+            .ok_or("Invalid config: expected a table")?
+            .insert("theme".into(), toml::Value::String(name.into()));
+        match example_text() {
+            Some(example) => merge_into_example(&example, &value),
+            None => toml::to_string_pretty(&value)?,
+        }
+    };
+    if rendered == original {
+        return Ok(());
+    }
+    if !original.is_empty() {
+        let backup = dir.join("config.toml.bak");
+        let _ = std::fs::write(&backup, &original);
+    }
     let temp = dir.join(format!(".config.toml.{}", std::process::id()));
-    std::fs::write(&temp, toml::to_string_pretty(&value)?)?;
-    std::fs::rename(temp, path)?;
+    std::fs::write(&temp, &rendered)?;
+    std::fs::rename(&temp, &path)?;
+    if !missing.is_empty() {
+        eprintln!(
+            "niructl: repaired {} (added {})",
+            path.display(),
+            missing.join(", ")
+        );
+    }
     Ok(())
+}
+
+/// Write the user's values into the shipped example, which carries the comments
+/// that document every option. Values absent from the example are appended at
+/// the end of their section.
+fn merge_into_example(example: &str, value: &toml::Value) -> String {
+    let mut out = String::with_capacity(example.len());
+    let mut section = String::new();
+    let mut seen: std::collections::BTreeSet<(String, String)> = std::collections::BTreeSet::new();
+
+    for line in example.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = body.trim_start();
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            if let Some(name) = rest.strip_suffix(']') {
+                if !name.starts_with('[') {
+                    // Leaving a section: append its extra keys before the new one.
+                    if !section.is_empty() {
+                        append_extra_keys(&mut out, &section, value, &seen);
+                    }
+                    section = name.to_string();
+                }
+            }
+        }
+        // A commented-out key documents a default; never resurrect it.
+        let key = if !trimmed.starts_with('#') && !trimmed.starts_with('[') {
+            trimmed
+                .split('=')
+                .next()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+        } else {
+            None
+        };
+        // Keep a trailing ` # comment` on a rewritten line so the example's
+        // annotation stays attached to its value. Only " #" counts, so a '#'
+        // inside a quoted value is not mistaken for a comment.
+        let tail = body
+            .find(" #")
+            .map(|i| format!(" {}", body[i + 1..].trim()))
+            .unwrap_or_default();
+        match key {
+            Some(k) if section.is_empty() => {
+                if let Some(v) = value.get(k) {
+                    out.push_str(&format!("{k} = {}{tail}\n", inline_value(v)));
+                    seen.insert((section.clone(), k.to_string()));
+                    continue;
+                }
+            }
+            Some(k) => {
+                if let Some(s) = value.get(&section).and_then(|s| s.get(k)) {
+                    out.push_str(&format!("{k} = {}{tail}\n", inline_value(s)));
+                    seen.insert((section.clone(), k.to_string()));
+                    continue;
+                }
+            }
+            None => {}
+        }
+        out.push_str(line);
+    }
+    if !section.is_empty() {
+        append_extra_keys(&mut out, &section, value, &seen);
+    }
+
+    out
+}
+
+/// Append keys of `section` that the example does not mention.
+fn append_extra_keys(
+    out: &mut String,
+    section: &str,
+    value: &toml::Value,
+    seen: &std::collections::BTreeSet<(String, String)>,
+) {
+    let Some(table) = value.get(section).and_then(|s| s.as_table()) else {
+        return;
+    };
+    for (key, v) in table {
+        if seen.contains(&(section.to_string(), key.clone())) {
+            continue;
+        }
+        out.push_str(&format!("{key} = {}\n", inline_value(v)));
+    }
+}
+
+/// Render a scalar or array on one line, the way the example writes them.
+fn inline_value(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(s) => format!("{:?}", s),
+        toml::Value::Array(items) => {
+            let parts: Vec<String> = items.iter().map(inline_value).collect();
+            format!("[{}]", parts.join(", "))
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Set the top-level `theme` line, keeping every other line and comment as it
+/// was. A missing line is added at the top, where it reads best.
+fn replace_theme_line(text: &str, name: &str) -> Result<String> {
+    let escaped = name.replace('\\', "\\\\").replace('"', "\\\"");
+    let line = format!("theme = \"{escaped}\"");
+    let mut out = String::with_capacity(text.len() + line.len());
+    let mut replaced = false;
+    let mut in_section = false;
+    // split_inclusive keeps the file's own line endings, including whether it
+    // ends with a newline, so an untouched line stays byte-for-byte identical.
+    for original in text.split_inclusive('\n') {
+        let body = original.strip_suffix('\n').unwrap_or(original);
+        let trimmed = body.trim_start();
+        if trimmed.starts_with('[') {
+            in_section = true;
+        }
+        // Only the top-level key counts: [wallpaper] has no `theme`, but a
+        // future section must not be mistaken for the theme line.
+        if !in_section
+            && !replaced
+            && !trimmed.starts_with('#')
+            && trimmed.split('=').next().map(str::trim) == Some("theme")
+        {
+            out.push_str(&line);
+            if original.ends_with('\n') {
+                out.push('\n');
+            }
+            replaced = true;
+            continue;
+        }
+        out.push_str(original);
+    }
+    if !replaced {
+        let mut prefixed = String::with_capacity(out.len() + line.len() + 1);
+        prefixed.push_str(&line);
+        prefixed.push('\n');
+        prefixed.push_str(&out);
+        return Ok(prefixed);
+    }
+    Ok(out)
+}
+
+/// Add every required top-level section that is absent, taking its defaults
+/// from the example configuration shipped with this release. Returns the
+/// section names that were added.
+fn ensure_sections(value: &mut toml::Value) -> Vec<String> {
+    let mut added = Vec::new();
+    let Some(table) = value.as_table_mut() else {
+        return added;
+    };
+    for name in REQUIRED_SECTIONS {
+        if table.contains_key(*name) {
+            continue;
+        }
+        // `[wallpaper]` must never inherit the "off" default: NIRUX installs
+        // the theme wallpapers and expects them to follow the theme.
+        let mut section = example_section(name).unwrap_or_default();
+        if *name == "wallpaper" {
+            section.insert("enabled".into(), toml::Value::Boolean(true));
+            section
+                .entry("follow_theme")
+                .or_insert(toml::Value::Boolean(true));
+        }
+        table.insert((*name).into(), toml::Value::Table(section));
+        added.push(format!("[{name}]"));
+    }
+    added
+}
+
+/// Read one section from `config.example.toml`, which sits next to the binary
+/// in an installed generation and in the source tree during development.
+fn example_section(name: &str) -> Option<toml::value::Table> {
+    let text = example_text()?;
+    let parsed: toml::Value = text.parse().ok()?;
+    parsed.get(name).and_then(|v| v.as_table()).cloned()
+}
+
+/// The shipped `config.example.toml`, read from beside the binary in an
+/// installed generation or from the source tree during development.
+fn example_text() -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent().and_then(|p| p.parent()) {
+            candidates.push(dir.join("config.example.toml"));
+        }
+    }
+    candidates.push(config::directory().join("config.example.toml"));
+    candidates.push(std::path::PathBuf::from("config.example.toml"));
+    candidates
+        .into_iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
 }
 
 fn main() {
@@ -3457,6 +3714,100 @@ mod tests {
         assert!(valid_workspace(10));
         assert!(!valid_workspace(0));
         assert!(!valid_workspace(11));
+    }
+
+    #[test]
+    fn truncated_config_regains_every_required_section() {
+        // The exact shape that broke Arch: one line, no sections at all.
+        let mut value: toml::Value = "theme = \"niru-satie\"\n".parse().unwrap();
+        let added = ensure_sections(&mut value);
+        assert!(
+            added.contains(&"[wallpaper]".to_string()),
+            "added: {added:?}"
+        );
+        let table = value.as_table().unwrap();
+        for name in REQUIRED_SECTIONS {
+            assert!(
+                table.get(*name).and_then(|v| v.as_table()).is_some(),
+                "missing [{name}] after repair"
+            );
+        }
+    }
+
+    #[test]
+    fn repaired_wallpaper_section_is_enabled_and_follows_the_theme() {
+        // The built-in default is disabled, so a repaired config must be
+        // explicit: otherwise theme wallpapers stay off after the repair.
+        let mut value: toml::Value = "theme = \"niru-noir\"\n".parse().unwrap();
+        ensure_sections(&mut value);
+        let wallpaper = value["wallpaper"].as_table().unwrap();
+        assert_eq!(wallpaper.get("enabled"), Some(&toml::Value::Boolean(true)));
+        assert_eq!(
+            wallpaper.get("follow_theme"),
+            Some(&toml::Value::Boolean(true))
+        );
+        // The user's theme survives the repair.
+        assert_eq!(value["theme"].as_str(), Some("niru-noir"));
+    }
+
+    #[test]
+    fn complete_sections_are_left_alone() {
+        let mut value: toml::Value = r#"
+theme = "niru-noir"
+[wallpaper]
+enabled = false
+follow_theme = false
+[autostart]
+enabled = true
+[bar]
+enabled = true
+[nightlight]
+enabled = false
+[brightness]
+enabled = false
+[monitors]
+[keys]
+"#
+        .parse()
+        .unwrap();
+        let added = ensure_sections(&mut value);
+        assert!(
+            added.is_empty(),
+            "should not touch a complete file: {added:?}"
+        );
+        // An explicit user choice of "off" is respected, never flipped to on.
+        assert_eq!(
+            value["wallpaper"].get("enabled"),
+            Some(&toml::Value::Boolean(false))
+        );
+    }
+
+    #[test]
+    fn theme_line_is_rewritten_without_touching_comments() {
+        let text = "# my config\ntheme = \"niru-noir\"\n\n[wallpaper]\n# keep me\nenabled = true\ntheme_dir = \"~/Pictures/Wallpapers/NIRU\"\n";
+        let out = replace_theme_line(text, "niru-nord").unwrap();
+        assert!(out.contains("theme = \"niru-nord\""));
+        assert!(out.contains("# my config"), "comments must survive");
+        assert!(out.contains("# keep me"));
+        assert!(out.contains("theme_dir = \"~/Pictures/Wallpapers/NIRU\""));
+        // Everything except the theme line is byte-for-byte identical.
+        let expect = text.replace("theme = \"niru-noir\"", "theme = \"niru-nord\"");
+        assert_eq!(out, expect);
+    }
+
+    #[test]
+    fn missing_theme_line_is_added_at_the_top() {
+        let out = replace_theme_line("[wallpaper]\nenabled = true\n", "niru-noir").unwrap();
+        assert_eq!(out, "theme = \"niru-noir\"\n[wallpaper]\nenabled = true\n");
+    }
+
+    #[test]
+    fn section_keys_are_not_mistaken_for_the_theme() {
+        // `theme_dir` inside [wallpaper] is a different key and must be kept.
+        let text = "theme = \"a\"\n[wallpaper]\ntheme_dir = \"~/x\"\n";
+        let out = replace_theme_line(text, "b").unwrap();
+        assert!(out.starts_with("theme = \"b\"\n"));
+        assert!(out.contains("theme_dir = \"~/x\""));
     }
 
     use super::*;

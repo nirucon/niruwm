@@ -36,6 +36,8 @@ jobs:
           sh tests/bluetooth.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
           sh tests/power-profile.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
           sh tests/power-actions.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
+      - name: Truncated config is repaired, invalid config is refused
+        run: sh tests/config-repair.sh "$PWD/target/x86_64-unknown-linux-musl/release"
       - name: Display profile lifecycle (Xvfb/RandR)
         run: sh tests/display-profiles.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Build pinned bar and collect static test artifacts
@@ -57,7 +59,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh
+            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh
 
   session:
     needs: verify
