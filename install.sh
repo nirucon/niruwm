@@ -39,7 +39,8 @@ say() { printf '%s\n' "$*"; }
 
 guard_owned() {
   [ -z "$1" ] && return 0
-  nirux_owned "$1" && die "managed by NIRUX: $1 (use nirux update)"
+  if nirux_owned "$1"; then die "managed by NIRUX: $1 (use nirux update)"; fi
+  return 0
 }
 
 nirux_owned() {
