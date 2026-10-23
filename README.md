@@ -188,8 +188,8 @@ toggle does not rewrite that file. A conservative starting point is
 Floating windows can opt into centered placement with a `[[rules]]` entry:
 `class = "localsend"`, `floating = true`, `center = true`.
 
-Themes: Niru Noir, Nord, Satie, Carl Larsson, Forest Vigil, Blood of Urdr and
-custom TOML files. On a theme
+Themes: Niru Noir, Nord, Satie, Carl Larsson, Forest Vigil, Blood of Urdr,
+Root and Stone, Blue Horizon and custom TOML files. On a theme
 change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when
 present; NIRUX uses it to update terminal colours.
 

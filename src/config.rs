@@ -807,6 +807,12 @@ impl Theme {
             ("niru-blood-of-urdr", false) => {
                 include_str!("../themes/niru-blood-of-urdr.toml").to_string()
             }
+            ("niru-root-and-stone", false) => {
+                include_str!("../themes/niru-root-and-stone.toml").to_string()
+            }
+            ("niru-blue-horizon", false) => {
+                include_str!("../themes/niru-blue-horizon.toml").to_string()
+            }
             _ => fs::read_to_string(&user_file)?,
         };
         let mut theme: Self = toml::from_str(&text)?;
@@ -847,6 +853,8 @@ impl Theme {
             "niru-carl-larsson",
             "niru-forest-vigil",
             "niru-blood-of-urdr",
+            "niru-root-and-stone",
+            "niru-blue-horizon",
         ]
     }
 
