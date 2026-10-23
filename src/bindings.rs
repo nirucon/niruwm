@@ -287,6 +287,8 @@ impl Action {
         }
         add("super+0", "tag 10");
         add("super+shift+0", "movetotag 10");
+        add("super+ctrl+0", "toggletag 10");
+        add("super+ctrl+shift+0", "togglemovetotag 10");
 
         // ── Windows and session ─────────────────────────────────────────────
         add("super+q", "close");
@@ -496,6 +498,24 @@ mod tests {
         for raw in compat {
             parse_keys(&raw.keys).unwrap_or_else(|e| panic!("{}: {e}", raw.keys));
             parse_action(&raw.action).unwrap_or_else(|e| panic!("{}: {e}", raw.action));
+        }
+    }
+
+    #[test]
+    fn tenth_workspace_has_all_modifiers() {
+        let defaults = Action::defaults();
+        for (keys, action) in [
+            ("super+0", "tag 10"),
+            ("super+shift+0", "movetotag 10"),
+            ("super+ctrl+0", "toggletag 10"),
+            ("super+ctrl+shift+0", "togglemovetotag 10"),
+        ] {
+            assert!(
+                defaults
+                    .iter()
+                    .any(|raw| raw.keys == keys && raw.action == action),
+                "missing default binding: {keys} -> {action}"
+            );
         }
     }
 

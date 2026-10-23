@@ -102,8 +102,8 @@ installations are maintained with `nirux update`.
 | Super+0 | Select workspace 10 |
 | Super+Shift+1…9 | Move window to workspace 1…9 |
 | Super+Shift+0 | Move window to workspace 10 |
-| Super+Ctrl+1…9 | Toggle workspace 1…9 on the current view |
-| Super+Ctrl+Shift+1…9 | Toggle window on workspace 1…9 and move it there |
+| Super+Ctrl+1…9 / 0 | Toggle workspace 1…9 / 10 on the current view |
+| Super+Ctrl+Shift+1…9 / 0 | Toggle window on workspace 1…9 / 10 and move it there |
 | Super+Tab / Super+Shift+Tab | Next / previous workspace |
 
 ### Floating windows
