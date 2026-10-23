@@ -2152,7 +2152,7 @@ fn switch_tag(
     atom: &dyn Fn(&str) -> Result<Atom>,
     workspace: u32,
 ) -> Result<()> {
-    if workspace == 0 || workspace > 10 {
+    if !valid_workspace(workspace) {
         return Err("autostart workspace must be between 1 and 10".into());
     }
     let tag = workspace - 1;
@@ -2439,6 +2439,10 @@ fn explain(
     Ok(())
 }
 
+fn valid_workspace(workspace: u32) -> bool {
+    (1..=10).contains(&workspace)
+}
+
 fn launch_sequence(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
@@ -2455,7 +2459,7 @@ fn launch_sequence(
     let mut user_moved = false;
     while index < apps.len() && !user_moved {
         let workspace = apps[index].workspace;
-        if workspace == 0 || workspace > 9 {
+        if !valid_workspace(workspace) {
             eprintln!("niructl: autostart workspace {workspace} is outside 1..10");
             while index < apps.len() && apps[index].workspace == workspace {
                 index += 1;
@@ -3382,6 +3386,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tenth_workspace_is_accepted_for_autostart() {
+        assert!(valid_workspace(1));
+        assert!(valid_workspace(10));
+        assert!(!valid_workspace(0));
+        assert!(!valid_workspace(11));
+    }
+
     use super::*;
     use std::{os::unix::fs::PermissionsExt, thread, time::Duration};
 

@@ -598,8 +598,8 @@ impl Config {
         if self.autostart.settle_seconds > 60 {
             return Err("autostart.settle_seconds must be at most 60".into());
         }
-        if self.autostart.return_workspace > 9 {
-            return Err("autostart.return_workspace must be between 0 and 9".into());
+        if self.autostart.return_workspace > 10 {
+            return Err("autostart.return_workspace must be between 0 and 10".into());
         }
         if !(500..=30_000).contains(&self.autostart.window_timeout_ms) {
             return Err("autostart.window_timeout_ms must be between 500 and 30000".into());
@@ -957,6 +957,16 @@ mod tests {
         assert!(c.bar.enabled);
         assert!(!c.bar.show_title, "the bar defaults to tags and clock only");
         assert_eq!(c.bar.cell_width, 30);
+    }
+
+    #[test]
+    fn tenth_workspace_autostart_values_are_valid() {
+        let mut c = Config::default();
+        c.autostart.return_workspace = 10;
+        c.validate()
+            .expect("workspace 10 is valid for return_workspace");
+        c.autostart.return_workspace = 11;
+        assert!(c.validate().is_err());
     }
 
     #[test]
