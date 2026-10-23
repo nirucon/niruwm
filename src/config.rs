@@ -801,6 +801,12 @@ impl Theme {
             ("niru-carl-larsson", false) => {
                 include_str!("../themes/niru-carl-larsson.toml").to_string()
             }
+            ("niru-forest-vigil", false) => {
+                include_str!("../themes/niru-forest-vigil.toml").to_string()
+            }
+            ("niru-blood-of-urdr", false) => {
+                include_str!("../themes/niru-blood-of-urdr.toml").to_string()
+            }
             _ => fs::read_to_string(&user_file)?,
         };
         let mut theme: Self = toml::from_str(&text)?;
@@ -831,10 +837,17 @@ impl Theme {
         Ok(theme)
     }
 
-    /// The four themes that ship with the programs.
+    /// The themes that ship with the programs.
     #[allow(dead_code)] // listed by niructl
     pub fn builtin() -> &'static [&'static str] {
-        &["niru-noir", "niru-nord", "niru-satie", "niru-carl-larsson"]
+        &[
+            "niru-noir",
+            "niru-nord",
+            "niru-satie",
+            "niru-carl-larsson",
+            "niru-forest-vigil",
+            "niru-blood-of-urdr",
+        ]
     }
 
     pub fn pixel(s: &str) -> Result<u32> {

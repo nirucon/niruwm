@@ -1905,6 +1905,8 @@ fn wallpaper_friendly_name(base: &str) -> String {
         "nirux-wallpaper-nord" => Some("Niru Nord"),
         "nirux-wallpaper-satie" => Some("Niru Satie"),
         "nirux-wallpaper-carl-larsson" => Some("Niru Carl Larsson"),
+        "nirux-wallpaper-forest-vigil" => Some("Forest Vigil"),
+        "nirux-wallpaper-blood-of-urdr" => Some("Blood of Urdr"),
         "nirux-wallpaper-noir-havamal-19" => Some("Håvamål 19"),
         "nirux-wallpaper-noir-rooted-in-less" => Some("Rooted in Less"),
         "nirux-wallpaper-noir-space-to-think-silhouette" => Some("Space to Think Silhouette"),
