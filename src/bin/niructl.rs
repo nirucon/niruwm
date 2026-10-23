@@ -3688,8 +3688,23 @@ fn example_section(name: &str) -> Option<toml::value::Table> {
 fn example_text() -> Option<String> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent().and_then(|p| p.parent()) {
+        if let Ok(exe) = exe.canonicalize() {
+            // <prefix>/share/nirux/generations/ID/bin/niructl
+            //   -> <prefix>/share/nirux/generations/ID/config.example.toml
+            //   -> <prefix>/share/nirux/config.example.toml  (NIRUX install)
+            if let Some(dir) = exe.parent().and_then(|p| p.parent()) {
+                candidates.push(dir.join("config.example.toml"));
+                if let Some(state) = dir.parent().and_then(|p| p.parent()) {
+                    candidates.push(state.join("config.example.toml"));
+                }
+            }
+        }
+        // A standalone install keeps the example beside the binary's parent.
+        if let Some(dir) = exe.parent() {
             candidates.push(dir.join("config.example.toml"));
+            if let Some(parent) = dir.parent() {
+                candidates.push(parent.join("config.example.toml"));
+            }
         }
     }
     candidates.push(config::directory().join("config.example.toml"));

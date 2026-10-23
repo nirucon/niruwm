@@ -19,8 +19,18 @@ trap 'rm -rf "$TEST"' EXIT HUP INT TERM
 export HOME="$TEST/home" XDG_CONFIG_HOME="$TEST/home/.config"
 unset DISPLAY XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
 mkdir -p "$XDG_CONFIG_HOME/niruwm"
-# The repair reads section defaults from the example shipped beside the binary.
-cp "$SOURCE/config.example.toml" "$XDG_CONFIG_HOME/niruwm/config.example.toml"
+# Reproduce the installed layout exactly: the binary lives in
+# <state>/generations/ID/bin while config.example.toml sits in <state>. A
+# repair that cannot find the example still works, but it silently loses all
+# the comments that document the options, so this must be tested.
+STATE="$TEST/share/nirux"
+GEN="$STATE/generations/0.10.121-test"
+mkdir -p "$GEN/bin" "$STATE"
+cp "$BIN/niructl" "$GEN/bin/niructl" ||
+  { printf 'missing niructl in %s\n' "$BIN" >&2; exit 1; }
+cp "$SOURCE/config.example.toml" "$STATE/config.example.toml" ||
+  { printf 'missing config.example.toml in %s\n' "$SOURCE" >&2; exit 1; }
+NIRUCTL="$GEN/bin/niructl"
 CONFIG="$XDG_CONFIG_HOME/niruwm/config.toml"
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -28,13 +38,17 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # 1. The exact broken shape from Arch.
 printf 'theme = "niru-satie"\n' > "$CONFIG"
 # Apply is expected to fail without a display; only the repair matters here.
-"$BIN/niructl" theme niru-nord >"$TEST/out" 2>&1 || true
+"$NIRUCTL" theme niru-nord >"$TEST/out" 2>&1 || true
 
 [ "$(wc -l < "$CONFIG")" -gt 20 ] ||
   fail "truncated config was not repaired: $(wc -c < "$CONFIG") bytes"
 for section in wallpaper autostart bar nightlight brightness monitors; do
   grep -q "^\[$section\]" "$CONFIG" || fail "repair did not add [$section]"
 done
+# The shipped example carries the documentation; a repair must keep it.
+grep -q '^#' "$CONFIG" || fail "repair lost every comment from config.example.toml"
+[ "$(grep -c '^#' "$CONFIG")" -gt 100 ] ||
+  fail "repair kept only $(grep -c '^#' "$CONFIG") comments; the example was not found"
 # A repaired wallpaper section must be enabled, or theme wallpapers stay off.
 awk '/^\[wallpaper\]/{p=1} /^\[/ && !/^\[wallpaper\]/{p=0} p' "$CONFIG" |
   grep -qx 'enabled = true' || fail "repaired [wallpaper] is not enabled"
@@ -47,7 +61,7 @@ grep -qx 'theme = "niru-nord"' "$CONFIG" || fail "requested theme was not writte
 # 2. A complete config is left untouched and user choices survive.
 cp "$SOURCE/config.example.toml" "$CONFIG"
 before_lines=$(wc -l < "$CONFIG")
-"$BIN/niructl" theme niru-satie >"$TEST/out2" 2>&1 || true
+"$NIRUCTL" theme niru-satie >"$TEST/out2" 2>&1 || true
 grep -q '^enabled = true$' "$CONFIG" || fail "explicit [wallpaper] enabled was lost"
 grep -qx 'theme = "niru-satie"' "$CONFIG" || fail "theme was not written"
 [ "$(wc -l < "$CONFIG")" -ge "$before_lines" ] ||
@@ -56,7 +70,7 @@ grep -qx 'theme = "niru-satie"' "$CONFIG" || fail "theme was not written"
 # 3. Invalid TOML is refused, never overwritten.
 printf 'theme = "x"\nthis is [not toml\n' > "$CONFIG"
 broken=$(cksum < "$CONFIG")
-if "$BIN/niructl" theme niru-nord >"$TEST/out3" 2>&1; then
+if "$NIRUCTL" theme niru-nord >"$TEST/out3" 2>&1; then
   fail "invalid TOML was accepted"
 fi
 [ "$(cksum < "$CONFIG")" = "$broken" ] ||
