@@ -1,6 +1,6 @@
 [package]
 name = "niruwm"
-version = "0.16.73"
+version = "0.16.74"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"

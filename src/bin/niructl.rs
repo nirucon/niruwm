@@ -36,7 +36,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
-theme NAME | themes | monitors | reload | restart-bar | quit | save | save-session | \
+theme NAME | themes | keys | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
 wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
@@ -2885,6 +2885,16 @@ fn offline(cmd: &str) -> Result<()> {
     ) {
         return desktop(cmd, &std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "keys" {
+        let cfg = Config::load()?;
+        for binding in cfg.effective_keys() {
+            if binding.action == "unbind" {
+                continue;
+            }
+            println!("{}\t{}", binding.keys, binding.action);
+        }
+        return Ok(());
+    }
     if cmd == "layouts" {
         // Print the layouts in the order Super+Ctrl+period cycles them, with
         // the key that selects each one directly.
@@ -2997,6 +3007,7 @@ fn run() -> Result<()> {
         cmd.as_str(),
         "themes"
             | "layouts"
+            | "keys"
             | "brightness"
             | "nightlight"
             | "compositor"
