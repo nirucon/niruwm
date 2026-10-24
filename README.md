@@ -2,16 +2,23 @@
 
 **Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
 
-**Early beta.** A small Rust/X11 tiling window manager and session layer for the
-NIRU desktop, inspired by suckless dwm's keyboard-first, config-as-text model. It provides per-monitor workspaces, seven layouts, configurable
-shortcuts, floating and fullscreen windows, a scratchpad, session restore,
-themes and the `niructl`/`niruidle` tools.
+**Beta.** A small Rust/X11 tiling window manager and session layer for the
+NIRU desktop, built in the spirit of [suckless dwm](https://dwm.suckless.org/),
+which the author used for many years.
+
+It keeps what makes dwm pleasant: tags instead of virtual desktops, a single
+plain-text configuration, keybindings as the primary interface, and a
+codebase small enough to read. It adds what a daily machine needs: per-monitor
+workspaces, seven layouts, a bar, a launcher, notifications, a lock screen and
+the `niructl`/`niruidle` tools.
 
 ## Features
 
 - Seven layouts: tile, left, monocle, centered, centered-floating, fibonacci and
   floating.
 - Ten workspaces per monitor, selected with `Super+1`…`Super+0`.
+- A theme without a wallpaper paints its own background colour, so switching
+  theme never leaves the previous picture on screen.
 - Tiling, floating, fullscreen, scratchpad, master ratio, master count, gaps and
   window swapping.
 - dwm-style mouse move/resize with **Super+left-drag** and **Super+right-drag**.
@@ -21,7 +28,10 @@ themes and the `niructl`/`niruidle` tools.
   profile, brightness, night-light and screenshot integration.
 - Shared NIRU themes, font metrics and appearance contract.
 - `niructl`: provider-neutral controls, diagnostics, work modes and recipes.
-- `niruidle`: idle, lock and DPMS timing without a separate idle daemon.
+- `niruidle`: idle, lock and DPMS timing without a separate idle daemon. The
+  whole ladder is one sequence with one timer per step: active ->
+  `screensaver_timeout` -> screensaver -> `lock_after_screensaver` -> locked,
+  configured in the shared `[idle]` section.
 
 ## Install
 
