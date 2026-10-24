@@ -127,7 +127,6 @@ pub(crate) struct Wm {
     children: Vec<Child>,
     helpers: HelperPool,
     pub(crate) hidden: HashSet<Window>,
-    pub(crate) pending_unmaps: HashMap<Window, u32>,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
     /// reload, so a key press costs a lookup, never an X round trip.
     pub(crate) bindings: Vec<Binding>,
@@ -263,7 +262,6 @@ impl Wm {
             children: Vec::new(),
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
-            pending_unmaps: HashMap::new(),
             bindings: Vec::new(),
             wallpaper,
             monitors: Vec::new(),

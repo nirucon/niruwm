@@ -3442,6 +3442,7 @@ const REQUIRED_SECTIONS: &[&str] = &[
     "nightlight",
     "brightness",
     "monitors",
+    "idle",
 ];
 
 /// Persist a theme choice without destroying the rest of the configuration.
@@ -3781,6 +3782,8 @@ enabled = false
 [brightness]
 enabled = false
 [monitors]
+[idle]
+screensaver_timeout = 15
 [keys]
 "#
         .parse()

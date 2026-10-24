@@ -26,8 +26,41 @@
 #   Autostart
 #   Night light and brightness
 #   Monitors
-#   Bar
-#   Key bindings
+#   Screensaver and lock      [idle]    read by niruidle
+#   Bar                       [bar]     read by nirubar
+#   Key bindings              [[keys]]  read by niruwm
+#
+# ── Who reads what ──────────────────────────────────────────────────────────
+# One file, several programs. Each key below names its owner:
+#
+#   niruwm    the window manager: layout, keys, wallpaper, rules
+#   nirubar   the bar: [bar] labels, modules, transparency
+#   niruidle  the screensaver/lock timers: [idle]
+#   niructl   the control command; reads the same file
+#
+# A program accepts sections it does not own, so one bad section cannot stop
+# the session from starting. Values are validated by the program that uses
+# them; anything out of range falls back to the documented default here rather
+# than failing the file.
+#
+# ── Reading this file ───────────────────────────────────────────────────────
+# Every setting below states:
+#
+#   What it changes, valid values, default, and what it relates to.
+#
+# Commented-out examples (`# key = value`) show optional settings. A line that
+# is not commented is in effect.
+#
+# ── Settings added in 0.11.0 ────────────────────────────────────────────────
+#
+#   [bar] workspace_layout    1 numbers, 2 icons, 3 text    default 1
+#   [bar] transparent         true/false                   default true
+#   [bar] opacity             1-100 percent                default 94
+#   [idle] screensaver_timeout    minutes idle -> screensaver   default 15
+#   [idle] lock_after_screensaver minutes screensaver -> lock   default 15
+#   [idle] dpms_off_after_lock    minutes lock -> display off   default 15
+#
+# They are documented in full in their own sections further down.
 
 # ── Appearance ──────────────────────────────────────────────────────────────
 # Theme name. Built in: niru-noir, niru-nord, niru-satie, niru-carl-larsson,
@@ -181,6 +214,41 @@ workspaces = 10
 # workspaces = ["web", "code", "chat"]
 # primary = true
 
+# ── Screensaver and lock ────────────────────────────────────────────────────
+# The idle ladder is one sequence:
+#
+#   active  --screensaver_timeout-->  screensaver  --lock_after_screensaver-->  locked
+#
+# NIRUIDLE owns both timers in one process, so there is a single timer on each
+# step and none can be started twice. User activity before the screensaver
+# resets the first timer; activity on the screensaver resets both and returns
+# to `active`.
+#
+# Values are whole minutes.
+#
+#   screensaver_timeout     minutes of inactivity before the screensaver.
+#                           Must be at least 1. 0 is rejected, because it
+#                           would mean "never" and leave the screen unlocked.
+#   lock_after_screensaver  minutes the screensaver stays up before locking.
+#                           0 locks at the same time as the screensaver.
+#   dpms_off_after_lock     minutes after locking before the display is
+#                           switched off. 0 keeps the display on.
+#
+# Defaults: 15, 15, 15.
+# A value above 1440 (one day) is rejected. At runtime, an out-of-range
+# screensaver_timeout falls back to 15 so the screen is never left unlocked.
+#
+# Example: screensaver after 5 minutes, lock 2 minutes later.
+#
+# [idle]
+# screensaver_timeout = 5
+# lock_after_screensaver = 2
+
+[idle]
+screensaver_timeout = 15
+lock_after_screensaver = 15
+dpms_off_after_lock = 15
+
 # ── Bar ─────────────────────────────────────────────────────────────────────
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
@@ -227,6 +295,28 @@ tags = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 # tags = ["web", "code", "chat", "term", "media", "", "", "", "", ""]
 # Width of one workspace cell, in pixels.
 cell_width = 30
+# Workspace label preset. Only the labels change; the workspace count and the
+# Super+1..0 shortcuts are identical in every preset.
+#
+#   1  numbers   1 2 3 4 5 6 7 8 9 10          (default)
+#   2  icons     web code chat terminal mail folder ...   (needs a Nerd Font)
+#   3  text      web ai ai ai term chat mail folder pchat term
+#
+# Default: 1. Unset or an unknown number keeps `tags` below, which is the
+# same as preset 1 unless you set tags yourself.
+# workspace_layout = 1
+#
+# Bar transparency. The bar paints opaque pixels; when this is true it also
+# publishes _NET_WM_WINDOW_OPACITY, and the compositor (picom in NIRUX)
+# blends it with the wallpaper. Without a compositor the bar stays opaque.
+#
+#   true   see-through bar in the current NIRUX look      (default)
+#   false  fully opaque bar
+#
+# `opacity` is the percentage used when transparent is true. Values outside
+# 1-100 fall back to the default instead of making the bar disappear.
+# transparent = true
+# opacity = 94
 # Show the focused window title between the workspaces and the status.
 title = false
 title_max = 60

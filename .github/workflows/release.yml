@@ -5,14 +5,20 @@ name: Release (BETA — assets published to niruwm)
 # bar renders in a real X server, and attaches everything to one release on
 # the NIRUWM repository so `install.sh` can install a consistent pair.
 #
-# Tag NIRUWM with vX.Y.Z and run from the Actions tab (workflow_dispatch),
-# giving NIRUBAR_REF = a tag or branch of nirucon/nirubar.
+# Tag NIRUWM with vX.Y.Z. The tag push builds and publishes that tag, so the
+# published assets always come from the source the tag names.
+#
+# `workflow_dispatch` remains for a rebuild of an EXISTING tag only: it takes
+# the tag as input, refuses to run for any ref other than a tag, and fails when
+# the version in Cargo.toml does not match the tag. A release must never be
+# published from a branch: v0.16.64 once shipped assets built from `main`
+# while its tag pointed at a different commit.
 on:
   workflow_dispatch:
     inputs:
-      nirubar_ref:
-        description: "optional nirubar tag/branch; default: nirubar-version"
-        required: false
+      tag:
+        description: "existing tag to rebuild, for example v0.16.79"
+        required: true
         default: ""
   push:
     tags: ["v*"]
@@ -24,16 +30,44 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # A tag push checks out its own tag. A manual run is only a rebuild of
+      # the tag given as input. Either way the build source is a tag, never a
+      # branch, so published assets and the tag cannot describe different code.
+      - name: Refuse anything that is not a tag
+        env:
+          REF: ${{ github.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            [ -n "$INPUT_TAG" ] || { echo "refusing: a tag is required"; exit 1; }
+            case "$INPUT_TAG" in
+              v*) : ;;
+              *) echo "refusing: tag must start with v"; exit 1 ;;
+            esac
+            echo "TAG=$INPUT_TAG" >> "$GITHUB_ENV"
+          else
+            case "$REF" in
+              refs/tags/v*) echo "TAG=${REF#refs/tags/}" >> "$GITHUB_ENV" ;;
+              *) echo "refusing: release must be built from a v* tag, got $REF"; exit 1 ;;
+            esac
+          fi
       - uses: actions/checkout@v4
         with:
+          ref: ${{ env.TAG }}
           path: niruwm
+      - name: Confirm the tag matches the version being built
+        run: |
+          version=$(awk -F '"' '/^version = / {print $2; exit}' niruwm/Cargo.toml)
+          [ "v$version" = "$TAG" ] || {
+            echo "refusing: Cargo.toml says v$version but the tag is $TAG"; exit 1;
+          }
       - name: Read the pinned bar version
         id: pinned-bar
         run: echo "ref=v$(cat niruwm/nirubar-version)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           repository: nirucon/nirubar
-          ref: ${{ inputs.nirubar_ref || steps.pinned-bar.outputs.ref }}
+          ref: ${{ steps.pinned-bar.outputs.ref }}
           path: nirubar
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -90,9 +124,7 @@ jobs:
 
       - name: Collect assets
         run: |
-          version=$(awk -F '"' '/^version = / {print $2; exit}' niruwm/Cargo.toml)
-          echo "RELEASE_TAG=v$version" >> "$GITHUB_ENV"
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
           mkdir -p dist
           cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} dist/
           cp nirubar/target/x86_64-unknown-linux-musl/release/nirubar dist/

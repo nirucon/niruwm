@@ -154,9 +154,21 @@ niructl restart-bar
 niructl theme niru-nord
 ```
 
-Session options live in `~/.config/niruwm/session.conf`. Idle timing lives in
-`~/.config/niruui/screensaver.toml`. Notifications use NIRUNOTIFY when installed,
-with Dunst fallback.
+Session options live in `~/.config/niruwm/session.conf`. Screensaver and lock
+timing live in the shared config under `[idle]`:
+
+```toml
+[idle]
+screensaver_timeout = 15      # idle minutes before the screensaver
+lock_after_screensaver = 15   # screensaver minutes before locking
+dpms_off_after_lock = 15      # minutes after locking before the display sleeps
+```
+
+`niruidle` owns both timers in one process, so the ladder
+active -> screensaver -> locked has a single timer on each step. A legacy
+`~/.config/niruui/screensaver.toml` is still read for any value `[idle]` does
+not set, so an older installation keeps its timing. Notifications use
+NIRUNOTIFY when installed, with Dunst fallback.
 
 For a TTY login, run `startx "$HOME/.local/bin/niruwm-session"` (or plain
 `startx` when `.xinitrc` selects NIRUWM). The session keeps a valid login-provided

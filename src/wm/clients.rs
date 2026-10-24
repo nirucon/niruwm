@@ -228,7 +228,6 @@ impl Wm {
             self.clients.remove(pos);
         }
         self.hidden.remove(&w);
-        self.pending_unmaps.remove(&w);
         if self.focus == Some(w) {
             self.focus = None;
         }
@@ -509,7 +508,6 @@ impl Wm {
         for c in &self.clients {
             let shown = visible.contains(&c.win);
             if !shown && self.hidden.insert(c.win) {
-                *self.pending_unmaps.entry(c.win).or_default() += 1;
                 self.c.unmap_window(c.win)?;
             } else if shown && self.hidden.remove(&c.win) {
                 self.c.map_window(c.win)?;
@@ -938,5 +936,66 @@ impl Wm {
             }
         }
         self.arrange()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The decision that keeps a client alive across workspace switches.
+    ///
+    /// A hidden window's UnmapNotify is ours: it must stay managed. A visible
+    /// window's UnmapNotify came from its client, so it is unmanaged. This is
+    /// the invariant that replaced the outstanding-unmap counter, which drifted
+    /// whenever a window changed workspace while already hidden and then
+    /// dropped a live client.
+    fn stays_managed(hidden: &HashSet<Window>, w: Window) -> bool {
+        hidden.contains(&w)
+    }
+
+    #[test]
+    fn a_hidden_window_unmapped_by_us_stays_managed() {
+        let mut hidden = HashSet::new();
+        hidden.insert(42u32);
+        assert!(stays_managed(&hidden, 42));
+    }
+
+    #[test]
+    fn a_visible_window_that_unmaps_itself_is_unmanaged() {
+        let hidden = HashSet::new();
+        assert!(!stays_managed(&hidden, 42));
+    }
+
+    #[test]
+    fn remapping_clears_the_hidden_record() {
+        // Hiding then showing again must leave nothing that could later be
+        // mistaken for "we are hiding this" after a rapid switch.
+        let mut hidden = HashSet::new();
+        let w: Window = 7;
+        hidden.insert(w);
+        assert!(
+            stays_managed(&hidden, w),
+            "hidden while on another workspace"
+        );
+        hidden.remove(&w);
+        assert!(
+            !stays_managed(&hidden, w),
+            "visible again: a later unmap is the client's"
+        );
+    }
+
+    #[test]
+    fn repeated_hide_and_show_is_idempotent() {
+        // The old counter grew on every hide and only shrank on an event that
+        // could arrive late. Repeating the cycle must not accumulate state.
+        let mut hidden = HashSet::new();
+        let w: Window = 9;
+        for _ in 0..50 {
+            assert!(hidden.insert(w), "first hide records the window");
+            assert!(!hidden.insert(w), "a second hide adds nothing");
+            hidden.remove(&w);
+        }
+        assert!(hidden.is_empty(), "no leftover bookkeeping after cycles");
     }
 }

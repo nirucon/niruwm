@@ -70,14 +70,13 @@ impl Wm {
                     self.arrange()?;
                 }
                 Event::UnmapNotify(e) => {
-                    // Ignore the UnmapNotify that our own tag hiding
-                    // produces; a client that unmaps itself is withdrawn.
-                    if let Some(count) = self.pending_unmaps.get_mut(&e.window) {
-                        *count = count.saturating_sub(1);
-                        if *count == 0 {
-                            self.pending_unmaps.remove(&e.window);
-                        }
-                    } else {
+                    // Our own tag hiding produces an UnmapNotify too, and on a
+                    // rapid workspace switch that event can arrive after the
+                    // window was already mapped again. `hidden` is the record
+                    // of "we unmapped this", so it decides: a window we still
+                    // consider hidden is ours to keep, and anything else has
+                    // really been unmapped by its client.
+                    if !self.hidden.contains(&e.window) {
                         self.unmanage(e.window);
                         self.arrange()?;
                     }

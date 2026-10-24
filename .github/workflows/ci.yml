@@ -38,6 +38,13 @@ jobs:
           sh tests/power-actions.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Truncated config is repaired, invalid config is refused
         run: sh tests/config-repair.sh "$PWD/target/x86_64-unknown-linux-musl/release"
+      - name: A release is built from a tag, never a branch
+        run: sh tests/release-source.sh
+      - name: The 0.11.0 configuration contract
+        run: |
+          mkdir -p /tmp/ci-bin
+          cp target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} /tmp/ci-bin/
+          sh tests/suite-config.sh /tmp/ci-bin
       - name: Display profile lifecycle (Xvfb/RandR)
         run: sh tests/display-profiles.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Build pinned bar and collect static test artifacts
@@ -59,7 +66,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh
+            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh
 
   session:
     needs: verify

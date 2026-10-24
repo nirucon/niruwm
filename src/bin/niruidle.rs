@@ -24,6 +24,13 @@ use x11rb::{
     protocol::{screensaver::ConnectionExt as _, xproto::*},
 };
 
+#[allow(dead_code)]
+#[path = "../bindings.rs"]
+mod bindings;
+#[allow(dead_code)] // shared with niructl/niruwm; only the [idle] reader is used here
+#[path = "../config.rs"]
+mod config;
+
 /// How often the idle time is checked. Five seconds is precise enough for a
 /// fifteen minute timer and costs nothing.
 const POLL: Duration = Duration::from_secs(5);
@@ -64,6 +71,16 @@ fn load_settings() -> Settings {
         dpms_after: 15,
         lock_timeout: 0,
     };
+    // The shared NIRU config owns these values. The old
+    // ~/.config/niruui/screensaver.toml is read only for values the shared
+    // file does not set, so an older installation keeps its timings without
+    // silently overriding the documented `[idle]` section.
+    let shared = shared_idle_settings();
+    if let Some(idle) = &shared {
+        s.screen = u64::from(idle.screensaver_timeout);
+        s.lock_after = u64::from(idle.lock_after_screensaver);
+        s.dpms_after = u64::from(idle.dpms_off_after_lock);
+    }
     let Ok(text) = std::fs::read_to_string(config_path()) else {
         return s;
     };
@@ -74,19 +91,33 @@ fn load_settings() -> Settings {
         );
         return s;
     };
-    if let Some(n) = read_u64(&v, "idle_minutes") {
-        s.screen = n;
-    }
-    if let Some(n) = read_u64(&v, "lock_after_minutes") {
-        s.lock_after = n;
-    }
-    if let Some(n) = read_u64(&v, "dpms_off_minutes") {
-        s.dpms_after = n;
+    // The shared file wins: only fill a value the shared file did not set.
+    if shared.is_none() {
+        if let Some(n) = read_u64(&v, "idle_minutes") {
+            s.screen = n;
+        }
+        if let Some(n) = read_u64(&v, "lock_after_minutes") {
+            s.lock_after = n;
+        }
+        if let Some(n) = read_u64(&v, "dpms_off_minutes") {
+            s.dpms_after = n;
+        }
     }
     if let Some(n) = read_u64(&v, "lock_timeout_minutes") {
         s.lock_timeout = n;
     }
     s
+}
+
+/// The `[idle]` section of the shared config, already clamped to safe values.
+/// A broken shared file must not stop the idle daemon: the defaults already in
+/// `Settings` stay in place.
+fn shared_idle_settings() -> Option<crate::config::IdleConfig> {
+    let found = crate::config::IdleConfig::defaults_from_shared_file();
+    if found.is_none() {
+        eprintln!("niruidle: no [idle] section in the shared config; using defaults");
+    }
+    found
 }
 
 /// First program in PATH that exists.

@@ -48,6 +48,10 @@ pub struct Config {
     pub rules: Vec<Rule>,
     /// Manual night-light settings shared by `niructl` and the WM.
     pub nightlight: NightlightConfig,
+    /// Screensaver and lock timing. Read by NIRUIDLE, accepted here so the
+    /// shared configuration file validates as a whole.
+    #[serde(default)]
+    pub idle: IdleConfig,
     pub brightness: BrightnessConfig,
     /// Settings NIRUBAR reads from the same file. It refuses unknown fields as
     /// strictly as this program does, so every setting either program knows
@@ -142,6 +146,98 @@ pub struct NightlightConfig {
     pub off: String,
     /// Neutral daytime temperature for solar mode.
     pub day_temperature: u32,
+}
+
+/// Screensaver and lock timing, stored in `[idle]`.
+///
+/// NIRUIDLE owns the timers; NIRUWM only accepts the section so the shared
+/// file stays valid. The names in the file are `screensaver_timeout` and
+/// `lock_after_screensaver`; the older `*_minutes` spellings are accepted as
+/// aliases so an existing file keeps working.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct IdleConfig {
+    /// Minutes of inactivity before the screensaver starts.
+    #[serde(alias = "screensaver_timeout_minutes", alias = "idle_minutes")]
+    pub screensaver_timeout: u32,
+    /// Minutes the screensaver stays up before the session locks. 0 locks at
+    /// the same moment as the screensaver.
+    #[serde(alias = "lock_after_screensaver_minutes", alias = "lock_after_minutes")]
+    pub lock_after_screensaver: u32,
+    /// Minutes after locking before the display is switched off.
+    #[serde(alias = "dpms_off_minutes")]
+    pub dpms_off_after_lock: u32,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            screensaver_timeout: 15,
+            lock_after_screensaver: 15,
+            dpms_off_after_lock: 15,
+        }
+    }
+}
+
+impl IdleConfig {
+    /// Largest accepted value. A day is already an unreachable idle screen;
+    /// anything longer is a typo, and a wrapped or huge timer would leave the
+    /// session either unlocked forever or locked immediately.
+    pub const MAX_MINUTES: u32 = 24 * 60;
+
+    /// Read `[idle]` from the shared config file, clamped to safe values.
+    /// Returns `None` when the file is absent, unreadable or has no section,
+    /// so a broken file never changes the timers.
+    #[allow(dead_code)] // called by niruidle; the other binaries accept the section
+    pub fn defaults_from_shared_file() -> Option<Self> {
+        let text = std::fs::read_to_string(directory().join("config.toml")).ok()?;
+        let value: toml::Value = text.parse().ok()?;
+        let idle = value.get("idle")?;
+        let parsed: Self = idle.clone().try_into().ok()?;
+        Some(parsed.safe())
+    }
+
+    /// The configured values with out-of-range entries replaced by defaults,
+    /// so one bad number cannot leave the screen unlocked indefinitely.
+    #[allow(dead_code)] // used by niruidle
+    pub fn safe(&self) -> Self {
+        Self {
+            screensaver_timeout: clamp_minutes(self.screensaver_timeout, 15),
+            lock_after_screensaver: self.lock_after_screensaver.min(Self::MAX_MINUTES),
+            dpms_off_after_lock: self.dpms_off_after_lock.min(Self::MAX_MINUTES),
+        }
+    }
+
+    /// Validate after parsing. Only the screensaver timeout must be positive:
+    /// a zero would mean "never", which is the one value that silently leaves
+    /// a machine unlocked.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.screensaver_timeout == 0 {
+            return Err("idle.screensaver_timeout must be at least 1 minute".into());
+        }
+        if self.screensaver_timeout > Self::MAX_MINUTES {
+            return Err(format!(
+                "idle.screensaver_timeout must be at most {} minutes",
+                Self::MAX_MINUTES
+            ));
+        }
+        if self.lock_after_screensaver > Self::MAX_MINUTES {
+            return Err(format!(
+                "idle.lock_after_screensaver must be at most {} minutes",
+                Self::MAX_MINUTES
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)] // used by niruidle's safe()
+fn clamp_minutes(value: u32, fallback: u32) -> u32 {
+    if (1..=IdleConfig::MAX_MINUTES).contains(&value) {
+        value
+    } else {
+        fallback
+    }
 }
 
 impl Default for NightlightConfig {
@@ -326,7 +422,15 @@ pub struct Bar {
     /// Visibility of the optional microphone module. Read by NIRUBAR.
     pub microphone_visibility: String,
     /// Workspace labels shown instead of 1..10.
+    #[serde(default = "default_tags")]
+    #[allow(dead_code)] // read by nirubar; accepted here so the shared file loads
     pub tags: Vec<String>,
+    /// Preset for the workspace labels: 1 = numbers, 2 = icons, 3 = text.
+    /// When set, it selects the labels and `tags` is ignored; an absent or
+    /// unknown value keeps `tags`, which defaults to numbers.
+    #[serde(default)]
+    #[allow(dead_code)] // read by nirubar
+    pub workspace_layout: Option<u32>,
     /// Show the date, the time, or both.
     pub show_date: bool,
     pub show_time: bool,
@@ -353,6 +457,10 @@ pub struct Bar {
     pub title_delay_seconds: u32,
     /// Width of the `pulse` graph in the bar's panel. Read by NIRUBAR.
     pub graph_width: usize,
+    /// Draw the bar see-through through the compositor. Read by NIRUBAR.
+    pub transparent: bool,
+    /// Bar opacity in percent when `transparent` is true. Read by NIRUBAR.
+    pub opacity: u32,
     /// Bar settings a newer NIRUBAR could add. Accepted, so updating one
     /// program never stops the other from starting.
     #[serde(flatten)]
@@ -381,12 +489,68 @@ impl Default for Config {
             recipes: Vec::new(),
             monitors: MonitorsConfig::default(),
             nightlight: NightlightConfig::default(),
+            idle: IdleConfig::default(),
             brightness: BrightnessConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             rules: Vec::new(),
             weather_latitude: 0.0,
             weather_longitude: 0.0,
             restore_session: false,
+        }
+    }
+}
+
+/// The default workspace labels: workspace 1 shows "1", and so on.
+fn default_tags() -> Vec<String> {
+    (1..=10).map(|n| n.to_string()).collect()
+}
+
+/// Workspace label presets, selected by `[bar] workspace_layout`.
+///
+/// Only the presentation changes; the workspace count and the Super+1..0
+/// shortcuts are the same in every preset. Private-use Nerd Font glyphs render
+/// as text when the font lacks them, which is why the icon preset is not the
+/// default.
+#[allow(dead_code)] // the table lives in nirubar; accepted here for validation
+pub const WORKSPACE_LAYOUTS: u32 = 3;
+
+/// Labels for a preset. `1` is numbers, `2` icons, `3` text.
+#[allow(dead_code)]
+pub fn workspace_layout_tags(layout: u32) -> Vec<String> {
+    match layout {
+        2 => [
+            "\u{f0ac}", // globe: web
+            "\u{f121}", // code: agent
+            "\u{f086}", // comments: agent
+            "\u{e795}", // terminal
+            "\u{f075}", // comment: chat
+            "\u{f0e0}", // envelope: mail
+            "\u{f07b}", // folder
+            "\u{f086}", // comments: chat
+            "\u{f0e0}", // envelope: mail
+            "\u{f07b}", // folder
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+        3 => [
+            "web", "ai", "ai", "ai", "term", "chat", "mail", "folder", "pchat", "term",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect(),
+        _ => default_tags(),
+    }
+}
+
+impl Bar {
+    /// Labels to render. `workspace_layout` wins when it names a known preset;
+    /// otherwise the explicit `tags` list is used, which defaults to numbers.
+    #[allow(dead_code)] // read by nirubar
+    pub fn effective_tags(&self) -> Vec<String> {
+        match self.workspace_layout {
+            Some(n) if (1..=WORKSPACE_LAYOUTS).contains(&n) => workspace_layout_tags(n),
+            _ => self.tags.clone(),
         }
     }
 }
@@ -405,7 +569,8 @@ impl Default for Bar {
                 "battery".into(),
                 "clock".into(),
             ],
-            tags: (1..=10).map(|n| n.to_string()).collect(),
+            tags: default_tags(),
+            workspace_layout: None,
             microphone_visibility: "always".into(),
             show_date: true,
             show_time: true,
@@ -421,6 +586,8 @@ impl Default for Bar {
             icons: true,
             title_delay_seconds: 0,
             graph_width: 24,
+            transparent: true,
+            opacity: 94,
             extra: std::collections::HashMap::new(),
         }
     }
@@ -509,6 +676,10 @@ impl Config {
 
     fn validate(&self) -> Result<()> {
         use std::fmt::Write as _;
+
+        self.idle
+            .validate()
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
         if !(8.0..=40.0).contains(&self.font_size)
             || !(0.1..=0.9).contains(&self.master_ratio)
@@ -1225,5 +1396,64 @@ cell_width = 34
             c.bar.date_format = bad.into();
             assert!(c.validate().is_err(), "accepted date format {bad:?}");
         }
+    }
+
+    #[test]
+    fn idle_times_parse_and_use_documented_names() {
+        let c: Config =
+            toml::from_str("[idle]\nscreensaver_timeout = 5\nlock_after_screensaver = 2\n")
+                .expect("[idle] must parse");
+        assert_eq!(c.idle.screensaver_timeout, 5);
+        assert_eq!(c.idle.lock_after_screensaver, 2);
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn idle_defaults_apply_when_the_section_is_missing() {
+        let c: Config = toml::from_str("theme = \"niru-noir\"\n").unwrap();
+        assert_eq!(c.idle.screensaver_timeout, 15);
+        assert_eq!(c.idle.lock_after_screensaver, 15);
+        assert!(c.validate().is_ok(), "an absent [idle] must stay valid");
+    }
+
+    #[test]
+    fn old_idle_spellings_are_still_accepted() {
+        let c: Config =
+            toml::from_str("[idle]\nidle_minutes = 7\nlock_after_minutes = 3\n").unwrap();
+        assert_eq!(c.idle.screensaver_timeout, 7);
+        assert_eq!(c.idle.lock_after_screensaver, 3);
+    }
+
+    #[test]
+    fn a_zero_screensaver_timeout_is_rejected_not_silently_unlocked() {
+        let mut c = Config::default();
+        c.idle.screensaver_timeout = 0;
+        assert!(c.validate().is_err(), "zero must not mean 'never'");
+    }
+
+    #[test]
+    fn absurd_idle_values_are_rejected_or_clamped() {
+        let mut c = Config::default();
+        c.idle.screensaver_timeout = IdleConfig::MAX_MINUTES + 1;
+        assert!(c.validate().is_err());
+
+        // The runtime clamp never produces a zero or an out-of-range timer.
+        let already = IdleConfig {
+            screensaver_timeout: 0,
+            lock_after_screensaver: 99_999,
+            dpms_off_after_lock: 0,
+        };
+        let safe = already.safe();
+        assert_eq!(safe.screensaver_timeout, 15, "bad timeout falls back");
+        assert_eq!(safe.lock_after_screensaver, IdleConfig::MAX_MINUTES);
+        assert_eq!(safe.dpms_off_after_lock, 0, "0 keeps the display on");
+    }
+
+    #[test]
+    fn idle_section_is_accepted_by_the_full_shared_file() {
+        // NIRUWM must accept the section even though NIRUIDLE owns it.
+        let mut c = Config::default();
+        c.idle.screensaver_timeout = 3;
+        assert!(c.validate().is_ok());
     }
 }

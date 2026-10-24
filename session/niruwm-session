@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.78'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.79'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
