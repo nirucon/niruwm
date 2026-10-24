@@ -112,10 +112,11 @@ impl Wallpaper {
         }
         let Some(path) = self.theme_image() else {
             eprintln!(
-                "niruwm: no wallpaper image for theme {}; checked {} and XDG Pictures/Wallpapers/NIRU",
-                self.theme,
-                self.theme_dir.display()
+                "niruwm: no wallpaper image for theme {}; using the theme background colour. \
+                 Install the wallpaper set with `nirux wallpapers download`, or pick one in the launcher.",
+                self.theme
             );
+            fill_theme_background(&self.theme)?;
             return Ok(None);
         };
         set_image(&path, &self.scale)?;
@@ -272,6 +273,35 @@ fn expand_home(p: &str) -> PathBuf {
 }
 
 /// Set an image with the first working tool and report failures to the caller.
+/// Paint the root window with the theme's own background colour.
+///
+/// Used when a theme has no wallpaper image. Leaving the previous theme's
+/// picture on screen would silently show the wrong theme, so the fallback is a
+/// solid colour that belongs to the theme that is actually selected. The colour
+/// comes from the theme file, never a hardcoded value: Satie is light and the
+/// others are dark.
+fn fill_theme_background(theme: &str) -> Result<()> {
+    let colour = crate::config::Theme::load(theme)
+        .map(|t| t.background)
+        .unwrap_or_else(|_| "0f0f10".to_string());
+    // The theme stores six hex digits without '#'.
+    let pixel = format!("#{colour}");
+    // xsetroot is the only tool in the set that paints a solid colour without
+    // an image file. NIRUX installs xsetroot on all three distributions.
+    if !which("xsetroot") {
+        eprintln!("niruwm: xsetroot is missing; cannot paint the {theme} background ({pixel})");
+        return Ok(());
+    }
+    match std::process::Command::new("xsetroot")
+        .args(["-solid", &pixel])
+        .status()
+    {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("could not paint the {theme} background {pixel}: {s}").into()),
+        Err(e) => Err(format!("could not paint the {theme} background {pixel}: {e}").into()),
+    }
+}
+
 fn set_image(path: &Path, scale: &str) -> Result<()> {
     let mut failures = Vec::new();
     for tool in TOOLS {
