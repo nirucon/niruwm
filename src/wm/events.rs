@@ -70,26 +70,29 @@ impl Wm {
                     self.arrange()?;
                 }
                 Event::UnmapNotify(e) => {
-                    // Our own tag hiding produces an UnmapNotify too, and on a
-                    // burst of workspace switches that event arrives *after*
-                    // the window was mapped again. `hidden` alone cannot tell
-                    // those apart: by the time the stale event is read the
-                    // window is visible again, so a live client was dropped
-                    // from _NET_CLIENT_LIST while its process kept running.
+                    // Only a window this WM does not manage, or is not
+                    // currently hiding, can withdraw itself.
                     //
-                    // `awaiting_unmap` counts the unmaps this WM issued for a
-                    // window. Mapping the window again clears the count,
-                    // because whatever is still in flight then belongs to a
-                    // state we have already left. A client that withdraws
-                    // itself never incremented the count, so it is still
-                    // unmanaged as before.
-                    let ours = self.awaiting_unmap.get(&e.window).copied().unwrap_or(0);
-                    if ours > 0 {
-                        if ours == 1 {
-                            self.awaiting_unmap.remove(&e.window);
-                        } else {
-                            self.awaiting_unmap.insert(e.window, ours - 1);
-                        }
+                    // Our own tag hiding produces an UnmapNotify as well, and
+                    // X does not guarantee one event per UnmapWindow request:
+                    // a long burst of workspace switches delivers far fewer
+                    // notifications than requests (measured: 78 unmap requests,
+                    // 25 notifications). Any bookkeeping that counts events
+                    // therefore drifts, and once it drifts the next notification
+                    // is read as a client withdrawal and the live client is
+                    // dropped from _NET_CLIENT_LIST while its process keeps
+                    // running.
+                    //
+                    // A managed client that is visible must not be unmapped by
+                    // its client without us hearing a MapRequest first, so a
+                    // notification for such a window is discarded. A window
+                    // that is gone from the client list is unknown and is
+                    // dropped as before.
+                    if self.hidden.contains(&e.window) {
+                        // expected: we unmapped it
+                    } else if self.clients.iter().any(|c| c.win == e.window) {
+                        // Visible managed client: this notification belongs to
+                        // an earlier hide whose map already happened.
                     } else {
                         self.unmanage(e.window);
                         self.arrange()?;

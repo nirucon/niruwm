@@ -228,7 +228,6 @@ impl Wm {
             self.clients.remove(pos);
         }
         self.hidden.remove(&w);
-        self.awaiting_unmap.remove(&w);
         if self.focus == Some(w) {
             self.focus = None;
         }
@@ -509,11 +508,8 @@ impl Wm {
         for c in &self.clients {
             let shown = visible.contains(&c.win);
             if !shown && self.hidden.insert(c.win) {
-                *self.awaiting_unmap.entry(c.win).or_default() += 1;
                 self.c.unmap_window(c.win)?;
             } else if shown && self.hidden.remove(&c.win) {
-                // Anything still in flight is from the previous cycle.
-                self.awaiting_unmap.remove(&c.win);
                 self.c.map_window(c.win)?;
             }
         }
@@ -1001,64 +997,5 @@ mod tests {
             hidden.remove(&w);
         }
         assert!(hidden.is_empty(), "no leftover bookkeeping after cycles");
-    }
-}
-
-#[cfg(test)]
-mod unmap_tracking_tests {
-    use super::*;
-
-    /// The decision that keeps a client alive when its UnmapNotify arrives
-    /// after the window was already mapped again.
-    ///
-    /// `awaiting_unmap` counts unmaps this WM issued. A real client
-    /// withdrawal never increments it, so it is still unmanaged.
-    fn decides_unmanage(awaiting: &HashMap<Window, u32>, w: Window) -> bool {
-        awaiting.get(&w).copied().unwrap_or(0) == 0
-    }
-
-    #[test]
-    fn our_own_unmap_keeps_the_client() {
-        let mut awaiting = HashMap::new();
-        awaiting.insert(42u32, 1u32);
-        assert!(!decides_unmanage(&awaiting, 42));
-    }
-
-    #[test]
-    fn one_stale_event_is_consumed_and_the_next_is_ours_again() {
-        // Hide once, receive one UnmapNotify: the count reaches zero and a
-        // later withdrawal is honoured.
-        let mut awaiting = HashMap::new();
-        awaiting.insert(7u32, 1u32);
-        let ours = awaiting.get(&7).copied().unwrap_or(0);
-        assert_eq!(ours, 1);
-        awaiting.remove(&7);
-        assert!(decides_unmanage(&awaiting, 7));
-    }
-
-    #[test]
-    fn remapping_clears_every_pending_unmap() {
-        // A burst can issue several unmaps before the events are read; mapping
-        // the window again means the state has moved on, so nothing is pending.
-        let mut awaiting = HashMap::new();
-        awaiting.insert(9u32, 3u32);
-        awaiting.remove(&9);
-        assert!(decides_unmanage(&awaiting, 9));
-    }
-
-    #[test]
-    fn a_client_that_never_was_hidden_is_unmanaged() {
-        let awaiting: HashMap<Window, u32> = HashMap::new();
-        assert!(decides_unmanage(&awaiting, 5));
-    }
-
-    #[test]
-    fn repeated_hide_and_show_does_not_accumulate() {
-        let mut awaiting: HashMap<Window, u32> = HashMap::new();
-        for _ in 0..50 {
-            *awaiting.entry(3u32).or_default() += 1;
-            awaiting.remove(&3u32);
-        }
-        assert!(awaiting.is_empty());
     }
 }
