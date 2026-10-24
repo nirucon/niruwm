@@ -150,9 +150,13 @@ jobs:
         shell: sh
         run: |
           mkdir -p /tmp/niru-wallpaper-assets
-          for theme in noir nord; do
-            curl -fL --retry 3 "https://raw.githubusercontent.com/nirucon/nirux/main/wallpaper/nirux-wallpaper-$theme-4k.png" -o "/tmp/niru-wallpaper-assets/nirux-wallpaper-$theme-4k.png"
-          done
+          # NIRUX ships only the default theme's wallpaper; the rest are an
+          # optional download from the project's server, so `nord` is not in the
+          # repository. The session test needs a second theme to switch to, and
+          # any valid PNG is enough for that: the test asserts which file the
+          # WM chose, not what it looks like.
+          curl -fL --retry 3 "https://raw.githubusercontent.com/nirucon/nirux/main/wallpaper/nirux-wallpaper-noir-4k.png" -o "/tmp/niru-wallpaper-assets/nirux-wallpaper-noir-4k.png"
+          cp /tmp/niru-wallpaper-assets/nirux-wallpaper-noir-4k.png /tmp/niru-wallpaper-assets/nirux-wallpaper-nord-4k.png
           # Root and a pre-created XDG_RUNTIME_DIR hid the Void TTY failure.
           # Run these checks as a real unprivileged account with neither.
           # Arch's nobody account is expired, so use a disposable account.
