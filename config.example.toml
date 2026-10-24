@@ -274,8 +274,12 @@ enabled = true
 # Add "microphone" for input gain/mute; this does not monitor recording activity.
 # Add "bluetooth" for adapter/device status; hidden when no adapter exists.
 # Add "powerprofile" for Power saver/Balanced/Performance when PPD is available.
+# "niruxupdate" shows a newer NIRUX release than the installed one. It asks
+# GitHub once a day, keeps the answer in ~/.cache/nirubar, and is silent when
+# there is nothing newer. It never installs anything: click it for the command,
+# which you run when you can log out afterwards.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "layout", "media", "volume", "brightness", "display", "network", "mode", "battery", "clock"]
+modules = ["workspaces", "layout", "media", "volume", "brightness", "display", "network", "mode", "battery", "niruxupdate", "clock"]
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).

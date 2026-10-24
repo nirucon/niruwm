@@ -835,10 +835,18 @@ impl Wm {
     }
 
     pub(crate) fn focus_next(&mut self, delta: isize) -> Result<()> {
+        // Cycle through the clients on the focused screen's active workspace.
+        //
+        // This used to read `self.tag`, a field left over from before
+        // per-monitor workspaces. It was never assigned, so it stayed 0 and
+        // focus only cycled on workspace 1; every other workspace appeared
+        // stuck on one window. `active_tag` is the value the layout uses.
+        let tag = self.active_tag();
+        let monitor = self.focused_monitor;
         let visible: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| c.tag == self.tag)
+            .filter(|c| c.monitor == monitor && c.tag == tag)
             .map(|c| c.win)
             .collect();
         if visible.is_empty() {

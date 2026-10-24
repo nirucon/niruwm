@@ -573,6 +573,7 @@ impl Default for Bar {
                 "network".into(),
                 "mode".into(),
                 "battery".into(),
+                "niruxupdate".into(),
                 "clock".into(),
             ],
             tags: default_tags(),
