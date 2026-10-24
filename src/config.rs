@@ -565,7 +565,13 @@ impl Default for Bar {
             separator: "|".into(),
             modules: vec![
                 "workspaces".into(),
+                "layout".into(),
+                "media".into(),
+                "volume".into(),
+                "brightness".into(),
+                "display".into(),
                 "network".into(),
+                "mode".into(),
                 "battery".into(),
                 "clock".into(),
             ],

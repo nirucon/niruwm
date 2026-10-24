@@ -275,7 +275,7 @@ enabled = true
 # Add "bluetooth" for adapter/device status; hidden when no adapter exists.
 # Add "powerprofile" for Power saver/Balanced/Performance when PPD is available.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "media", "volume", "brightness", "network", "mode", "battery", "clock"]
+modules = ["workspaces", "layout", "media", "volume", "brightness", "display", "network", "mode", "battery", "clock"]
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).
