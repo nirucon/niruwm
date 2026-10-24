@@ -27,7 +27,7 @@ jobs:
       - run: cargo test --locked
       - name: Key overrides, helper reaping and fullscreen regressions
         run: |
-          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm x11-xserver-utils
+          sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm xfonts-base x11-xserver-utils
           xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' cargo test --locked --test x11 -- --ignored --test-threads=1
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
       - name: Offline microphone and Bluetooth controls
@@ -77,7 +77,7 @@ jobs:
         include:
           - distro: debian
             image: debian:bookworm-slim
-            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xvfb xinit xauth feh dbus x11-utils x11-apps xterm xdotool xkb-data fonts-dejavu-core procps
+            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl git xvfb xinit xauth feh dbus x11-utils x11-apps xterm xfonts-base xdotool xkb-data fonts-dejavu-core procps
           - distro: arch
             image: archlinux:base
             setup: pacman -Syu --noconfirm --needed ca-certificates curl git xorg-server-xvfb xorg-xinit xorg-xauth feh dbus xorg-xprop xorg-xwininfo xorg-xsetroot xorg-xset xorg-setxkbmap xorg-xmodmap xkeyboard-config xterm xdotool ttf-dejavu procps-ng
@@ -91,7 +91,7 @@ jobs:
                 done
               done
               xbps-install -Suy xbps && xbps-install -Suy
-              xbps-install -Sy ca-certificates curl git xorg-server-xvfb xinit xauth feh dbus xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf procps-ng
+              xbps-install -Sy ca-certificates curl git xorg-server-xvfb xinit xauth feh dbus xprop xwininfo xterm xdotool xset setxkbmap xkeyboard-config dejavu-fonts-ttf xorg-fonts procps-ng
     container: ${{ matrix.image }}
     steps:
       # Void ships no libstdc++ by default, and the runner's Node needs it

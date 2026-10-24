@@ -71,12 +71,26 @@ impl Wm {
                 }
                 Event::UnmapNotify(e) => {
                     // Our own tag hiding produces an UnmapNotify too, and on a
-                    // rapid workspace switch that event can arrive after the
-                    // window was already mapped again. `hidden` is the record
-                    // of "we unmapped this", so it decides: a window we still
-                    // consider hidden is ours to keep, and anything else has
-                    // really been unmapped by its client.
-                    if !self.hidden.contains(&e.window) {
+                    // burst of workspace switches that event arrives *after*
+                    // the window was mapped again. `hidden` alone cannot tell
+                    // those apart: by the time the stale event is read the
+                    // window is visible again, so a live client was dropped
+                    // from _NET_CLIENT_LIST while its process kept running.
+                    //
+                    // `awaiting_unmap` counts the unmaps this WM issued for a
+                    // window. Mapping the window again clears the count,
+                    // because whatever is still in flight then belongs to a
+                    // state we have already left. A client that withdraws
+                    // itself never incremented the count, so it is still
+                    // unmanaged as before.
+                    let ours = self.awaiting_unmap.get(&e.window).copied().unwrap_or(0);
+                    if ours > 0 {
+                        if ours == 1 {
+                            self.awaiting_unmap.remove(&e.window);
+                        } else {
+                            self.awaiting_unmap.insert(e.window, ours - 1);
+                        }
+                    } else {
                         self.unmanage(e.window);
                         self.arrange()?;
                     }

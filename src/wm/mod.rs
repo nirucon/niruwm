@@ -127,6 +127,10 @@ pub(crate) struct Wm {
     children: Vec<Child>,
     helpers: HelperPool,
     pub(crate) hidden: HashSet<Window>,
+    /// Per window, how many unmaps this WM issued whose UnmapNotify has not
+    /// been read yet. Cleared when the window is mapped again: an event still
+    /// in flight then describes a state we have already left.
+    pub(crate) awaiting_unmap: HashMap<Window, u32>,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
     /// reload, so a key press costs a lookup, never an X round trip.
     pub(crate) bindings: Vec<Binding>,
@@ -262,6 +266,7 @@ impl Wm {
             children: Vec::new(),
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
+            awaiting_unmap: HashMap::new(),
             bindings: Vec::new(),
             wallpaper,
             monitors: Vec::new(),

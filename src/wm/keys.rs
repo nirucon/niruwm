@@ -575,6 +575,7 @@ impl Wm {
                         c.monitor = monitor;
                     }
                     self.hidden.insert(w);
+                    *self.awaiting_unmap.entry(w).or_default() += 1;
                     self.c.unmap_window(w)?;
                     self.scratchpad_shown = false;
                 } else {
@@ -600,6 +601,7 @@ impl Wm {
                         c.monitor = monitor;
                     }
                     self.hidden.remove(&w);
+                    self.awaiting_unmap.remove(&w);
                     self.c.map_window(w)?;
                     self.set_focus(w)?;
                     self.scratchpad_shown = true;
