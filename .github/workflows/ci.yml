@@ -44,6 +44,11 @@ jobs:
         run: |
           mkdir -p /tmp/ci-bin
           cp target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} /tmp/ci-bin/
+          # The contract checks that niruwm and nirubar accept the same file.
+          # The bar is built from the pinned NIRUBAR tag beside it.
+          git clone --depth 1 --branch "v$(cat nirubar-version)" https://github.com/nirucon/nirubar /tmp/nirubar-cfg
+          cargo build --manifest-path /tmp/nirubar-cfg/Cargo.toml --release --locked --target x86_64-unknown-linux-musl
+          cp /tmp/nirubar-cfg/target/x86_64-unknown-linux-musl/release/nirubar /tmp/ci-bin/
           sh tests/suite-config.sh /tmp/ci-bin
       - name: Display profile lifecycle (Xvfb/RandR)
         run: sh tests/display-profiles.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
