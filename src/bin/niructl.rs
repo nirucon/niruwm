@@ -352,10 +352,16 @@ fn nightlight(args: &[String]) -> Result<()> {
             &[
                 "-m".into(),
                 "randr".into(),
+                // gammastep needs the location to apply a manual temperature:
+                // without it, it refuses with a GeoClue2 error. `-t K:K` forces
+                // the same temperature day and night, which is what a manual
+                // setting means; with `-O K` gammastep recomputes from the sun
+                // and silently ignores the requested value during the day
+                // (measured on a QXL display: gamma stayed at 1.0:1.0:1.0).
                 "-l".into(),
                 location.clone(),
-                "-O".into(),
-                kelvin.to_string(),
+                "-t".into(),
+                format!("{kelvin}:{kelvin}"),
                 "-o".into(),
             ],
         )?;

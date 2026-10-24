@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.81'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.82'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -117,9 +117,18 @@ if [ "$DISTRO" = void ] && command -v pipewire >/dev/null 2>&1; then
   # PipeWire that starts too early keeps running without ever creating its
   # socket: audio is then dead for the whole session while processes exist.
   if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
+    # The runtime directory can be recreated empty by elogind between the check
+    # above and this point, and a startx session on Void owns no elogind session
+    # at all. Recreate it here so PipeWire has somewhere to put its socket; a
+    # PipeWire started against a missing directory runs on without one.
+    if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+      (umask 077; mkdir -p "$XDG_RUNTIME_DIR") 2>/dev/null || :
+      log "recreated $XDG_RUNTIME_DIR for PipeWire"
+    fi
     # A process without a socket is useless. Restart it rather than trusting
     # that "pipewire is running" means audio works.
     pkill -u "$(id -u)" -x pipewire 2>/dev/null || :
+    pkill -u "$(id -u)" -x pipewire-pulse 2>/dev/null || :
     sleep 0.3
     pipewire >/dev/null 2>&1 &
     i=0

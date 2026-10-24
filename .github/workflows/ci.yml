@@ -52,6 +52,13 @@ jobs:
           sh tests/suite-config.sh /tmp/ci-bin
       - name: Display profile lifecycle (Xvfb/RandR)
         run: sh tests/display-profiles.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
+      - name: Night light changes and restores the display
+        run: |
+          sudo apt-get install -y gammastep || true
+          mkdir -p /tmp/nl-bin
+          cp "$PWD/target/x86_64-unknown-linux-musl/release/niructl" /tmp/nl-bin/
+          xvfb-run -a -s '-screen 0 1024x768x24 -noreset' \
+            sh tests/nightlight.sh /tmp/nl-bin
       - name: Build pinned bar and collect static test artifacts
         run: |
           git clone --depth 1 --branch "v$(cat nirubar-version)" https://github.com/nirucon/nirubar /tmp/nirubar-build
@@ -71,7 +78,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh
+            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh /src/tests/nightlight.sh
 
   session:
     needs: verify
