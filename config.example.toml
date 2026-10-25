@@ -410,6 +410,12 @@ action = "launcher"
 keys = "super+shift+p"
 action = "launcher_unified"
 
+# Type a phrase and Enter opens it in the first web search engine
+# (DuckDuckGo); Tab moves to the next engine before Enter.
+[[keys]]
+keys = "super+s"
+action = "launcher_search"
+
 # Remember every open window (workspace, screen, floating) so the next login
 # can start them again. Logging out saves too. Needs `restore_session = true`
 # at the top of the file to bring them back.

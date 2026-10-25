@@ -59,6 +59,7 @@ installations are maintained with `nirux update`.
 | Super+B | Browser |
 | Super+P | Application launcher |
 | Super+Shift+P | Applications, windows and actions |
+| Super+S | Web search: type a phrase, Enter opens the engine |
 | Super+Shift+M | Unified launcher |
 | Super+W | Window switcher |
 | Super+Shift+F | File manager |

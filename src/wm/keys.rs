@@ -127,6 +127,14 @@ impl Wm {
                     self.start(&cmd);
                 }
             }
+            Action::LauncherSearch => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--search".into()]);
+                } else {
+                    let cmd = self.cfg.launcher.clone();
+                    self.start(&cmd);
+                }
+            }
             Action::LauncherUnified => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--actions".into()]);

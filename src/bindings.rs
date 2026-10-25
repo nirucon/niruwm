@@ -16,6 +16,8 @@ pub enum Action {
     Browser,
     Launcher,
     LauncherUnified,
+    /// Type a phrase and open it in a web search engine.
+    LauncherSearch,
     /// Lock the screen with the first available locker.
     Lock,
     WindowSwitcher,
@@ -190,6 +192,8 @@ impl Action {
         // Prefer the native launcher; the configured app launcher is fallback.
         add("super+p", "launcher");
         add("super+shift+p", "launcher_unified");
+        // Type a phrase, Enter opens it in the instant-search engine.
+        add("super+s", "launcher_search");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
@@ -343,6 +347,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "browser" => Action::Browser,
         "launcher" => Action::Launcher,
         "launcher_unified" => Action::LauncherUnified,
+        "launcher_search" => Action::LauncherSearch,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,
         "window_switcher" => Action::WindowSwitcher,
