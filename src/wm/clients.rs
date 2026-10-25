@@ -397,7 +397,7 @@ impl Wm {
     }
 
     pub(crate) fn work_area(&self) -> Rect {
-        let mut top = 0u16;
+        let mut top = self.bar_reserved_height();
         let children = match self
             .c
             .query_tree(self.root)
@@ -434,16 +434,23 @@ impl Wm {
                 top = top.max(strut[2].min(u32::from(self.screen_h)) as u16);
             }
         }
-        // Without a strut, reserve the configured bar height so windows never
-        // hide behind the bar during the short window before it maps.
-        if top == 0 && self.cfg.bar.enabled {
-            top = self.cfg.bar_height;
-        }
         Rect {
             x: 0,
             y: top as i16,
             w: self.screen_w,
             h: self.screen_h.saturating_sub(top),
+        }
+    }
+
+    /// The bar height this session reserves at the top of every screen.
+    ///
+    /// The configured height, or a little more with a title, so a window never
+    /// appears behind the bar in the short time before it maps.
+    fn bar_reserved_height(&self) -> u16 {
+        if self.cfg.bar.enabled {
+            self.cfg.bar_height
+        } else {
+            0
         }
     }
 
@@ -558,10 +565,16 @@ impl Wm {
     fn monitor_area(&self, index: usize, work: Rect) -> Rect {
         match self.monitors.get(index) {
             Some(m) => {
-                // Each screen starts below whatever its own bar reserves. The
-                // amount comes from the work area, which is the top-most
-                // reservation on the screen, measured from the screen's top.
-                let top = (m.rect.y - work.y).max(0) as u16;
+                // Each screen starts below whatever its own bar reserves. A
+                // bar's strut is measured from the top of the desktop, so the
+                // part that falls on this screen is the strut minus the
+                // distance from the desktop's top to this screen's top. A bar
+                // on a screen lower down therefore never eats that screen.
+                let top = work
+                    .y
+                    .saturating_sub(m.rect.y)
+                    .max(0)
+                    .max(self.bar_reserved_height() as i16) as u16;
                 let top = top.min(m.rect.h.saturating_sub(1));
                 Rect {
                     x: m.rect.x,
