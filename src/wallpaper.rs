@@ -429,7 +429,10 @@ impl Wallpaper {
                 Some(expand_home(&self.cfg.file))
             };
         }
-        if self.follow_theme && self.mode != Mode::Single && self.theme_image().is_some() {
+        // Following the theme decides the picture even when the theme has
+        // none: its colour is then the answer. Falling through to the
+        // session's own picture would show the wallpaper of a previous theme.
+        if self.follow_theme && self.mode != Mode::Single {
             return self.apply_theme();
         }
         match self.mode {
@@ -788,8 +791,10 @@ mod tests {
             Some(dir.join("nirux-wallpaper-nord-4k.png")),
             "the theme with a picture is shown"
         );
-        // niru-satie has no picture in this directory.
+        // A full apply must keep following the theme instead of picking a
+        // session picture; the colour is then what the screen shows.
         let _ = w.set_theme("niru-satie");
+        assert_eq!(w.common_image(), None, "apply picked a picture again");
         assert_eq!(
             w.common_image(),
             None,
