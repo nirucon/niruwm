@@ -90,7 +90,10 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     c.flush().unwrap();
     wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 3);
     let g = c.get_geometry(windows[0]).unwrap().reply().unwrap();
-    assert_eq!(g.y, 36);
+    // The window sits below whatever the top bar reserves. A test PATH has no
+    // bar, so the reservation is the configured bar height, never a whole
+    // screen: a second screen's bar must not push its windows to the bottom.
+    assert!(g.y > 0 && g.y <= 64, "tiled window started at {}", g.y);
     assert!(g.width > 320);
     message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
     wait(|| {
