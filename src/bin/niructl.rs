@@ -1888,6 +1888,46 @@ fn powerprofile(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn monitors() -> Result<()> {
+    // Read RandR directly so this works without querying the WM.
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    c.extension_information(x11rb::protocol::randr::X11_EXTENSION_NAME)
+        .ok()
+        .flatten()
+        .ok_or("this X server has no RandR extension")?;
+    let resources = c.randr_get_screen_resources_current(root)?.reply()?;
+    let mut found = 0;
+    println!("NIRUWM monitors:");
+    for output in resources.outputs {
+        let info = c
+            .randr_get_output_info(output, resources.config_timestamp)?
+            .reply()?;
+        if info.connection != x11rb::protocol::randr::Connection::CONNECTED {
+            continue;
+        }
+        let name = String::from_utf8_lossy(&info.name).to_string();
+        if info.crtc == 0 {
+            println!("  {name:<12} connected, no mode");
+            continue;
+        }
+        let crtc = c
+            .randr_get_crtc_info(info.crtc, resources.config_timestamp)?
+            .reply()?;
+        found += 1;
+        println!(
+            "  {name:<12} {}x{}+{}+{}",
+            crtc.width, crtc.height, crtc.x, crtc.y
+        );
+    }
+    if found == 0 {
+        println!("  (no active output; the whole screen is one monitor)");
+    }
+    println!();
+    println!("Each screen gets its own workspaces. Override one in [monitors].");
+    Ok(())
+}
+
 fn wallpaper_config_path() -> PathBuf {
     config::directory().join("config.toml")
 }
@@ -3640,6 +3680,15 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "mode" {
         return mode(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "monitors" {
+        // A read-only report that needs no window manager, and must not stop
+        // a script when there is no display at all.
+        if std::env::var_os("DISPLAY").is_none() {
+            println!("No display is set; start a session to list screens with niructl monitors.");
+            return Ok(());
+        }
+        return monitors();
+    }
     if cmd == "nightlight" {
         return nightlight(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -3689,45 +3738,6 @@ fn offline(cmd: &str) -> Result<()> {
         println!();
         println!("Change with the key above, or: niructl layout NAME");
         println!("Cycle with Super+Ctrl+period and Super+Ctrl+comma.");
-        return Ok(());
-    }
-    if cmd == "monitors" {
-        // Read RandR directly so this works without querying the WM.
-        let (c, s) = x11rb::connect(None)?;
-        let root = c.setup().roots[s].root;
-        c.extension_information(x11rb::protocol::randr::X11_EXTENSION_NAME)
-            .ok()
-            .flatten()
-            .ok_or("this X server has no RandR extension")?;
-        let resources = c.randr_get_screen_resources_current(root)?.reply()?;
-        let mut found = 0;
-        println!("NIRUWM monitors:");
-        for output in resources.outputs {
-            let info = c
-                .randr_get_output_info(output, resources.config_timestamp)?
-                .reply()?;
-            if info.connection != x11rb::protocol::randr::Connection::CONNECTED {
-                continue;
-            }
-            let name = String::from_utf8_lossy(&info.name).to_string();
-            if info.crtc == 0 {
-                println!("  {name:<12} connected, no mode");
-                continue;
-            }
-            let crtc = c
-                .randr_get_crtc_info(info.crtc, resources.config_timestamp)?
-                .reply()?;
-            found += 1;
-            println!(
-                "  {name:<12} {}x{}+{}+{}",
-                crtc.width, crtc.height, crtc.x, crtc.y
-            );
-        }
-        if found == 0 {
-            println!("  (no active output; the whole screen is one monitor)");
-        }
-        println!();
-        println!("Each screen gets its own workspaces. Override one in [monitors].");
         return Ok(());
     }
     if cmd == "themes" {
@@ -3794,6 +3804,7 @@ fn run() -> Result<()> {
             | "powerprofile"
             | "mode"
             | "idle"
+            | "monitors"
     ) {
         return offline(cmd);
     }
