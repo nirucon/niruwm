@@ -114,7 +114,17 @@ impl Tool {
         // `xsetroot` takes only a colour under `-solid` and rejects anything
         // else, so it is asked for the colour alone.
         match self {
-            Tool::Feh => vec!["--no-fehbg".into(), "--image-bg".into(), pixel.into()],
+            // feh has no colour-only mode: it needs at least one image, and
+            // with none it scans the directory it was started in and fails.
+            // A one-pixel image of the colour is the smallest honest input;
+            // feh stretches it to the screen in `--bg-fill` mode.
+            Tool::Feh => vec![
+                "--no-fehbg".into(),
+                "--image-bg".into(),
+                pixel.into(),
+                "--bg-fill".into(),
+                solid_image(pixel).display().to_string(),
+            ],
             Tool::Hsetroot => vec!["-solid".into(), pixel.into()],
             Tool::Nitrogen => vec![
                 "--set-color".into(),
@@ -130,6 +140,83 @@ impl Tool {
     fn is_image_capable(self) -> bool {
         self != Tool::Xsetroot
     }
+}
+
+/// A 1x1 PNG in `colour` (`#rrggbb`), written under the state directory and
+/// reused for every screen. Only an image-capable tool needs it; the others
+/// take the colour directly.
+fn solid_image(colour: &str) -> PathBuf {
+    let hex: String = colour.trim_start_matches('#').chars().take(6).collect();
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0);
+    let (r, g, b) = (byte(0), byte(2), byte(4));
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("niruwm");
+    let path = dir.join(format!("solid-{r:02x}{g:02x}{b:02x}.png"));
+    if path.is_file() {
+        return path;
+    }
+    // RGBA, one pixel: signature, IHDR, IDAT (zlib-stored), IEND.
+    let mut png: Vec<u8> = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+    let mut chunk = |kind: &[u8; 4], data: &[u8]| {
+        png.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        png.extend_from_slice(&body);
+        png.extend_from_slice(&crc32(&body).to_be_bytes());
+    };
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&1u32.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA, default filters
+    chunk(b"IHDR", &ihdr);
+    let mut raw = vec![0u8, r, g, b, 0xff];
+    // zlib: no compression, stored block.
+    let mut zlib = vec![
+        0x78,
+        0x01,
+        0x01,
+        raw.len() as u8,
+        0x00,
+        !(raw.len() as u8),
+        0xff,
+    ];
+    zlib.append(&mut raw);
+    zlib.extend_from_slice(&adler32(&zlib[4..]).to_be_bytes());
+    chunk(b"IDAT", &zlib);
+    chunk(b"IEND", &[]);
+    let _ = std::fs::create_dir_all(&dir);
+    let temp = dir.join(format!(".solid-{}.{}.png", std::process::id(), r));
+    if std::fs::write(&temp, &png).is_ok() {
+        let _ = std::fs::rename(&temp, &path);
+    }
+    path
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in data {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let (mut a, mut b) = (1u32, 0u32);
+    for byte in data {
+        a = (a + u32::from(*byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
 }
 
 /// Tools in order of preference; the first that works wins.
@@ -703,29 +790,6 @@ fn expand_home(p: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// Each tool must be given only arguments it accepts. `xsetroot -solid`
-/// rejects anything after the colour, which left a theme without a
-/// wallpaper unpainted and only a failing command in the session log.
-#[test]
-fn a_colour_is_painted_with_arguments_each_tool_accepts() {
-    assert_eq!(
-        Tool::Xsetroot.colour_args("1920x1080+0+0", "#141414"),
-        vec!["-solid", "#141414"]
-    );
-    assert_eq!(
-        Tool::Feh.colour_args("1920x1080+0+0", "#141414"),
-        vec!["--no-fehbg", "--image-bg", "#141414"]
-    );
-    for tool in TOOLS {
-        let args = tool.colour_args("1920x1080+0+0", "#141414");
-        assert!(
-            args.iter().any(|a| a == "#141414"),
-            "{} does not receive the colour: {args:?}",
-            tool.binary()
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,6 +809,35 @@ mod tests {
             dir: dir.display().to_string(),
             theme_dir: dir.display().to_string(),
             ..WallpaperConfig::default()
+        }
+    }
+
+    /// Each tool must be given only arguments it accepts. `xsetroot -solid`
+    /// rejects anything after the colour, which left a theme without a
+    /// wallpaper unpainted and only a failing command in the session log.
+    #[test]
+    fn a_colour_is_painted_with_arguments_each_tool_accepts() {
+        assert_eq!(
+            Tool::Xsetroot.colour_args("1920x1080+0+0", "#141414"),
+            vec!["-solid", "#141414"]
+        );
+        assert_eq!(
+            Tool::Feh.colour_args("1920x1080+0+0", "#141414"),
+            vec![
+                "--no-fehbg".to_string(),
+                "--image-bg".to_string(),
+                "#141414".to_string(),
+                "--bg-fill".to_string(),
+                solid_image("#141414").display().to_string()
+            ]
+        );
+        for tool in TOOLS {
+            let args = tool.colour_args("1920x1080+0+0", "#141414");
+            assert!(
+                args.iter().any(|a| a == "#141414"),
+                "{} does not receive the colour: {args:?}",
+                tool.binary()
+            );
         }
     }
 
