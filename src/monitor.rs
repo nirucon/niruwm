@@ -148,7 +148,9 @@ pub fn build(mut outputs: Vec<(String, Rect, bool)>, cfg: &MonitorConfig) -> (Ve
                 }
                 _ => Monitor::new(name.clone(), rect, count),
             };
-            // Start with the common layouts, then the screen's own.
+            // The common list is a default, not a snapshot of one screen: a
+            // screen with its own list keeps it, and an absent common list
+            // leaves every workspace tiled.
             for (i, layout) in cfg.layouts.iter().enumerate() {
                 if i < monitor.layouts.len() {
                     monitor.layouts[i] = *layout;

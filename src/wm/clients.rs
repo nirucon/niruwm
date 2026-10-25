@@ -654,11 +654,15 @@ impl Wm {
         }
         // The monitor layout contract lets one bar per output describe its own
         // workspace range without guessing from the focused monitor.
+        //
+        // The eighth field is the layout of the workspace each screen shows, so
+        // a bar can show and change its own screen's layout. Bars start in the
+        // moment the manager has no screens yet, so the failure is not fatal.
         let mut layout = String::new();
         for (index, m) in self.monitors.iter().enumerate() {
             let start = crate::monitor::offset(&self.monitors, index);
             layout.push_str(&format!(
-                "{}	{}	{}	{}	{}	{}	{}
+                "{}	{}	{}	{}	{}	{}	{}	{}
 ",
                 m.name,
                 m.rect.x,
@@ -666,8 +670,12 @@ impl Wm {
                 m.rect.w,
                 start,
                 m.workspaces.len(),
-                m.active
+                m.active,
+                m.layout().name()
             ));
+        }
+        if layout.is_empty() {
+            return Ok(());
         }
         self.c.change_property8(
             PropMode::REPLACE,

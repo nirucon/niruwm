@@ -1351,27 +1351,33 @@ const DISPLAY_ROTATE_USAGE: &str =
     "display rotate needs an output and normal|left|right|inverted: niructl display rotate HDMI-1 left";
 
 /// The width a screen takes on the desktop at the given mode, before rotation.
-fn display_mode_width(mode: &str, state: &DisplayOutputState) -> Option<i32> {
+/// The width and height a mode gives a screen, before any rotation.
+fn display_mode_size(mode: &str, state: &DisplayOutputState) -> Option<(i32, i32)> {
     if let Some((width, rest)) = mode.split_once('x') {
-        if let Ok(width) = width.parse::<i32>() {
-            let tall = rest
-                .split(|c: char| !c.is_ascii_digit())
+        if let (Ok(width), Some(height)) = (
+            width.parse::<i32>(),
+            rest.split(|c: char| !c.is_ascii_digit())
                 .next()
-                .and_then(|h| h.parse::<i32>().ok())
-                .unwrap_or(0);
-            if width > 0 && tall > 0 {
-                return Some(width);
+                .and_then(|h| h.parse::<i32>().ok()),
+        ) {
+            if width > 0 && height > 0 {
+                return Some((width, height));
             }
         }
     }
-    // "preferred" is not a number: the pixel size follows the mode name in
-    // xrandr's output, for example `DP-1 connected primary 2560x1440+0+0 ... 597mm x 336mm`.
+    // "preferred" resolved earlier; anything left is a mode named like the
+    // current geometry, which the unparsed line carries.
     let line = state.line.as_deref()?;
     let geometry = line.split_whitespace().find(|word| {
         word.split_once('x')
             .is_some_and(|(w, _)| w.parse::<i32>().is_ok())
     })?;
-    geometry.split('x').next()?.parse::<i32>().ok()
+    let (width, rest) = geometry.split_once('x')?;
+    let height = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|h| h.parse::<i32>().ok())?;
+    Some((width.parse().ok()?, height))
 }
 
 fn display_rotate(name: &str, rotation: &str) -> Result<()> {
@@ -1428,6 +1434,8 @@ struct DisplayOutputState {
     name: String,
     connected: bool,
     modes: Vec<String>,
+    /// The mode xrandr marks preferred, when it names one.
+    preferred: Option<String>,
     current: Option<DisplayOutput>,
     /// The unparsed xrandr line, for the physical size after the mode name.
     line: Option<String>,
@@ -1455,7 +1463,12 @@ fn display_preview_path() -> PathBuf {
 
 fn display_outputs() -> Result<Vec<DisplayOutputState>> {
     let out = command("xrandr", &["--query".into()])?;
-    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(display_outputs_from(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Parse `xrandr --query`. Separate from the query so a fixture can exercise
+/// the rotation, preferred mode and switched-off screen rules without X.
+fn display_outputs_from(text: &str) -> Vec<DisplayOutputState> {
     let mut outputs: Vec<DisplayOutputState> = Vec::new();
     for line in text.lines() {
         if !line.starts_with(|c: char| !c.is_whitespace()) {
@@ -1463,12 +1476,16 @@ fn display_outputs() -> Result<Vec<DisplayOutputState>> {
                 if let Some(mode) = line.split_whitespace().next() {
                     if !mode.is_empty() && mode.contains('x') {
                         output.modes.push(mode.to_string());
-                    }
-                }
-                if line.split_whitespace().any(|word| word.contains('*')) {
-                    if let Some(mode) = line.split_whitespace().next() {
-                        if let Some(current) = output.current.as_mut() {
-                            current.mode = mode.to_string();
+                        // `+` marks the preferred mode; the first line is not
+                        // necessarily it. `*` marks the current one.
+                        let flags = line.split_whitespace().nth(1).unwrap_or("");
+                        if flags.contains('+') && output.preferred.is_none() {
+                            output.preferred = Some(mode.to_string());
+                        }
+                        if line.split_whitespace().any(|word| word.contains('*')) {
+                            if let Some(current) = output.current.as_mut() {
+                                current.mode = mode.to_string();
+                            }
                         }
                     }
                 }
@@ -1486,14 +1503,16 @@ fn display_outputs() -> Result<Vec<DisplayOutputState>> {
             .split_whitespace()
             .find(|word| word.contains('x') && word.contains('+') && !word.starts_with('('));
         let primary = line.contains(" primary ");
+        // The current rotation follows the geometry, for example
+        // `DP-2 connected 2560x1440+2560+0 inverted (normal left inverted ...)`.
+        // The words inside the parentheses are the rotations the output
+        // supports, in that order, so they can never say what it is set to.
         let rotation = line
             .split('(')
-            .nth(1)
-            .and_then(|inside| {
-                inside
-                    .split_whitespace()
-                    .find(|word| matches!(*word, "normal" | "left" | "inverted" | "right"))
-            })
+            .next()
+            .unwrap_or(line)
+            .split_whitespace()
+            .find(|word| matches!(*word, "normal" | "left" | "inverted" | "right"))
             .unwrap_or("normal")
             .to_string();
         let current = geometry.map(|geometry| {
@@ -1514,11 +1533,12 @@ fn display_outputs() -> Result<Vec<DisplayOutputState>> {
             name: name.to_string(),
             connected,
             modes: Vec::new(),
+            preferred: None,
             current,
             line: Some(line.to_string()),
         });
     }
-    Ok(outputs)
+    outputs
 }
 
 fn display_resolve(
@@ -1529,14 +1549,17 @@ fn display_resolve(
         .iter()
         .find(|state| state.name == output.name)
         .ok_or_else(|| format!("display output {} is not connected", output.name))?;
-    if !state.connected || state.current.is_none() && state.modes.is_empty() {
+    // A connected output with no current mode is simply switched off, as a
+    // freshly plugged screen is. Applying a profile must still turn it on.
+    if !state.connected || state.modes.is_empty() {
         return Err(format!("display output {} is not connected", output.name).into());
     }
     let mode = if output.mode == "preferred" || output.mode.is_empty() {
         state
-            .modes
-            .first()
-            .cloned()
+            .preferred
+            .clone()
+            .or_else(|| state.current.as_ref().map(|current| current.mode.clone()))
+            .or_else(|| state.modes.first().cloned())
             .ok_or_else(|| format!("display output {} has no modes", output.name))?
     } else if state.modes.iter().any(|mode| mode == &output.mode) {
         output.mode.clone()
@@ -1810,15 +1833,27 @@ fn display(args: &[String]) -> Result<()> {
             let outputs = display_outputs()?;
             let mut position = 0i32;
             let mut layout = Vec::new();
+            // A connected screen may be switched off, as one just plugged in
+            // is. It is part of the arrangement, not skipped.
             for state in outputs.iter().filter(|state| state.connected) {
-                let Some(current) = state.current.as_ref() else {
+                if state.modes.is_empty() {
                     continue;
-                };
-                let mut output = current.clone();
+                }
+                let mut output = state.current.clone().unwrap_or(DisplayOutput {
+                    name: state.name.clone(),
+                    mode: "preferred".into(),
+                    position: display_zero_position(),
+                    rotation: display_normal_rotation(),
+                    primary: false,
+                });
                 output.mode = "preferred".into();
                 output.rotation = "normal".into();
                 output.position = format!("{position}x0");
-                position += display_mode_width(&output.mode, state).unwrap_or(0);
+                // Place the next screen past this one's real preferred size.
+                let resolved = display_resolve(&outputs, &output)?;
+                position += display_mode_size(&resolved.mode, state)
+                    .map(|(width, _)| width)
+                    .unwrap_or(0);
                 layout.push(output);
             }
             if layout.is_empty() {
@@ -4691,6 +4726,54 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("niructl: {e}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod display_parse_tests {
+    use super::{display_outputs_from, display_resolve, DisplayOutput};
+
+    const SAMPLE: &str = "Screen 0: minimum 320 x 200, current 5120 x 1440, maximum 16384 x 16384
+DisplayPort-3 disconnected primary (normal left inverted right x axis y axis)
+DisplayPort-4 connected 2560x1440+0+0 (normal left inverted right x axis y axis) 597mm x 336mm
+   2560x1440     59.95*+  74.97
+   1920x1080     60.00
+DisplayPort-5 connected 2560x1440+2560+0 inverted (normal left inverted right x axis y axis) 597mm x 336mm
+   2560x1440     59.95*+
+DisplayPort-6 connected (normal left inverted right x axis y axis)
+   1920x1200     59.88+
+";
+
+    #[test]
+    fn the_current_rotation_is_read_not_the_supported_list() {
+        let outputs = display_outputs_from(SAMPLE);
+        let five = outputs.iter().find(|o| o.name == "DisplayPort-5").unwrap();
+        assert_eq!(five.current.as_ref().unwrap().rotation, "inverted");
+        let four = outputs.iter().find(|o| o.name == "DisplayPort-4").unwrap();
+        assert_eq!(four.current.as_ref().unwrap().rotation, "normal");
+    }
+
+    #[test]
+    fn the_preferred_mode_is_the_star_plus_entry() {
+        let outputs = display_outputs_from(SAMPLE);
+        let four = outputs.iter().find(|o| o.name == "DisplayPort-4").unwrap();
+        assert_eq!(four.preferred.as_deref(), Some("2560x1440"));
+        let six = outputs.iter().find(|o| o.name == "DisplayPort-6").unwrap();
+        assert_eq!(six.preferred.as_deref(), Some("1920x1200"));
+    }
+
+    #[test]
+    fn a_connected_but_switched_off_screen_can_be_placed() {
+        let outputs = display_outputs_from(SAMPLE);
+        let profile = DisplayOutput {
+            name: "DisplayPort-6".into(),
+            mode: "preferred".into(),
+            position: "5120x0".into(),
+            rotation: "normal".into(),
+            primary: false,
+        };
+        let resolved = display_resolve(&outputs, &profile).expect("an off screen is placeable");
+        assert_eq!(resolved.mode, "1920x1200");
     }
 }
 

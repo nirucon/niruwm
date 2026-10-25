@@ -234,17 +234,40 @@ start_dunst() {
     dunst >/dev/null 2>&1 & DUNST_PID=$!
   fi
 }
+# Start the native notification daemon and wait until it owns the bus name.
+#
+# Without this wait the session's first notification can be sent before the
+# daemon has registered, and `notify-send` then fails against a session bus that
+# has no notification service. It is also what lets the welcome message below
+# succeed on a machine where nothing else was running.
+start_nirunotify() {
+  command -v nirunotify >/dev/null 2>&1 || return 1
+  nirunotify >/dev/null 2>&1 & NOTIFY_PID=$!
+  i=0
+  while [ "$i" -lt 50 ]; do
+    # The daemon exits at once when another one already owns the name; that is
+    # a working session too, so either an owner or our child is enough.
+    if command -v busctl >/dev/null 2>&1 &&
+       busctl --user --no-pager status org.freedesktop.Notifications >/dev/null 2>&1; then
+      return 0
+    fi
+    kill -0 "$NOTIFY_PID" 2>/dev/null || return 0
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 0
+}
 case "$NOTIFICATION_PROVIDER" in
   auto)
     if command -v nirunotify >/dev/null 2>&1; then
-      nirunotify >/dev/null 2>&1 & NOTIFY_PID=$!
+      start_nirunotify || :
     else
       start_dunst
     fi
     ;;
   native)
     if command -v nirunotify >/dev/null 2>&1; then
-      nirunotify >/dev/null 2>&1 & NOTIFY_PID=$!
+      start_nirunotify || :
     else
       log "notification provider native requested, but nirunotify is not installed"
     fi

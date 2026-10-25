@@ -455,19 +455,20 @@ impl Wm {
 
     /// Write the current workspace layouts back to the shared config.
     ///
-    /// Only the `layouts` entries written there are replaced; comments,
-    /// permissions and every other setting stay as they are. A file that
-    /// cannot be read or written is left alone: the session keeps working.
+    /// NIRUWM is not the only reader: NIRUBAR and NIRUIDLE share the file, and
+    /// the user's comments document it. The edit is therefore made with a
+    /// format-preserving TOML editor, the result is re-read by the same loader
+    /// as a fresh start, and the file is replaced atomically. Any doubt leaves
+    /// the working file untouched.
     fn remember_layouts(&self) -> Result<()> {
         let path = crate::config::directory().join("config.toml");
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(original) = std::fs::read_to_string(&path) else {
             return Ok(());
         };
-        let common: Vec<String> = self
-            .monitors
-            .first()
-            .map(|m| m.layouts.iter().map(|l| l.name().to_string()).collect())
-            .unwrap_or_default();
+        let common: Vec<String> = common_layouts(&self.monitors)
+            .iter()
+            .map(|l| l.name().to_string())
+            .collect();
         let per_screen: Vec<(String, Vec<String>)> = self
             .monitors
             .iter()
@@ -478,20 +479,36 @@ impl Wm {
                 )
             })
             .collect();
-        let Some(updated) = rewrite_layouts(&text, &common, &per_screen) else {
+        let Some(updated) = rewrite_layouts(&original, &common, &per_screen) else {
+            eprintln!(
+                "niruwm: workspace layouts were not written: the config could not be edited safely"
+            );
             return Ok(());
         };
-        if updated == text {
+        if updated == original {
             return Ok(());
         }
-        let temp = path.with_extension("toml.niruwm-layouts");
+        // The new text must load exactly as a fresh start would load it.
+        if updated.parse::<toml::Value>().is_err() {
+            eprintln!(
+                "niruwm: workspace layouts were not written: the edited config would be invalid"
+            );
+            return Ok(());
+        }
+        // The file may be a symlink into a dotfiles repository; write through
+        // the link instead of replacing it with a regular file.
+        let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let Some(parent) = real.parent() else {
+            return Ok(());
+        };
+        let temp = parent.join(format!(".config.toml.niruwm-{}", std::process::id()));
         if std::fs::write(&temp, &updated).is_err() {
             return Ok(());
         }
-        if let Ok(meta) = std::fs::metadata(&path) {
+        if let Ok(meta) = std::fs::metadata(&real) {
             let _ = std::fs::set_permissions(&temp, meta.permissions());
         }
-        if std::fs::rename(&temp, &path).is_err() {
+        if std::fs::rename(&temp, &real).is_err() {
             let _ = std::fs::remove_file(&temp);
         }
         Ok(())
@@ -863,132 +880,87 @@ fn layout_by_name(name: &str) -> Layout {
         .unwrap_or(Layout::Tile)
 }
 
-/// Replace the layout lists in a configuration file, or `None` when the file
-/// cannot be edited safely.
+/// The layouts every screen starts with.
 ///
-/// `common` becomes the `[monitors] layouts` line; every screen in
-/// `per_screen` gets a `layouts` line in its own `[[monitors.profiles]]`
-/// entry. Missing entries are added at the right place, and any other line is
-/// kept verbatim.
+/// The first screen is a sensible default only when no screen has an explicit
+/// common list; the file keeps the common list exactly as configured, so this
+/// must not invent one from whichever output happened to sort first.
+fn common_layouts(monitors: &[Monitor]) -> Vec<Layout> {
+    monitors
+        .first()
+        .map(|m| m.layouts.clone())
+        .unwrap_or_default()
+}
+
+/// Replace the layout lists in a configuration file with `toml_edit`, keeping
+/// comments, ordering and unrelated tables, or `None` when it cannot be done
+/// safely.
+///
+/// `common` becomes `[monitors] layouts`. Every screen in `per_screen` gets its
+/// own `layouts` in its `[[monitors.profiles]]` entry; a screen without an entry
+/// gets one appended, so two screens can keep independent layouts across a
+/// restart. Nothing is written for a monitor table the file does not have:
+/// adding one is a bigger change than a workspace layout, and the loader
+/// defaults every workspace to tiling without it.
 fn rewrite_layouts(
     text: &str,
     common: &[String],
     per_screen: &[(String, Vec<String>)],
 ) -> Option<String> {
-    let names = |list: &[String]| -> String {
-        format!(
-            "[{}]",
-            list.iter()
-                .map(|n| format!("\"{n}\""))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    };
-    // A line that sets a key in the current table.
-    let key_of = |line: &str| -> Option<String> {
-        let (key, _) = line.split_once('=')?;
-        let key = key.trim();
-        if key.is_empty() || key.contains(|c: char| c.is_whitespace() || c == '[' || c == '"') {
-            return None;
+    let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    let to_array = |list: &[String]| -> toml_edit::Array {
+        let mut array = toml_edit::Array::new();
+        for name in list {
+            array.push(name.as_str());
         }
-        Some(key.to_string())
+        array
     };
-    let mut out: Vec<String> = Vec::new();
-    let mut section = String::new();
-    let mut profile: Option<String> = None;
-    let mut done: Vec<String> = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') {
-            // Leaving a screen's table: write its list if it had none.
-            if section == "monitors.profiles" {
-                if let Some(name) = profile.take() {
-                    if !done.contains(&name) {
-                        if let Some((_, list)) = per_screen.iter().find(|(n, _)| *n == name) {
-                            out.push(format!("layouts = {}", names(list)));
-                            done.push(name);
-                        }
-                    }
-                }
+    if let Some(monitors) = doc.get_mut("monitors").and_then(|v| v.as_table_mut()) {
+        monitors["layouts"] = toml_edit::value(to_array(common));
+        if let Some(profiles) = monitors
+            .get_mut("profiles")
+            .and_then(|v| v.as_array_of_tables_mut())
+        {
+            for entry in profiles.iter_mut() {
+                let Some(name) = entry.get("name").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let Some((_, list)) = per_screen.iter().find(|(n, _)| n == name) else {
+                    continue;
+                };
+                entry["layouts"] = toml_edit::value(to_array(list));
             }
-            // `[[monitors.profiles]]` and `[monitors]` name the same table.
-            section = trimmed
-                .trim_matches(|c| c == '[' || c == ']')
-                .replace(".[", ".")
-                .to_string();
-            out.push(line.to_string());
-            continue;
-        }
-        let key = key_of(trimmed);
-        match section.as_str() {
-            "monitors" => {
-                if key.as_deref() == Some("layouts") {
-                    // Only the first layout line is written; a repeat is
-                    // dropped so a second run leaves the file unchanged.
-                    if !done.iter().any(|name| name == "monitors") {
-                        out.push(format!("layouts = {}", names(common)));
-                        done.push("monitors".into());
-                    }
+            // A screen with no entry of its own keeps its list in a new entry.
+            let present: Vec<String> = profiles
+                .iter()
+                .filter_map(|entry| {
+                    entry
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .collect();
+            for (name, list) in per_screen {
+                if present.contains(name) {
                     continue;
                 }
-                out.push(line.to_string());
-                if key.as_deref() == Some("workspaces")
-                    && !done.iter().any(|name| name == "monitors")
-                {
-                    out.push(format!("layouts = {}", names(common)));
-                    done.push("monitors".into());
-                }
-            }
-            "monitors.profiles" => {
-                if key.as_deref() == Some("name") {
-                    profile = trimmed
-                        .split_once('=')
-                        .map(|(_, v)| v.trim().trim_matches('"').to_string());
-                }
-                if key.as_deref() == Some("layouts") {
-                    let ours = profile.as_deref().and_then(|name| {
-                        per_screen
-                            .iter()
-                            .find(|(n, _)| n == name)
-                            .map(|(_, list)| list.clone())
-                    });
-                    match ours {
-                        Some(list) => {
-                            out.push(format!("layouts = {}", names(&list)));
-                            if let Some(name) = profile.clone() {
-                                done.push(name);
-                            }
-                        }
-                        None => out.push(line.to_string()),
-                    }
-                    continue;
-                }
-                out.push(line.to_string());
-            }
-            _ => out.push(line.to_string()),
-        }
-    }
-    // The file may end inside a screen's table.
-    if section == "monitors.profiles" {
-        if let Some(name) = profile.take() {
-            if !done.contains(&name) {
-                if let Some((_, list)) = per_screen.iter().find(|(n, _)| *n == name) {
-                    out.push(format!("layouts = {}", names(list)));
-                }
+                let mut entry = toml_edit::Table::new();
+                entry["name"] = toml_edit::value(name.as_str());
+                entry["workspaces"] = toml_edit::value(per_screen_workspace_count(list));
+                entry["primary"] = toml_edit::value(false);
+                entry["layouts"] = toml_edit::value(to_array(list));
+                profiles.push(entry);
             }
         }
     }
-    // A file that never mentioned monitors gets the section at the end.
-    if !done.iter().any(|name| name == "monitors") && !section.starts_with("monitors") {
-        out.push(String::new());
-        out.push("[monitors]".into());
-        out.push(format!("layouts = {}", names(common)));
-    }
-    let mut result = out.join("\n");
-    if text.ends_with('\n') {
-        result.push('\n');
-    }
-    Some(result)
+    Some(doc.to_string())
+}
+
+/// A screen's workspace labels are its own decision, so a generated profile
+/// names an empty list, which NIRUX reads as "the common count".
+fn per_screen_workspace_count(list: &[String]) -> toml_edit::Array {
+    let _ = list;
+    toml_edit::Array::new()
 }
 
 impl Drop for Wm {
@@ -1005,49 +977,82 @@ mod layout_file_tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    #[test]
-    fn missing_entries_are_added_and_other_lines_kept() {
-        let text = "# mine\n[[monitors]]\nworkspaces = 10\n[[monitors.profiles]]\nname = \"DP-1\"\nworkspaces = [\"1\", \"2\"]\nprimary = false\n";
-        let common = list(&["tile", "tile", "monocle"]);
-        let screens = vec![("DP-1".to_string(), list(&["tile", "fibonacci"]))];
-        let out = rewrite_layouts(text, &common, &screens).expect("a plain file is editable");
-        assert!(out.contains("# mine"), "a comment was lost: {out}");
-        assert!(out.contains("workspaces = 10"), "a setting was lost: {out}");
-        assert!(
-            out.contains("layouts = [\"tile\", \"tile\", \"monocle\"]"),
-            "the common list was not written: {out}"
-        );
-        assert!(
-            out.contains("layouts = [\"tile\", \"fibonacci\"]"),
-            "the screen's list was not written: {out}"
-        );
-        assert!(
-            out.contains("primary = false"),
-            "a screen setting was lost: {out}"
-        );
-        // Running it again on its own output changes nothing.
-        let again = rewrite_layouts(&out, &common, &screens).expect("still editable");
-        assert_eq!(again, out, "the second write changed the file");
+    fn screen(name: &str, items: &[&str]) -> (String, Vec<String>) {
+        (name.to_string(), list(items))
+    }
+
+    fn parses(text: &str) -> toml::Value {
+        text.parse().expect("the written file must be valid TOML")
     }
 
     #[test]
-    fn existing_lists_are_replaced_not_duplicated() {
-        let text = "[monitors]\nworkspaces = 10\nlayouts = [\"tile\", \"tile\"]\n";
+    fn an_inline_comment_on_the_table_header_is_kept() {
+        // The earlier line parser added a second [monitors] here, and the
+        // result refused to load.
+        let text = "[monitors] # the screens\nworkspaces = 2\n[wallpaper]\nenabled = false\n";
         let out = rewrite_layouts(text, &list(&["monocle"]), &[]).expect("editable");
         assert_eq!(
-            out.matches("layouts =").count(),
-            1,
-            "duplicate layout line: {out}"
+            parses(&out)["monitors"]["layouts"][0].as_str(),
+            Some("monocle")
         );
-        assert!(out.contains("layouts = [\"monocle\"]"), "{out}");
+        assert!(out.contains("# the screens"), "the comment was lost: {out}");
+        assert_eq!(
+            out.matches("[monitors]").count(),
+            1,
+            "duplicate table: {out}"
+        );
     }
 
     #[test]
-    fn a_file_without_monitor_settings_gets_them() {
+    fn a_multiline_layout_array_is_replaced_whole() {
+        let text = "[monitors]\nworkspaces = 2\nlayouts = [\n  \"tile\",\n  \"tile\"\n]\n";
+        let out = rewrite_layouts(text, &list(&["tile", "fibonacci"]), &[]).expect("editable");
+        let value = parses(&out);
+        let layouts = value["monitors"]["layouts"].as_array().expect("array");
+        assert_eq!(layouts.len(), 2, "old entries survived: {out}");
+        assert_eq!(layouts[1].as_str(), Some("fibonacci"));
+    }
+
+    #[test]
+    fn each_screen_keeps_its_own_layout_through_a_restart() {
+        let text = "[monitors]\nworkspaces = 3\n[[monitors.profiles]]\nname = \"DP-1\"\nworkspaces = [\"a\", \"b\"]\nprimary = true\n";
+        let screens = vec![
+            screen("DP-1", &["tile", "monocle", "tile"]),
+            screen("DP-2", &["fibonacci", "tile", "tile"]),
+        ];
+        let out =
+            rewrite_layouts(text, &list(&["tile", "tile", "tile"]), &screens).expect("editable");
+        let value = parses(&out);
+        let profiles = value["monitors"]["profiles"].as_array().expect("profiles");
+        assert_eq!(profiles.len(), 2, "the missing screen got no entry: {out}");
+        let find = |name: &str| {
+            profiles
+                .iter()
+                .find(|p| p["name"].as_str() == Some(name))
+                .expect("each screen has an entry")
+        };
+        assert_eq!(find("DP-1")["layouts"][1].as_str(), Some("monocle"));
+        assert_eq!(find("DP-2")["layouts"][0].as_str(), Some("fibonacci"));
+        // Its own workspace labels and primary choice are untouched.
+        assert_eq!(find("DP-1")["workspaces"].as_array().unwrap().len(), 2);
+        assert_eq!(find("DP-1")["primary"].as_bool(), Some(true));
+        // Written again from its own output, the file is unchanged.
+        let again = rewrite_layouts(&out, &list(&["tile", "tile", "tile"]), &screens)
+            .expect("still editable");
+        assert_eq!(again, out, "a second save changed the file");
+    }
+
+    #[test]
+    fn a_file_without_monitor_settings_is_left_alone() {
         let text = "theme = \"niru-noir\"\n";
-        let out = rewrite_layouts(text, &list(&["tile"]), &[]).expect("editable");
-        assert!(out.contains("[monitors]"), "{out}");
-        assert!(out.contains("layouts = [\"tile\"]"), "{out}");
+        let out = rewrite_layouts(text, &list(&["monocle"]), &[]).expect("editable");
+        assert_eq!(out, text, "an unrelated file was rewritten: {out}");
+    }
+
+    #[test]
+    fn an_invalid_file_is_refused_rather_than_repaired() {
+        let text = "[monitors\nworkspaces = 2\n";
+        assert!(rewrite_layouts(text, &list(&["tile"]), &[]).is_none());
     }
 }
 
