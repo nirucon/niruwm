@@ -228,6 +228,7 @@ impl Wm {
             // the binding table uses the numbers a user types. Convert here
             // so both paths land on the same workspace.
             let mut reload_ack = None;
+            let mut layout_ack = None;
             let action = match d[0] {
                 // The control channel carries zero-based *global* desktops.
                 1 => {
@@ -242,15 +243,20 @@ impl Wm {
                     self.view_global(d[1])?;
                     None
                 }
-                3 => Some(Action::SetLayout(match d[1] {
-                    1 => LayoutId::Monocle,
-                    2 => LayoutId::Left,
-                    3 => LayoutId::Centered,
-                    4 => LayoutId::Fibonacci,
-                    5 => LayoutId::Floating,
-                    6 => LayoutId::CenteredFloat,
-                    _ => LayoutId::Tile,
-                })),
+                3 => Some(Action::SetLayout(
+                    [
+                        LayoutId::Tile,
+                        LayoutId::Monocle,
+                        LayoutId::Left,
+                        LayoutId::Centered,
+                        LayoutId::Fibonacci,
+                        LayoutId::Floating,
+                        LayoutId::CenteredFloat,
+                    ]
+                    .get(d[1] as usize)
+                    .copied()
+                    .unwrap_or(LayoutId::Tile),
+                )),
                 4 => {
                     // d[1] is the serial `niructl` is waiting for. A key
                     // binding sends zero and needs no acknowledgement.
@@ -263,14 +269,35 @@ impl Wm {
                 5 => Some(Action::Quit),
                 6 => Some(Action::SaveSession),
                 7 => Some(Action::ClearSession),
+                10 => {
+                    // Write every workspace's layout to the config, then
+                    // acknowledge so `niructl layout save` reports the truth.
+                    // A serial of zero does not mean "no acknowledgement"
+                    // here: this command has no key binding, so every call
+                    // states one and waits for the answer.
+                    let saved = self.remember_layouts();
+                    layout_ack = Some((d[1], saved.is_ok()));
+                    None
+                }
                 _ => None,
             };
             if let Some(action) = action {
-                if !self.dispatch(action)? {
+                let keep_going = self.dispatch(action)?;
+                if !keep_going {
                     return Ok(false);
                 }
             }
             self.arrange()?;
+            if let Some((serial, saved)) = layout_ack {
+                self.c.change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atom("_NIRUWM_LAYOUT_SAVE_ACK"),
+                    AtomEnum::CARDINAL,
+                    &[if saved { serial } else { serial | 0x8000_0000 }],
+                )?;
+                self.c.flush()?;
+            }
             if let Some((serial, applied)) = reload_ack {
                 // The high bit marks a rejected reload, so the caller gets a
                 // completion signal either way and never treats "rejected" as

@@ -272,6 +272,17 @@ impl Default for BrightnessConfig {
     }
 }
 
+/// Every layout name a workspace can start with.
+pub const VALID_LAYOUTS: [&str; 7] = [
+    "tile",
+    "left",
+    "monocle",
+    "centered",
+    "centeredfloat",
+    "floating",
+    "fibonacci",
+];
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MonitorsConfig {
@@ -279,6 +290,11 @@ pub struct MonitorsConfig {
     pub workspaces: usize,
     /// Per-screen overrides, matched by RandR output name.
     pub profiles: Vec<MonitorProfile>,
+    /// Which layout each workspace starts with, in workspace order. An empty
+    /// entry keeps the default (tile). The list may be shorter than the
+    /// workspace count; those workspaces stay tiled.
+    #[serde(default)]
+    pub layouts: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -292,6 +308,10 @@ pub struct MonitorProfile {
     /// when the pointer is outside every screen.
     #[allow(dead_code)] // read by niruwm, not by niructl
     pub primary: bool,
+    /// This screen's workspace layouts, in workspace order. Overrides the
+    /// common `monitors.layouts` for the workspaces it lists.
+    #[serde(default)]
+    pub layouts: Vec<String>,
 }
 
 impl Default for MonitorsConfig {
@@ -299,6 +319,7 @@ impl Default for MonitorsConfig {
         Self {
             workspaces: 10,
             profiles: Vec::new(),
+            layouts: Vec::new(),
         }
     }
 }
@@ -791,6 +812,23 @@ impl Config {
         for p in &self.monitors.profiles {
             if p.name.is_empty() || p.workspaces.is_empty() {
                 return Err("monitors.profiles entries need a name and workspaces".into());
+            }
+        }
+        if let Some(bad) = self
+            .monitors
+            .layouts
+            .iter()
+            .find(|l| !VALID_LAYOUTS.contains(&l.as_str()))
+        {
+            return Err(format!("monitors.layouts: unknown layout {bad}").into());
+        }
+        for p in &self.monitors.profiles {
+            if let Some(bad) = p
+                .layouts
+                .iter()
+                .find(|l| !VALID_LAYOUTS.contains(&l.as_str()))
+            {
+                return Err(format!("monitors.profiles {}: unknown layout {bad}", p.name).into());
             }
         }
         if !(-90.0..=90.0).contains(&self.nightlight.latitude)

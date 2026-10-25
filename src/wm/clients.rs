@@ -465,12 +465,19 @@ impl Wm {
         for mi in 0..self.monitors.len().max(1) {
             let screen = self.monitor_area(mi, area);
             let active = self.monitors.get(mi).map(|m| m.active).unwrap_or(0) as u32;
+            // The layout belongs to this workspace on this screen, so two
+            // screens and ten workspaces never share one.
+            let layout = self
+                .monitors
+                .get(mi)
+                .map(Monitor::layout)
+                .unwrap_or(Layout::Tile);
             let n = self
                 .clients
                 .iter()
                 .filter(|c| c.monitor == mi && c.tag == active && !c.floating && !c.fullscreen)
                 .count();
-            let boxes = self.layout.arrange_master(
+            let boxes = layout.arrange_master(
                 screen,
                 n,
                 self.monitors.get(mi).map(|m| m.nmaster).unwrap_or(1),
@@ -491,14 +498,14 @@ impl Wm {
                         .get(mi)
                         .map(|m| m.rect)
                         .unwrap_or_else(|| self.screen_area())
-                } else if c.floating || self.layout == Layout::Floating {
+                } else if c.floating || layout == Layout::Floating {
                     self.clamp(c.geom, screen)
                 } else {
                     let r = boxes.get(idx).copied().unwrap_or(screen);
                     idx += 1;
                     r
                 };
-                let smart = !c.floating && (n == 1 || self.layout == Layout::Monocle);
+                let smart = !c.floating && (n == 1 || layout == Layout::Monocle);
                 let b = if c.fullscreen || smart {
                     0
                 } else {
@@ -713,6 +720,7 @@ impl Wm {
                 m.active = workspace;
             }
         }
+        self.publish_layout_readonly()?;
         self.arrange()
     }
 
@@ -756,6 +764,9 @@ impl Wm {
                 m.active = tag as usize;
             }
         }
+        // The published layout follows the focused workspace, so tools and
+        // scripts read the layout the user is looking at.
+        self.publish_layout_readonly()?;
         self.arrange()
     }
 

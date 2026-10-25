@@ -1,5 +1,5 @@
 use super::*;
-use crate::bindings::{self, Action, Binding, LayoutId, RawBinding};
+use crate::bindings::{self, Action, Binding, RawBinding};
 
 impl Wm {
     /// Resolve the configured bindings against the current keyboard mapping.
@@ -197,24 +197,21 @@ impl Wm {
             Action::ToggleTag(n) => self.toggle_tag(tag_index(n))?,
             Action::MoveToTag(n) => self.move_to_tag(tag_index(n), false)?,
             Action::ToggleMoveToTag(n) => self.move_to_tag(tag_index(n), true)?,
+            // A layout belongs to one workspace: the one shown on the
+            // focused screen. Changing it there leaves every other workspace,
+            // on every screen, exactly as it was.
             Action::SetLayout(l) => {
-                self.layout = match l {
-                    LayoutId::Tile => Layout::Tile,
-                    LayoutId::Left => Layout::Left,
-                    LayoutId::Monocle => Layout::Monocle,
-                    LayoutId::Centered => Layout::Centered,
-                    LayoutId::CenteredFloat => Layout::CenteredFloat,
-                    LayoutId::Floating => Layout::Floating,
-                    LayoutId::Fibonacci => Layout::Fibonacci,
-                };
+                self.set_layout(l.layout());
                 self.publish_layout()?;
             }
             Action::LayoutNext => {
-                self.layout = self.layout.next();
+                let next = self.layout().next();
+                self.set_layout(next);
                 self.publish_layout()?;
             }
             Action::LayoutPrev => {
-                self.layout = self.layout.prev();
+                let prev = self.layout().prev();
+                self.set_layout(prev);
                 self.publish_layout()?;
             }
             // Master count is per screen: changing it on one monitor must not

@@ -220,6 +220,24 @@ running session actually set, or `null` when no window manager is running).
 NIRUWM publishes the rendered result on `_NIRUWM_WALLPAPER_STATE`, so a
 configuration is never reported as a displayed picture.
 
+### Layouts per workspace
+
+A layout belongs to one workspace on one screen. Changing it there leaves
+every other workspace, on every screen, exactly as it was, and every workspace
+starts tiled until you change it:
+
+```sh
+niructl layout show          # the layouts stored in the config
+niructl layout monocle       # this workspace only
+niructl layout save          # write the current ones to the file
+```
+
+`Super+T/Y/M/C/U/F` set the focused workspace's layout and
+`Super+Ctrl+period` / `comma` cycle through them. The choice is written to
+`[monitors] layouts` at once, so it survives a crash as well as a logout, and
+it comes back after the next login. A screen can override the common list in
+its own `[[monitors.profiles]]` entry with `layouts = [...]`.
+
 ### More than one screen
 
 Every connected screen is set separately, at its own geometry (for example

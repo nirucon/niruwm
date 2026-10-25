@@ -70,7 +70,10 @@
 theme = "niru-noir"
 # ── Layouts ─────────────────────────────────────────────────────────────────
 # One of: tile, left, monocle, centered, centeredfloat, fibonacci, floating.
-# Change at runtime with Super+T/Y/M/C/U/F, cycle with Super+Ctrl+period.
+# A layout belongs to one workspace on one screen: changing it there leaves
+# every other workspace exactly as it was, and the choice is saved in
+# [monitors] layouts. Change it with Super+T/Y/M/C/U/F, cycle with
+# Super+Ctrl+period, save at once with: niructl layout save
 # List them all with: niructl layouts
 # Space between windows, in pixels.
 gap = 8
@@ -213,11 +216,21 @@ step = 5
 
 [monitors]
 workspaces = 10
+# Which layout each workspace starts with, in workspace order. Every entry is
+# one of: tile, left, monocle, centered, centeredfloat, floating, fibonacci.
+# Leave it empty (the default) and every workspace is tiled; any workspace
+# you switch once keeps that layout for the rest of the session and is saved
+# here, so it is back after the next login. The list may be shorter than the
+# workspace count.
+# layouts = ["tile", "monocle", "centered", "tile"]
 
 # [[monitors.profiles]]
 # name = "HDMI-1"
 # workspaces = ["web", "code", "chat"]
 # primary = true
+# This screen's layouts, for the workspaces it lists. It wins over the
+# common list above.
+# layouts = ["tile", "centered"]
 
 # ── Screensaver and lock ────────────────────────────────────────────────────
 # The idle ladder is one sequence:

@@ -86,6 +86,49 @@ pub enum LayoutId {
     Fibonacci,
 }
 
+impl LayoutId {
+    /// The layout a name refers to, if any.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "tile" => Some(LayoutId::Tile),
+            "left" => Some(LayoutId::Left),
+            "monocle" => Some(LayoutId::Monocle),
+            "centered" => Some(LayoutId::Centered),
+            "centeredfloat" => Some(LayoutId::CenteredFloat),
+            "floating" => Some(LayoutId::Floating),
+            "fibonacci" => Some(LayoutId::Fibonacci),
+            _ => None,
+        }
+    }
+
+    /// The value the control channel carries for this layout.
+    #[allow(dead_code)] // used by niructl, which shares this file
+    pub fn code(self) -> u32 {
+        match self {
+            LayoutId::Tile => 0,
+            LayoutId::Monocle => 1,
+            LayoutId::Left => 2,
+            LayoutId::Centered => 3,
+            LayoutId::Fibonacci => 4,
+            LayoutId::Floating => 5,
+            LayoutId::CenteredFloat => 6,
+        }
+    }
+
+    /// The layout itself.
+    pub fn layout(self) -> crate::layout::Layout {
+        match self {
+            LayoutId::Tile => crate::layout::Layout::Tile,
+            LayoutId::Left => crate::layout::Layout::Left,
+            LayoutId::Monocle => crate::layout::Layout::Monocle,
+            LayoutId::Centered => crate::layout::Layout::Centered,
+            LayoutId::CenteredFloat => crate::layout::Layout::CenteredFloat,
+            LayoutId::Floating => crate::layout::Layout::Floating,
+            LayoutId::Fibonacci => crate::layout::Layout::Fibonacci,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Binding {
     /// Modifier mask, built from `mod` strings.

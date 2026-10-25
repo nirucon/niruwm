@@ -30,6 +30,9 @@ mod bindings;
 #[allow(dead_code)] // shared with niructl/niruwm; only the [idle] reader is used here
 #[path = "../config.rs"]
 mod config;
+#[allow(dead_code)]
+#[path = "../layout.rs"]
+mod layout;
 
 /// How often the idle time is checked. Five seconds is precise enough for a
 /// fifteen minute timer and costs nothing.

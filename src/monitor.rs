@@ -25,17 +25,39 @@ pub struct Monitor {
     /// Windows in the master column on this screen (dwm's `nmaster`).
     /// Per screen, so raising it on one monitor does not change the other.
     pub nmaster: usize,
+    /// The layout of every workspace on this screen, in `workspaces` order.
+    /// Each workspace keeps its own layout; the first one is used until a
+    /// workspace is given another.
+    pub layouts: Vec<crate::layout::Layout>,
 }
 
 impl Monitor {
     fn new(name: String, rect: Rect, count: usize) -> Self {
-        let workspaces = (1..=count).map(|n| n.to_string()).collect();
+        let workspaces: Vec<String> = (1..=count).map(|n| n.to_string()).collect();
         Self {
             name,
             rect,
-            workspaces,
+            workspaces: workspaces.clone(),
             active: 0,
             nmaster: 1,
+            layouts: vec![crate::layout::Layout::Tile; workspaces.len()],
+        }
+    }
+
+    /// The layout this screen's active workspace uses.
+    pub fn layout(&self) -> crate::layout::Layout {
+        self.layouts
+            .get(self.active)
+            .copied()
+            .unwrap_or(crate::layout::Layout::Tile)
+    }
+
+    /// Give the active workspace another layout, leaving the others alone.
+    pub fn set_layout(&mut self, layout: crate::layout::Layout) {
+        let count = self.workspaces.len().max(1);
+        self.layouts.resize(count, crate::layout::Layout::Tile);
+        if self.active < self.layouts.len() {
+            self.layouts[self.active] = layout;
         }
     }
 
@@ -73,6 +95,10 @@ pub struct MonitorConfig {
     pub named: HashMap<String, Vec<String>>,
     /// Output preferred for focus at login, if named in the config.
     pub primary: Option<String>,
+    /// Workspace layouts every screen starts with, in workspace order.
+    pub layouts: Vec<crate::layout::Layout>,
+    /// Per-screen workspace layouts, keyed by output name.
+    pub screen_layouts: HashMap<String, Vec<crate::layout::Layout>>,
 }
 
 impl Default for MonitorConfig {
@@ -83,6 +109,8 @@ impl Default for MonitorConfig {
             workspaces: 10,
             named: HashMap::new(),
             primary: None,
+            layouts: Vec::new(),
+            screen_layouts: HashMap::new(),
         }
     }
 }
@@ -110,15 +138,30 @@ pub fn build(mut outputs: Vec<(String, Rect, bool)>, cfg: &MonitorConfig) -> (Ve
     let count = cfg.workspaces.max(1);
     let monitors = outputs
         .into_iter()
-        .map(|(name, rect, _)| match cfg.workspaces_for(&name) {
-            Some(list) if !list.is_empty() => Monitor {
-                name,
-                rect,
-                workspaces: list.clone(),
-                active: 0,
-                nmaster: 1,
-            },
-            _ => Monitor::new(name, rect, count),
+        .map(|(name, rect, _)| {
+            // The screen's own workspace list, or the common count.
+            let mut monitor = match cfg.workspaces_for(&name) {
+                Some(list) if !list.is_empty() => {
+                    let mut monitor = Monitor::new(name.clone(), rect, list.len());
+                    monitor.workspaces = list.clone();
+                    monitor
+                }
+                _ => Monitor::new(name.clone(), rect, count),
+            };
+            // Start with the common layouts, then the screen's own.
+            for (i, layout) in cfg.layouts.iter().enumerate() {
+                if i < monitor.layouts.len() {
+                    monitor.layouts[i] = *layout;
+                }
+            }
+            if let Some(list) = cfg.screen_layouts.get(&name) {
+                for (i, layout) in list.iter().enumerate() {
+                    if i < monitor.layouts.len() {
+                        monitor.layouts[i] = *layout;
+                    }
+                }
+            }
+            monitor
         })
         .collect::<Vec<_>>();
     let many = monitors.len() > 1;

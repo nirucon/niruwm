@@ -46,6 +46,7 @@ wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale 
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 display list|save NAME|preview NAME|apply NAME|keep|revert|status|rotate OUTPUT normal|left|right|inverted|auto | \
+layout show|save | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
@@ -3826,6 +3827,54 @@ fn offline(cmd: &str) -> Result<()> {
         }
         return Ok(());
     }
+    if cmd == "layout" {
+        // `show` reports the stored layouts; there is nothing to ask a
+        // display-less client. `save` asks the running manager, which is the
+        // only process that knows each workspace's current layout. Any other
+        // word is a layout name and is handled below, like `niructl layout
+        // monocle`.
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        match rest.first().map(String::as_str) {
+            None | Some("show") => return layout_show(),
+            Some("save") => return layout_save(),
+            // Any other word is a layout name. It goes through the same
+            // command as Super+T and friends, so the two can never diverge.
+            Some(name) => {
+                let layout = bindings::LayoutId::from_name(name)
+                    .ok_or_else(|| format!("unknown layout {name}; see niructl layouts"))?;
+                let (c, root) = connect_for_change()?;
+                let atom = |n: &str| -> Result<Atom> {
+                    Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom)
+                };
+                send(&c, root, atom(CMD_ATOM)?, [3, layout.code(), 0, 0, 0])?;
+                // Report the layout the manager now shows, once it has applied
+                // it; the published property is the confirmation.
+                let deadline = std::time::Instant::now() + Duration::from_millis(500);
+                loop {
+                    let shown = c
+                        .get_property(
+                            false,
+                            root,
+                            atom("_NIRUWM_LAYOUT")?,
+                            atom("UTF8_STRING")?,
+                            0,
+                            64,
+                        )
+                        .ok()
+                        .and_then(|r| r.reply().ok())
+                        .map(|r| String::from_utf8_lossy(&r.value).to_string())
+                        .unwrap_or_default();
+                    if shown == name {
+                        return Ok(());
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!("the window manager did not switch to {name}").into());
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
     if cmd == "layouts" {
         // Print the layouts in the order Super+Ctrl+period cycles them, with
         // the key that selects each one directly.
@@ -3888,6 +3937,52 @@ fn offline(cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// The layouts stored in the shared configuration.
+fn layout_show() -> Result<()> {
+    let c = Config::load()?;
+    let dir = config::directory().join("config.toml");
+    println!("config: {}", dir.display());
+    println!(
+        "common: {}",
+        if c.monitors.layouts.is_empty() {
+            "(every workspace tiled)".to_string()
+        } else {
+            c.monitors.layouts.join(", ")
+        }
+    );
+    for p in &c.monitors.profiles {
+        if !p.layouts.is_empty() {
+            println!("{}: {}", p.name, p.layouts.join(", "));
+        }
+    }
+    println!();
+    println!("Each workspace keeps its own layout. Change the focused one with");
+    println!("Super+T/Y/M/C/U/F, then save with: niructl layout save");
+    Ok(())
+}
+
+/// Ask the running manager to write the layouts it is using.
+fn layout_save() -> Result<()> {
+    let (c, root) = connect_for_change()?;
+    let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
+    let serial = command_serial();
+    send(&c, root, atom(CMD_ATOM)?, [10, serial, 0, 0, 0])?;
+    c.flush()?;
+    // The manager acknowledges, so the command reports what happened instead
+    // of assuming it worked.
+    let deadline = std::time::Instant::now() + Duration::from_millis(500);
+    loop {
+        if property_u32(&c, root, atom("_NIRUWM_LAYOUT_SAVE_ACK")?) == Some(serial) {
+            println!("saved the current workspace layouts");
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("the running NIRUWM did not save the layouts".into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn run() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let Some(cmd) = args.first() else {
@@ -3900,6 +3995,7 @@ fn run() -> Result<()> {
         "themes"
             | "layouts"
             | "keys"
+            | "layout"
             | "brightness"
             | "nightlight"
             | "compositor"
@@ -4035,6 +4131,8 @@ fn run() -> Result<()> {
     let (action, value) = match cmd.as_str() {
         "tag" => (1, parse_tag(&args)?),
         "movetotag" => (2, parse_tag(&args)?),
+        // `niructl layout show|save` is handled before the display is opened;
+        // this is the one-word `niructl layout NAME` form that sets a layout.
         "layout" => (
             3,
             match args.get(1).map(String::as_str) {
@@ -4045,7 +4143,13 @@ fn run() -> Result<()> {
                 Some("centeredfloat") => 6,
                 Some("fibonacci") => 4,
                 Some("floating") => 5,
-                _ => return Err(USAGE.into()),
+                Some(other) => {
+                    return Err(format!(
+                        "layout {other}: use show, save, or one of tile, left, monocle, centered, centeredfloat, fibonacci, floating"
+                    )
+                    .into())
+                }
+                None => return Err("layout needs a name; see niructl layouts".into()),
             },
         ),
         "reload" => (4, 0),
