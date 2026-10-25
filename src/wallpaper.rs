@@ -109,16 +109,21 @@ impl Tool {
     }
 
     /// Arguments that paint one screen in a solid colour.
-    fn colour_args(self, geometry: &str, pixel: &str) -> Vec<String> {
+    fn colour_args(self, _geometry: &str, pixel: &str) -> Vec<String> {
+        // Each tool has its own way to paint one screen with one colour.
+        // `xsetroot` takes only a colour under `-solid` and rejects anything
+        // else, so it is asked for the colour alone.
         match self {
             Tool::Feh => vec!["--no-fehbg".into(), "--image-bg".into(), pixel.into()],
             Tool::Hsetroot => vec!["-solid".into(), pixel.into()],
-            Tool::Nitrogen | Tool::Xwallpaper | Tool::Xsetroot => vec![
-                "-solid".into(),
+            Tool::Nitrogen => vec![
+                "--set-color".into(),
                 pixel.into(),
-                "-geometry".into(),
-                geometry.into(),
+                "--head".into(),
+                "0".into(),
             ],
+            Tool::Xwallpaper => vec!["--solid".into(), pixel.into()],
+            Tool::Xsetroot => vec!["-solid".into(), pixel.into()],
         }
     }
 
@@ -688,6 +693,29 @@ fn expand_home(p: &str) -> PathBuf {
         return PathBuf::from(home).join(rest);
     }
     PathBuf::from(p)
+}
+
+/// Each tool must be given only arguments it accepts. `xsetroot -solid`
+/// rejects anything after the colour, which left a theme without a
+/// wallpaper unpainted and only a failing command in the session log.
+#[test]
+fn a_colour_is_painted_with_arguments_each_tool_accepts() {
+    assert_eq!(
+        Tool::Xsetroot.colour_args("1920x1080+0+0", "#141414"),
+        vec!["-solid", "#141414"]
+    );
+    assert_eq!(
+        Tool::Feh.colour_args("1920x1080+0+0", "#141414"),
+        vec!["--no-fehbg", "--image-bg", "#141414"]
+    );
+    for tool in TOOLS {
+        let args = tool.colour_args("1920x1080+0+0", "#141414");
+        assert!(
+            args.iter().any(|a| a == "#141414"),
+            "{} does not receive the colour: {args:?}",
+            tool.binary()
+        );
+    }
 }
 
 #[cfg(test)]
