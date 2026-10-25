@@ -128,12 +128,7 @@ impl Tool {
 }
 
 /// Tools in order of preference; the first that works wins.
-const TOOLS: &[Tool] = &[
-    Tool::Feh,
-    Tool::Hsetroot,
-    Tool::Nitrogen,
-    Tool::Xwallpaper,
-];
+const TOOLS: &[Tool] = &[Tool::Feh, Tool::Hsetroot, Tool::Nitrogen, Tool::Xwallpaper];
 
 pub struct Wallpaper {
     cfg: WallpaperConfig,
@@ -649,7 +644,11 @@ fn set_colour(colour: &str, output: &Output) -> Result<()> {
         eprintln!("niruwm: no tool can paint a solid background ({colour})");
         return Ok(());
     }
-    Err(format!("could not paint the {colour} background: {}", failures.join("; ")).into())
+    Err(format!(
+        "could not paint the {colour} background: {}",
+        failures.join("; ")
+    )
+    .into())
 }
 
 fn configured_pictures_dir() -> Option<PathBuf> {
@@ -770,7 +769,10 @@ mod tests {
             scale: String::new(),
         }];
         let w = Wallpaper::new(&cfg, "niru-nord");
-        assert!(w.theme_enabled("HDMI-1"), "theme override follows the theme");
+        assert!(
+            w.theme_enabled("HDMI-1"),
+            "theme override follows the theme"
+        );
         assert!(!w.theme_enabled("eDP-1"), "the common single image wins");
         fs::remove_dir_all(&dir).ok();
     }
@@ -822,7 +824,10 @@ mod tests {
         for tool in TOOLS {
             for scale in ["fill", "fit", "stretch", "center"] {
                 let args = tool.image_args(scale, &out.geometry(), path);
-                assert!(args.iter().any(|a| a == "1080x1920+1920+-40"), "{tool:?} {scale}");
+                assert!(
+                    args.iter().any(|a| a == "1080x1920+1920+-40"),
+                    "{tool:?} {scale}"
+                );
                 assert!(args.iter().any(|a| a == "/w/a b.png"));
             }
         }

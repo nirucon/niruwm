@@ -2184,7 +2184,9 @@ fn wallpaper_apply(args: &[String]) -> Result<()> {
         move |document| {
             let mut change = OutputChange::default();
             for (key, value) in &settings_clone {
-                change.actions.extend(apply_common_setting(document, key, value));
+                change
+                    .actions
+                    .extend(apply_common_setting(document, key, value));
             }
             if let Some((name, key, value)) = &output_clone {
                 let entry = set_output_entry(document, name, key, value.as_deref());
@@ -2278,7 +2280,9 @@ fn wallpaper_status_json() -> Result<()> {
             })
             .collect(),
     );
-    value["rendered"] = wallpaper_rendered().map(serde_json::Value::Array).unwrap_or(serde_json::Value::Null);
+    value["rendered"] = wallpaper_rendered()
+        .map(serde_json::Value::Array)
+        .unwrap_or(serde_json::Value::Null);
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
@@ -2299,18 +2303,15 @@ fn apply_common_setting(
         document["wallpaper"] = toml_edit::Item::Table(table);
     }
     match key {
-        "image" => {
-            match wallpaper_expand(value).canonicalize() {
-                Ok(path) if path.is_file() && wallpaper_is_image(&path) => {
-                    document["wallpaper"]["enabled"] = toml_edit::value(true);
-                    document["wallpaper"]["mode"] = toml_edit::value("single");
-                    document["wallpaper"]["file"] =
-                        toml_edit::value(path.display().to_string());
-                    vec![format!("common picture {}", path.display())]
-                }
-                _ => vec!["the chosen image is no longer readable; nothing was changed".into()],
+        "image" => match wallpaper_expand(value).canonicalize() {
+            Ok(path) if path.is_file() && wallpaper_is_image(&path) => {
+                document["wallpaper"]["enabled"] = toml_edit::value(true);
+                document["wallpaper"]["mode"] = toml_edit::value("single");
+                document["wallpaper"]["file"] = toml_edit::value(path.display().to_string());
+                vec![format!("common picture {}", path.display())]
             }
-        }
+            _ => vec!["the chosen image is no longer readable; nothing was changed".into()],
+        },
         "scale" => {
             document["wallpaper"]["enabled"] = toml_edit::value(true);
             document["wallpaper"]["scale"] = toml_edit::value(value);
@@ -2322,7 +2323,10 @@ fn apply_common_setting(
                 toml_edit::value(value.parse::<i64>().unwrap_or(0));
             // Leaving single mode is what makes an interval take effect.
             if document["wallpaper"]["mode"].as_str() == Some("single")
-                && !document["wallpaper"]["file"].as_str().unwrap_or("").is_empty()
+                && !document["wallpaper"]["file"]
+                    .as_str()
+                    .unwrap_or("")
+                    .is_empty()
             {
                 document["wallpaper"]["mode"] = toml_edit::value("fixed");
             }
@@ -2600,7 +2604,9 @@ where
         .to_string()
         .parse::<toml::Value>()?
         .try_into()
-        .map_err(|e: toml::de::Error| format!("refusing to write an invalid wallpaper setting: {e}"))?;
+        .map_err(|e: toml::de::Error| {
+            format!("refusing to write an invalid wallpaper setting: {e}")
+        })?;
     if let Err(e) = candidate.validate() {
         return Err(format!("refusing to write an invalid wallpaper setting: {e}").into());
     }
@@ -2780,7 +2786,8 @@ fn randr_outputs(
                 let Some((size, pos)) = rest.split_once('+') else {
                     continue;
                 };
-                let (Some((w, h)), Some((x, y))) = (size.split_once('x'), pos.split_once('+')) else {
+                let (Some((w, h)), Some((x, y))) = (size.split_once('x'), pos.split_once('+'))
+                else {
                     continue;
                 };
                 let (Ok(w), Ok(h), Ok(x), Ok(y)) = (

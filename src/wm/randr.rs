@@ -132,9 +132,12 @@ fn emulated_outputs() -> Option<Vec<WallpaperOutput>> {
         let Some((x, y)) = rest.split_once('+') else {
             continue;
         };
-        let (Ok(w), Ok(h), Ok(x), Ok(y)) =
-            (w.parse::<u32>(), h.parse::<u32>(), x.parse::<i32>(), y.parse::<i32>())
-        else {
+        let (Ok(w), Ok(h), Ok(x), Ok(y)) = (
+            w.parse::<u32>(),
+            h.parse::<u32>(),
+            x.parse::<i32>(),
+            y.parse::<i32>(),
+        ) else {
             continue;
         };
         out.push(WallpaperOutput {

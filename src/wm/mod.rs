@@ -474,7 +474,8 @@ impl Wm {
         self.multi_monitor = multi;
         // Re-set every screen for its new size and position. Saved per-screen
         // pictures are kept; nothing is reset because a cable moved.
-        self.wallpaper.set_outputs(randr::outputs(&self.c, self.root));
+        self.wallpaper
+            .set_outputs(randr::outputs(&self.c, self.root));
         if let Err(e) = self.wallpaper.apply_all() {
             eprintln!("niruwm: wallpaper: {e}");
         }
