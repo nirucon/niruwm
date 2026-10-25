@@ -241,6 +241,32 @@ unless someone edited it meanwhile. The setter is `feh` (without writing
 `~/.fehbg`), then `hsetroot`, `nitrogen` or `xwallpaper`; a screen whose theme
 has no picture is painted with the theme's background colour.
 
+#### Turning a screen and saving a layout
+
+A screen mounted upside down or standing on its side is turned on its own:
+
+```sh
+niructl display rotate DisplayPort-5 inverted   # normal, left, right, inverted
+```
+
+Once the screens look right, the arrangement is saved as a profile. A profile
+stores every active screen with its mode, position, rotation and which one is
+primary, so a laptop-and-desk setup can be switched in one command:
+
+```sh
+niructl display save Desk                     # the layout as it is now
+niructl display list                          # saved profiles
+niructl display preview Desk 15               # try it; keeps or reverts after 15s
+niructl display keep                          # confirm during a preview
+niructl display apply Desk                    # switch without a countdown
+niructl display auto                          # side by side, preferred modes
+```
+
+A failed switch puts the previous layout back. Profiles live in
+`~/.config/niruwm/displays.toml`; `displays.example.toml` in the source tree
+shows the file format, and the launcher lists the same profiles under
+Displays.
+
 `niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
 display profiles, power profiles, DND, diagnostics, work modes and workspace
 recipes:

@@ -45,7 +45,7 @@ compositor on|off|toggle|status | \
 wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
-display list|save NAME|preview NAME|apply NAME|keep|revert|status | \
+display list|save NAME|preview NAME|apply NAME|keep|revert|status|rotate OUTPUT normal|left|right|inverted|auto | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
@@ -1346,6 +1346,62 @@ struct DisplayOutput {
 fn display_preferred_mode() -> String {
     "preferred".into()
 }
+const DISPLAY_ROTATE_USAGE: &str =
+    "display rotate needs an output and normal|left|right|inverted: niructl display rotate HDMI-1 left";
+
+/// The width a screen takes on the desktop at the given mode, before rotation.
+fn display_mode_width(mode: &str, state: &DisplayOutputState) -> Option<i32> {
+    if let Some((width, rest)) = mode.split_once('x') {
+        if let Ok(width) = width.parse::<i32>() {
+            let tall = rest
+                .split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|h| h.parse::<i32>().ok())
+                .unwrap_or(0);
+            if width > 0 && tall > 0 {
+                return Some(width);
+            }
+        }
+    }
+    // "preferred" is not a number: the pixel size follows the mode name in
+    // xrandr's output, for example `DP-1 connected primary 2560x1440+0+0 ... 597mm x 336mm`.
+    let line = state.line.as_deref()?;
+    let geometry = line.split_whitespace().find(|word| {
+        word.split_once('x')
+            .is_some_and(|(w, _)| w.parse::<i32>().is_ok())
+    })?;
+    geometry.split('x').next()?.parse::<i32>().ok()
+}
+
+fn display_rotate(name: &str, rotation: &str) -> Result<()> {
+    if !matches!(rotation, "normal" | "left" | "right" | "inverted") {
+        return Err(DISPLAY_ROTATE_USAGE.into());
+    }
+    let outputs = display_outputs()?;
+    let Some(state) = outputs.iter().find(|state| state.name == name) else {
+        return Err(format!("no display output named {name}").into());
+    };
+    if state.current.is_none() {
+        return Err(format!("{name} is not connected; connect it and try again").into());
+    }
+    let previous = display_current_layout(&outputs);
+    let mut layout = previous.clone();
+    let Some(output) = layout.iter_mut().find(|output| output.name == name) else {
+        return Err(format!("{name} is not active").into());
+    };
+    output.rotation = rotation.to_string();
+    let profile = DisplayProfile {
+        name: format!("rotate {name}"),
+        outputs: layout,
+    };
+    if let Err(error) = display_apply(&outputs, &profile) {
+        let _ = display_restore(&previous);
+        return Err(error);
+    }
+    display_notify("Display rotated", &format!("{name}: {rotation}"));
+    println!("rotated {name} to {rotation}");
+    Ok(())
+}
 fn display_zero_position() -> String {
     "0x0".into()
 }
@@ -1372,6 +1428,8 @@ struct DisplayOutputState {
     connected: bool,
     modes: Vec<String>,
     current: Option<DisplayOutput>,
+    /// The unparsed xrandr line, for the physical size after the mode name.
+    line: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1456,6 +1514,7 @@ fn display_outputs() -> Result<Vec<DisplayOutputState>> {
             connected,
             modes: Vec::new(),
             current,
+            line: Some(line.to_string()),
         });
     }
     Ok(outputs)
@@ -1731,6 +1790,59 @@ fn display(args: &[String]) -> Result<()> {
             display_restore(&state.previous)?;
             let _ = std::fs::remove_file(display_preview_path());
             display_notify("Display preview expired", "Previous layout restored");
+        }
+        "rotate" => {
+            // One screen turned without building a profile: the common case
+            // for a display mounted upside down or standing on its side.
+            let Some(name) = args.get(1) else {
+                return Err(DISPLAY_ROTATE_USAGE.into());
+            };
+            let Some(rotation) = args.get(2) else {
+                return Err(DISPLAY_ROTATE_USAGE.into());
+            };
+            display_rotate(name, rotation)?;
+        }
+        "auto" => {
+            // Lay the connected screens out side by side in xrandr's own
+            // order, each at its preferred mode and upright. This is the
+            // starting point a profile is usually saved from.
+            let outputs = display_outputs()?;
+            let mut position = 0i32;
+            let mut layout = Vec::new();
+            for state in outputs.iter().filter(|state| state.connected) {
+                let Some(current) = state.current.as_ref() else {
+                    continue;
+                };
+                let mut output = current.clone();
+                output.mode = "preferred".into();
+                output.rotation = "normal".into();
+                output.position = format!("{position}x0");
+                position += display_mode_width(&output.mode, state).unwrap_or(0);
+                layout.push(output);
+            }
+            if layout.is_empty() {
+                return Err("no connected display output to arrange".into());
+            }
+            let profile = DisplayProfile {
+                name: "auto".into(),
+                outputs: layout,
+            };
+            let previous = display_current_layout(&outputs);
+            if let Err(error) = display_apply(&outputs, &profile) {
+                if !previous.is_empty() {
+                    let _ = display_restore(&previous);
+                }
+                return Err(error);
+            }
+            let mut summary = String::new();
+            for output in &profile.outputs {
+                if !summary.is_empty() {
+                    summary.push_str(", ");
+                }
+                summary.push_str(&format!("{} {}", output.name, output.position));
+            }
+            display_notify("Displays arranged", &summary);
+            println!("displays arranged side by side: {summary}");
         }
         "status" => match display_preview_read() {
             Some(state) if state.expiry > now_secs() => {
