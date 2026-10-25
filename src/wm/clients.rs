@@ -418,24 +418,21 @@ impl Wm {
             if attrs.map_state != MapState::VIEWABLE {
                 continue;
             }
-            let strut = match self
-                .c
-                .get_property(
-                    false,
-                    w,
-                    self.atom("_NET_WM_STRUT_PARTIAL"),
-                    AtomEnum::CARDINAL,
-                    0,
-                    12,
-                )
-                .ok()
-                .and_then(|c| c.reply().ok())
-                .and_then(|r| r.value32().map(|v| v.collect::<Vec<_>>()))
-            {
-                Some(v) if v.len() >= 12 => v,
-                _ => continue,
+            // Both forms are read: the partial one, when a bar publishes it,
+            // and the plain one, which only says how much to reserve.
+            let read = |atom: Atom, len: usize| -> Option<Vec<u32>> {
+                self.c
+                    .get_property(false, w, atom, AtomEnum::CARDINAL, 0, len as u32)
+                    .ok()
+                    .and_then(|c| c.reply().ok())
+                    .and_then(|r| r.value32().map(|v| v.collect::<Vec<_>>()))
+                    .filter(|v| v.len() >= len)
             };
-            top = top.max(strut[2].min(u32::from(self.screen_h)) as u16);
+            if let Some(strut) = read(self.atom("_NET_WM_STRUT_PARTIAL"), 12) {
+                top = top.max(strut[2].min(u32::from(self.screen_h)) as u16);
+            } else if let Some(strut) = read(self.atom("_NET_WM_STRUT"), 4) {
+                top = top.max(strut[2].min(u32::from(self.screen_h)) as u16);
+            }
         }
         // Without a strut, reserve the configured bar height so windows never
         // hide behind the bar during the short window before it maps.
@@ -561,18 +558,16 @@ impl Wm {
     fn monitor_area(&self, index: usize, work: Rect) -> Rect {
         match self.monitors.get(index) {
             Some(m) => {
-                // The bar spans the whole screen width, so its strut only
-                // affects whichever monitor covers the top edge.
-                if m.rect.y == 0 {
-                    let top = work.y.saturating_sub(m.rect.y).max(0) as u16;
-                    Rect {
-                        x: m.rect.x,
-                        y: m.rect.y + top as i16,
-                        w: m.rect.w,
-                        h: m.rect.h.saturating_sub(top),
-                    }
-                } else {
-                    m.rect
+                // Each screen starts below whatever its own bar reserves. The
+                // amount comes from the work area, which is the top-most
+                // reservation on the screen, measured from the screen's top.
+                let top = (m.rect.y - work.y).max(0) as u16;
+                let top = top.min(m.rect.h.saturating_sub(1));
+                Rect {
+                    x: m.rect.x,
+                    y: m.rect.y + top as i16,
+                    w: m.rect.w,
+                    h: m.rect.h - top,
                 }
             }
             None => work,
