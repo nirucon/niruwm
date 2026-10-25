@@ -241,6 +241,7 @@ impl Wm {
             "_NIRUWM_QUIT",
             "_NIRUWM_LOCK",
             "_NIRUWM_MONITORS",
+            "_NIRUWM_WALLPAPER_STATE",
         ] {
             atoms.insert(n, c.intern_atom(false, n.as_bytes())?.reply()?.atom);
         }
@@ -276,6 +277,7 @@ impl Wm {
             restore_deadline: None,
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
+        wm.wallpaper.set_outputs(randr::outputs(&wm.c, root));
         wm.focused_monitor = crate::monitor::primary(&monitors, &wm.monitor_cfg);
         wm.monitors = monitors;
         wm.multi_monitor = multi;
@@ -300,15 +302,10 @@ impl Wm {
         wm.start_bar();
         // Set the wallpaper once the WM owns the display; a failure here must
         // not stop the session, so it is reported and ignored.
-        match wm.wallpaper.apply_theme() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                if let Err(e) = wm.wallpaper.apply() {
-                    eprintln!("niruwm: wallpaper: {e}");
-                }
-            }
-            Err(e) => eprintln!("niruwm: wallpaper: {e}"),
+        if let Err(e) = wm.wallpaper.apply() {
+            eprintln!("niruwm: wallpaper: {e}");
         }
+        wm.publish_wallpaper()?;
         // Bring back what was open last time, when the user asked for it. A
         // failure here costs comfort, never the session.
         if wm.cfg.restore_session {
@@ -475,6 +472,13 @@ impl Wm {
         }
         self.monitors = monitors;
         self.multi_monitor = multi;
+        // Re-set every screen for its new size and position. Saved per-screen
+        // pictures are kept; nothing is reset because a cable moved.
+        self.wallpaper.set_outputs(randr::outputs(&self.c, self.root));
+        if let Err(e) = self.wallpaper.apply_all() {
+            eprintln!("niruwm: wallpaper: {e}");
+        }
+        self.publish_wallpaper()?;
         self.restart_bars_if_owning();
         // Focus followed the pointer at login; after a hotplug a window is
         // more useful than an empty screen.
@@ -492,6 +496,44 @@ impl Wm {
             self.set_focus(w)?;
         }
         self.arrange()
+    }
+
+    /// Publish what actually reached every screen.
+    ///
+    /// The configuration says what should be shown; this property is the
+    /// only claim about what the running session rendered. JSON keeps it
+    /// readable from niructl and from the settings window without inventing a
+    /// second protocol.
+    pub(crate) fn publish_wallpaper(&self) -> Result<()> {
+        let states: Vec<serde_json::Value> = self
+            .wallpaper
+            .rendered()
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "output": s.output,
+                    "mode": s.kind,
+                    "image": s.path,
+                    "scale": s.scale,
+                    "source": s.source,
+                    "note": s.note,
+                })
+            })
+            .collect();
+        let text = serde_json::json!({
+            "rendered": true,
+            "outputs": states,
+        })
+        .to_string();
+        let atom = self.atom("_NIRUWM_WALLPAPER_STATE");
+        self.c.change_property8(
+            x11rb::protocol::xproto::PropMode::REPLACE,
+            self.root,
+            atom,
+            x11rb::protocol::xproto::AtomEnum::STRING,
+            text.as_bytes(),
+        )?;
+        Ok(())
     }
 
     /// The WM alone owns bars in session and standalone launches.
@@ -583,15 +625,14 @@ impl Wm {
         self.publish_theme()?;
         self.monitor_cfg = monitor_config(&self.cfg);
         self.wallpaper = Wallpaper::new(&self.cfg.wallpaper, &self.cfg.theme);
-        match self.wallpaper.apply_theme() {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                if let Err(e) = self.wallpaper.apply() {
-                    eprintln!("niruwm: wallpaper reload: {e}");
-                }
-            }
-            Err(e) => eprintln!("niruwm: wallpaper reload: {e}"),
+        self.wallpaper
+            .set_outputs(randr::outputs(&self.c, self.root));
+        // `apply` keeps the theme picture where theme following is on and
+        // picks a fresh picture only where the configured mode says so.
+        if let Err(e) = self.wallpaper.apply() {
+            eprintln!("niruwm: wallpaper reload: {e}");
         }
+        self.publish_wallpaper()?;
         if old_theme != self.cfg.theme {
             let terminal_theme = self.cfg.theme.clone();
             self.run_terminal_theme_hook(&terminal_theme);

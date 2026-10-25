@@ -332,6 +332,9 @@ pub struct WallpaperConfig {
     /// Directory holding NIRUX-installed theme wallpapers. A custom theme
     /// `foo` may provide `nirux-wallpaper-foo-4k.png` or `-8k.png`.
     pub theme_dir: String,
+    /// Pictures for one named screen. A screen without an entry inherits the
+    /// common settings above. Entries survive a screen being unplugged.
+    pub outputs: Vec<OutputWallpaper>,
 }
 
 impl Default for WallpaperConfig {
@@ -347,7 +350,45 @@ impl Default for WallpaperConfig {
             shuffle_on_start: true,
             follow_theme: true,
             theme_dir: "~/Pictures/Wallpapers/NIRU".into(),
+            outputs: Vec::new(),
         }
+    }
+}
+
+/// One screen's own picture, overriding the common wallpaper settings.
+///
+/// The screen is named by its RandR output (`eDP-1`, `DP-2`), never by its
+/// position in a list, so a cable moved to another port is a different screen
+/// and keeps the old entry for when it returns to the original port.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OutputWallpaper {
+    /// RandR output name, matched exactly.
+    pub output: String,
+    /// `inherit` (the default), `theme` (always this theme's own picture),
+    /// or `single` (this file, and only this file).
+    pub mode: String,
+    /// Image used by `mode = "single"`; empty means "pick from `dir`".
+    pub file: String,
+    /// `fill`, `fit`, `stretch` or `center`; empty inherits the common scale.
+    pub scale: String,
+}
+
+impl Default for OutputWallpaper {
+    fn default() -> Self {
+        Self {
+            output: String::new(),
+            mode: "inherit".into(),
+            file: String::new(),
+            scale: String::new(),
+        }
+    }
+}
+
+impl OutputWallpaper {
+    /// True when this entry changes nothing and may be removed.
+    pub fn is_inherit(&self) -> bool {
+        self.mode != "theme" && self.file.trim().is_empty()
     }
 }
 
@@ -681,7 +722,8 @@ impl Config {
         table
     }
 
-    fn validate(&self) -> Result<()> {
+    #[allow(dead_code)] // niructl validates a candidate before writing it
+    pub fn validate(&self) -> Result<()> {
         use std::fmt::Write as _;
 
         self.idle
@@ -712,6 +754,36 @@ impl Config {
         }
         if !["random", "fixed", "single"].contains(&self.wallpaper.mode.as_str()) {
             return Err("wallpaper.mode must be random, fixed or single".into());
+        }
+        let mut outputs = std::collections::HashSet::new();
+        for o in &self.wallpaper.outputs {
+            if o.output.trim().is_empty()
+                || !o
+                    .output
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                return Err("wallpaper.outputs entries need a RandR output name".into());
+            }
+            if !outputs.insert(o.output.as_str()) {
+                return Err(format!("wallpaper.outputs names {} twice", o.output).into());
+            }
+            if !["inherit", "theme", "single"].contains(&o.mode.as_str()) {
+                return Err(format!(
+                    "wallpaper.outputs {} mode must be inherit, theme or single",
+                    o.output
+                )
+                .into());
+            }
+            if !o.scale.is_empty()
+                && !["fill", "fit", "stretch", "center"].contains(&o.scale.as_str())
+            {
+                return Err(format!(
+                    "wallpaper.outputs {} scale must be empty, fill, fit, stretch or center",
+                    o.output
+                )
+                .into());
+            }
         }
         if self.monitors.workspaces == 0 || self.monitors.workspaces > 32 {
             return Err("monitors.workspaces must be between 1 and 32".into());
@@ -1125,6 +1197,12 @@ pub fn dump() -> Result<String> {
         "rotation_minutes = {}\n",
         c.wallpaper.rotation_minutes
     ));
+    for o in &c.wallpaper.outputs {
+        out.push_str(&format!(
+            "# output {}: mode={} file={:?} scale={:?}\n",
+            o.output, o.mode, o.file, o.scale
+        ));
+    }
     out.push_str("\n[autostart]\n");
     out.push_str(&format!("enabled = {}\n", c.autostart.enabled));
     out.push_str(&format!(

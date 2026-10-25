@@ -106,7 +106,7 @@ weather_longitude = 11.93
 
 # ── Wallpaper ───────────────────────────────────────────────────────────────
 # NIRUWM sets and rotates the wallpaper only when enabled = true. NIRUX
-# installs the four theme wallpaper sets under ~/Pictures/Wallpapers/NIRU.
+# installs the theme wallpapers under ~/Pictures/Wallpapers/NIRU.
 # Set this false when another program owns the background.
 [wallpaper]
 enabled = true
@@ -133,6 +133,21 @@ follow_theme = true
 # NIRUX installs nirux-wallpaper-<theme>-4k.png and -8k.png here. A custom
 # theme `foo` can provide nirux-wallpaper-foo-4k.png.
 theme_dir = "~/Pictures/Wallpapers/NIRU"
+
+# Pictures for one named screen. A screen without an entry uses the settings
+# above at its own size and position; every screen is set separately, so one
+# picture is never stretched across the desktop. Entries are kept while the
+# screen is unplugged and reused when it returns to the same port.
+#   output = RandR name (xrandr --listmonitors)
+#   mode   = "single" (this file) or "theme" (follow the theme here)
+#   file   = picture for mode "single"
+#   scale  = empty inherits `scale` above
+# [[wallpaper.outputs]]
+# output = "DP-1"
+# mode = "single"
+# file = "~/Pictures/Wallpapers/mine/tower.png"
+# scale = "fit"
+outputs = []
 
 # ── Autostart ──────────────────────────────────────────────────────────────
 # Optional programs opened once at login. They are grouped by workspace and

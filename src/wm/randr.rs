@@ -7,6 +7,7 @@
 use crate::{
     layout::Rect,
     monitor::{self, Monitor, MonitorConfig},
+    wallpaper::Output as WallpaperOutput,
 };
 use x11rb::{protocol::randr::ConnectionExt as _, rust_connection::RustConnection};
 
@@ -84,6 +85,65 @@ fn read_randr(
             },
             true,
         ));
+    }
+    Some(out)
+}
+
+/// The connected outputs with their real geometry, in the server's order.
+///
+/// The wallpaper needs the output names and where each one sits; the monitor
+/// list sorts them for tiling, which is not the same thing.
+pub fn outputs(c: &RustConnection, root: x11rb::protocol::xproto::Window) -> Vec<WallpaperOutput> {
+    if let Some(emulated) = emulated_outputs() {
+        return emulated;
+    }
+    let Some(list) = read_randr(c, root) else {
+        return Vec::new();
+    };
+    list.into_iter()
+        .map(|(name, rect, _)| WallpaperOutput {
+            name,
+            x: i32::from(rect.x),
+            y: i32::from(rect.y),
+            width: u32::from(rect.w),
+            height: u32::from(rect.h),
+        })
+        .collect()
+}
+
+/// Screens from a layout file, for the automated acceptance run.
+///
+/// Read only when `NIRU_RANDR_EMU` names an existing file, so an ordinary
+/// session never consults it. The format is one `NAME WxH+X+Y` per line.
+fn emulated_outputs() -> Option<Vec<WallpaperOutput>> {
+    let path = std::env::var_os("NIRU_RANDR_EMU")?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some((name, geometry)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        let Some((size, rest)) = geometry.split_once('+') else {
+            continue;
+        };
+        let Some((w, h)) = size.split_once('x') else {
+            continue;
+        };
+        let Some((x, y)) = rest.split_once('+') else {
+            continue;
+        };
+        let (Ok(w), Ok(h), Ok(x), Ok(y)) =
+            (w.parse::<u32>(), h.parse::<u32>(), x.parse::<i32>(), y.parse::<i32>())
+        else {
+            continue;
+        };
+        out.push(WallpaperOutput {
+            name: name.to_string(),
+            x,
+            y,
+            width: w,
+            height: h,
+        });
     }
     Some(out)
 }

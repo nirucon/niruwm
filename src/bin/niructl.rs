@@ -42,7 +42,8 @@ const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME |
 theme NAME | themes | keys | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
-wallpaper list|status|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
+wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
+         output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 display list|save NAME|preview NAME|apply NAME|keep|revert|status | \
 powerprofile status|list|set NAME|next | \
@@ -2073,7 +2074,273 @@ fn wallpaper_status() -> Result<()> {
         "enabled"
     };
     println!("theme_following={following}");
+    // The plan per screen: what the configuration says each screen shows. It
+    // is not proof that a running window manager rendered it.
+    let mut planned = wallpaper::Wallpaper::new(wallpaper, &cfg.theme);
+    if let Ok((c, s)) = x11rb::connect(None) {
+        let root = c.setup().roots[s].root;
+        if let Ok(outputs) = randr_outputs(&c, root) {
+            planned.set_outputs(outputs);
+        }
+    }
+    for plan in planned.plan() {
+        println!(
+            "output={}\tsource={}\tmode={}\tscale={}\timage={}",
+            plan.output, plan.source, plan.kind, plan.scale, plan.path
+        );
+    }
     Ok(())
+}
+
+/// The rendered state the running window manager published, if it can.
+fn wallpaper_rendered() -> Option<Vec<serde_json::Value>> {
+    let (c, s) = x11rb::connect(None).ok()?;
+    let root = c.setup().roots[s].root;
+    let atom = c
+        .intern_atom(false, b"_NIRUWM_WALLPAPER_STATE")
+        .ok()?
+        .reply()
+        .ok()?
+        .atom;
+    let reply = c
+        .get_property(false, root, atom, AtomEnum::ANY, 0, 1 << 16)
+        .ok()?
+        .reply()
+        .ok()?;
+    let text = String::from_utf8_lossy(&reply.value).to_string();
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    // A session without wallpaper ownership publishes an empty list.
+    value.get("outputs")?.as_array().cloned()
+}
+
+/// Apply one request as a single transaction, then report what the running
+/// window manager rendered. Prints JSON, for the GUI and for scripts.
+fn wallpaper_apply(args: &[String]) -> Result<()> {
+    let mut settings: Vec<(String, String)> = Vec::new();
+    let mut output: Option<(String, String, Option<String>)> = None;
+    let mut index = 0;
+    while index < args.len() {
+        let flag = args[index].as_str();
+        let value = args.get(index + 1).cloned();
+        match flag {
+            "--json" => {
+                index += 1;
+                continue;
+            }
+            "--image" | "--scale" | "--rotation" | "--follow-theme" => {
+                let key = flag.trim_start_matches("--").replace('-', "_");
+                let value = value.ok_or(format!("{flag} needs a value"))?;
+                settings.push((key, value));
+                index += 2;
+            }
+            "--output" | "--output-image" | "--output-scale" | "--output-inherit" => {
+                let output_name = value.ok_or(format!("{flag} needs an output name"))?;
+                match flag {
+                    "--output-inherit" => {
+                        output = Some((output_name, "inherit".into(), None));
+                        index += 2;
+                    }
+                    _ => {
+                        let setting = args
+                            .get(index + 2)
+                            .cloned()
+                            .ok_or(format!("{flag} needs a value after the output name"))?;
+                        let key = match flag {
+                            "--output" => "image",
+                            _ => "scale",
+                        };
+                        output = Some((output_name, key.into(), Some(setting)));
+                        index += 3;
+                    }
+                }
+            }
+            other => return Err(format!("unknown wallpaper apply option: {other}").into()),
+        }
+    }
+    if settings.is_empty() && output.is_none() {
+        return Err("wallpaper apply needs at least one setting".into());
+    }
+    for (key, value) in &settings {
+        match key.as_str() {
+            "scale" if !["fill", "fit", "stretch", "center"].contains(&value.as_str()) => {
+                return Err("wallpaper scale must be fill, fit, stretch or center".into())
+            }
+            "rotation" if value.parse::<u32>().is_err() => {
+                return Err("rotation must be minutes".into())
+            }
+            "rotation" if value.parse::<u32>().unwrap_or(0) > 100_000 => {
+                return Err("rotation is too large".into())
+            }
+            "follow_theme" if !["on", "off"].contains(&value.as_str()) => {
+                return Err("follow-theme must be on or off".into())
+            }
+            _ => {}
+        }
+    }
+    let output_clone = output.clone();
+    let settings_clone = settings.clone();
+    let count = settings.len() + usize::from(output.is_some());
+    wallpaper_transaction(
+        move |document| {
+            let mut change = OutputChange::default();
+            for (key, value) in &settings_clone {
+                change.actions.extend(apply_common_setting(document, key, value));
+            }
+            if let Some((name, key, value)) = &output_clone {
+                let entry = set_output_entry(document, name, key, value.as_deref());
+                change.actions.extend(entry.actions);
+                if let Some(e) = entry.error {
+                    change.fail(e);
+                }
+            }
+            change
+        },
+        false,
+    )
+    .map_err(|e| e.to_string())?;
+    // Re-read the state now that the change is acknowledged.
+    let status_cfg = Config::load()?;
+    let mut planned = wallpaper::Wallpaper::new(&status_cfg.wallpaper, &status_cfg.theme);
+    if let Ok((c, s)) = x11rb::connect(None) {
+        let root = c.setup().roots[s].root;
+        if let Ok(outputs) = randr_outputs(&c, root) {
+            planned.set_outputs(outputs);
+        }
+    }
+    let plan = planned.plan();
+    let rendered = wallpaper_rendered();
+    println!(
+        "{}",
+        serde_json::json!({
+            "applied": true,
+            "settings": count,
+            "status": wallpaper_json(&status_cfg, &planned),
+            "planned": plan.iter().map(|p| serde_json::json!({
+                "output": p.output,
+                "source": p.source,
+                "mode": p.kind,
+                "scale": p.scale,
+                "image": p.path,
+            })).collect::<Vec<_>>(),
+            "rendered": rendered,
+        })
+    );
+    Ok(())
+}
+
+/// The state as JSON, so the GUI reads one structured document instead of
+/// parsing the human-oriented status lines.
+fn wallpaper_json(cfg: &Config, planned: &wallpaper::Wallpaper) -> serde_json::Value {
+    let w = &cfg.wallpaper;
+    let theme_image = planned.theme_image();
+    serde_json::json!({
+        "theme": cfg.theme,
+        "enabled": w.enabled,
+        "mode": w.mode,
+        "rotation_minutes": w.rotation_minutes,
+        "scale": w.scale,
+        "follow_theme": w.follow_theme,
+        "file": w.file,
+        "dir": w.dir,
+        "theme_dir": w.theme_dir,
+        "theme_image": theme_image.map(|p| p.display().to_string()).unwrap_or_default(),
+        "outputs": w.outputs.iter().map(|o| serde_json::json!({
+            "output": o.output,
+            "mode": o.mode,
+            "file": o.file,
+            "scale": o.scale,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn wallpaper_status_json() -> Result<()> {
+    let cfg = Config::load()?;
+    let mut planned = wallpaper::Wallpaper::new(&cfg.wallpaper, &cfg.theme);
+    if let Ok((c, s)) = x11rb::connect(None) {
+        let root = c.setup().roots[s].root;
+        if let Ok(outputs) = randr_outputs(&c, root) {
+            planned.set_outputs(outputs);
+        }
+    }
+    let mut value = wallpaper_json(&cfg, &planned);
+    value["planned"] = serde_json::Value::Array(
+        planned
+            .plan()
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "output": p.output,
+                    "source": p.source,
+                    "mode": p.kind,
+                    "scale": p.scale,
+                    "image": p.path,
+                })
+            })
+            .collect(),
+    );
+    value["rendered"] = wallpaper_rendered().map(serde_json::Value::Array).unwrap_or(serde_json::Value::Null);
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+/// The value changes one `wallpaper apply` request makes, as printed lines.
+fn apply_common_setting(
+    document: &mut toml_edit::DocumentMut,
+    key: &str,
+    value: &str,
+) -> Vec<String> {
+    if !document
+        .get("wallpaper")
+        .map(|w| w.is_table())
+        .unwrap_or(false)
+    {
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(false);
+        document["wallpaper"] = toml_edit::Item::Table(table);
+    }
+    match key {
+        "image" => {
+            match wallpaper_expand(value).canonicalize() {
+                Ok(path) if path.is_file() && wallpaper_is_image(&path) => {
+                    document["wallpaper"]["enabled"] = toml_edit::value(true);
+                    document["wallpaper"]["mode"] = toml_edit::value("single");
+                    document["wallpaper"]["file"] =
+                        toml_edit::value(path.display().to_string());
+                    vec![format!("common picture {}", path.display())]
+                }
+                _ => vec!["the chosen image is no longer readable; nothing was changed".into()],
+            }
+        }
+        "scale" => {
+            document["wallpaper"]["enabled"] = toml_edit::value(true);
+            document["wallpaper"]["scale"] = toml_edit::value(value);
+            vec![format!("common scale {value}")]
+        }
+        "rotation" => {
+            document["wallpaper"]["enabled"] = toml_edit::value(true);
+            document["wallpaper"]["rotation_minutes"] =
+                toml_edit::value(value.parse::<i64>().unwrap_or(0));
+            // Leaving single mode is what makes an interval take effect.
+            if document["wallpaper"]["mode"].as_str() == Some("single")
+                && !document["wallpaper"]["file"].as_str().unwrap_or("").is_empty()
+            {
+                document["wallpaper"]["mode"] = toml_edit::value("fixed");
+            }
+            vec![format!("rotation {value} minutes")]
+        }
+        "follow_theme" => {
+            let on = value == "on";
+            document["wallpaper"]["follow_theme"] = toml_edit::value(on);
+            if on {
+                document["wallpaper"]["enabled"] = toml_edit::value(true);
+                if document["wallpaper"]["mode"].as_str() == Some("single") {
+                    document["wallpaper"]["mode"] = toml_edit::value("fixed");
+                }
+            }
+            vec![format!("follow the theme: {value}")]
+        }
+        _ => vec![],
+    }
 }
 
 fn wallpaper_document() -> Result<toml_edit::DocumentMut> {
@@ -2105,6 +2372,462 @@ fn write_wallpaper_document(document: &toml_edit::DocumentMut) -> Result<()> {
     fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
     fs::rename(temp, path)?;
     Ok(())
+}
+
+/// Outcomes of a per-output change, as a person would read them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct OutputChange {
+    actions: Vec<String>,
+    error: Option<String>,
+}
+
+impl OutputChange {
+    fn push(&mut self, action: impl Into<String>) {
+        self.actions.push(action.into());
+    }
+
+    fn fail(&mut self, error: impl Into<String>) {
+        if self.error.is_none() {
+            self.error = Some(error.into());
+        }
+    }
+}
+
+/// Apply one `niructl wallpaper output` request to a parsed document.
+///
+/// `key` is `image` (a path), `scale` (fill/fit/stretch/center), `mode`
+/// (`theme` to follow the theme on this screen, `image` for its own
+/// picture) or `inherit`. `value` is unused by `inherit`.
+fn set_output_entry(
+    document: &mut toml_edit::DocumentMut,
+    output: &str,
+    key: &str,
+    value: Option<&str>,
+) -> OutputChange {
+    let mut change = OutputChange::default();
+    if output.is_empty()
+        || !output
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        change.fail("output must be a RandR name such as HDMI-1");
+        return change;
+    }
+    if !document
+        .get("wallpaper")
+        .map(|w| w.is_table())
+        .unwrap_or(false)
+    {
+        let mut table = toml_edit::Table::new();
+        table.set_implicit(false);
+        document["wallpaper"] = toml_edit::Item::Table(table);
+    }
+    let array = match document["wallpaper"]
+        .as_table_mut()
+        .and_then(|t| t.get_mut("outputs"))
+    {
+        Some(item) => match item.as_array_of_tables_mut() {
+            Some(array) => array,
+            None => {
+                change.fail("wallpaper.outputs is not a list of tables");
+                return change;
+            }
+        },
+        None => {
+            let mut array = toml_edit::ArrayOfTables::new();
+            array.push(toml_edit::Table::new());
+            document["wallpaper"]["outputs"] = toml_edit::Item::ArrayOfTables(array);
+            document["wallpaper"]["outputs"]
+                .as_array_of_tables_mut()
+                .expect("just inserted")
+        }
+    };
+    // A table with no output name cannot describe a screen; it is dropped so
+    // the file stays loadable.
+    let stale: Vec<usize> = array
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.get("output").and_then(|v| v.as_str()).is_none())
+        .map(|(i, _)| i)
+        .collect();
+    for index in stale.into_iter().rev() {
+        array.remove(index);
+    }
+    let index = array
+        .iter()
+        .position(|t| t.get("output").and_then(|v| v.as_str()) == Some(output));
+    let index = match index {
+        Some(i) => i,
+        None => {
+            let mut table = toml_edit::Table::new();
+            table["output"] = toml_edit::value(output);
+            table["mode"] = toml_edit::value("inherit");
+            table["file"] = toml_edit::value("");
+            table["scale"] = toml_edit::value("");
+            array.push(table);
+            array.len() - 1
+        }
+    };
+    let table = array
+        .get_mut(index)
+        .expect("the entry exists or was just pushed");
+    match key {
+        "image" => {
+            let Some(raw) = value else {
+                change.fail("output image needs a path");
+                return change;
+            };
+            let path = match wallpaper_expand(raw).canonicalize() {
+                Ok(path) if path.is_file() && wallpaper_is_image(&path) => path,
+                Ok(_) => {
+                    change.fail(format!("not a supported image: {raw}"));
+                    return change;
+                }
+                Err(e) => {
+                    change.fail(format!("wallpaper not found: {raw}: {e}"));
+                    return change;
+                }
+            };
+            if !table.contains_key("output") {
+                table["output"] = toml_edit::value(output);
+            }
+            table["mode"] = toml_edit::value("single");
+            table["file"] = toml_edit::value(path.display().to_string());
+            change.push(format!("{output} uses {}", path.display()));
+        }
+        "scale" => {
+            let Some(scale) = value else {
+                change.fail("output scale needs a value");
+                return change;
+            };
+            if !["fill", "fit", "stretch", "center"].contains(&scale) {
+                change.fail("output scale must be fill, fit, stretch or center");
+                return change;
+            }
+            table["scale"] = toml_edit::value(scale);
+            change.push(format!("{output} scale {scale}"));
+        }
+        "mode" => {
+            let Some(mode) = value else {
+                change.fail("output mode needs a value");
+                return change;
+            };
+            if !["theme", "image"].contains(&mode) {
+                change.fail("output mode must be theme or image");
+                return change;
+            }
+            table["mode"] = toml_edit::value(if mode == "theme" { "theme" } else { "single" });
+            if mode == "theme" {
+                table["file"] = toml_edit::value("");
+                change.push(format!("{output} follows the theme"));
+            } else {
+                change.push(format!("{output} uses its own picture"));
+            }
+        }
+        "inherit" => {
+            table["mode"] = toml_edit::value("inherit");
+            table["file"] = toml_edit::value("");
+            table["scale"] = toml_edit::value("");
+            change.push(format!("{output} follows the common settings"));
+        }
+        _ => change.fail("output key must be image, scale, mode or inherit"),
+    }
+    document["wallpaper"]["enabled"] = toml_edit::value(true);
+    change
+}
+
+/// Drop an output entry entirely. Used by reset so no stale file is kept.
+fn reset_output_entry(document: &mut toml_edit::DocumentMut, output: &str) -> OutputChange {
+    let mut change = OutputChange::default();
+    let before = document["wallpaper"]
+        .as_table()
+        .and_then(|t| t.get("outputs"))
+        .and_then(|i| i.as_array_of_tables())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let mut remaining = 0;
+    if let Some(table) = document["wallpaper"].as_table_mut() {
+        if let Some(array) = table
+            .get_mut("outputs")
+            .and_then(|i| i.as_array_of_tables_mut())
+        {
+            array.retain(|t| t.get("output").and_then(|v| v.as_str()) != Some(output));
+            remaining = array.len();
+        }
+        // An empty list would read back as an entry without an output, so
+        // the key goes too; the documented header stays in the file text.
+        if remaining == 0 {
+            table.remove("outputs");
+        }
+    }
+    if remaining == before {
+        change.push(format!("{output} already follows the common settings"));
+    } else {
+        change.push(format!("{output} follows the common settings"));
+    }
+    change
+}
+
+/// Run a set of document changes as one transaction: parse, change, validate,
+/// write atomically, ask the window manager to reload and wait for its answer.
+///
+/// A file that does not parse is never rewritten. If the reload is rejected,
+/// the previous file is put back, but only when nobody edited it meanwhile.
+fn wallpaper_transaction<F>(mut change: F, json: bool) -> Result<()>
+where
+    F: FnMut(&mut toml_edit::DocumentMut) -> OutputChange,
+{
+    let path = wallpaper_config_path();
+    let original = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut document: toml_edit::DocumentMut = if original.trim().is_empty() {
+        toml_edit::DocumentMut::new()
+    } else {
+        original
+            .parse()
+            .map_err(|e| format!("refusing to rewrite invalid {}: {e}", path.display()))?
+    };
+    let outcome = change(&mut document);
+    if let Some(error) = &outcome.error {
+        return Err(error.clone().into());
+    }
+    // Value-level validation before anything is written: a value the window
+    // manager would reject must never reach the file.
+    let candidate: config::Config = document
+        .to_string()
+        .parse::<toml::Value>()?
+        .try_into()
+        .map_err(|e: toml::de::Error| format!("refusing to write an invalid wallpaper setting: {e}"))?;
+    if let Err(e) = candidate.validate() {
+        return Err(format!("refusing to write an invalid wallpaper setting: {e}").into());
+    }
+    let rendered = fill_wallpaper_header(&original, &document.to_string());
+    if rendered != original {
+        write_wallpaper_text(&path, &rendered)?;
+    }
+    let result = reload_wallpaper_and_wait();
+    if let Err(error) = &result {
+        // Put the previous file back only if it is still the text we wrote.
+        let now = fs::read_to_string(&path).unwrap_or_default();
+        if now == rendered {
+            if original.trim().is_empty() {
+                let _ = fs::remove_file(&path);
+            } else {
+                let _ = write_wallpaper_text(&path, &original);
+            }
+        }
+        let mut out = String::from("the window manager did not accept the change: ");
+        out.push_str(&error.to_string());
+        if now == rendered {
+            out.push_str(" (the previous settings were restored)");
+        } else {
+            out.push_str(" (the file was edited meanwhile and was left as it is)");
+        }
+        return Err(out.into());
+    }
+    if json {
+        println!("{}", serde_json::json!({ "changes": outcome.actions }));
+        return Ok(());
+    }
+    for action in outcome.actions {
+        println!("{action}");
+    }
+    Ok(())
+}
+
+/// Write the wallpaper file atomically, keeping its mode.
+fn write_wallpaper_text(path: &Path, text: &str) -> Result<()> {
+    let dir = path.parent().ok_or("configuration directory is missing")?;
+    fs::create_dir_all(dir)?;
+    let mode = fs::metadata(path)
+        .ok()
+        .map(|m| m.permissions().mode() & 0o777)
+        .unwrap_or(0o644);
+    let temp = dir.join(format!(".config.toml.{}", std::process::id()));
+    fs::write(&temp, text)?;
+    fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode))?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+/// Keep the documented `[wallpaper]` example when a setting creates the
+/// section in a file that never had one. Comments in an existing section are
+/// always kept, because the edit is made in place.
+fn fill_wallpaper_header(original: &str, rendered: &str) -> String {
+    if original.contains("[[wallpaper.outputs]]") || !rendered.contains("[[wallpaper.outputs]]") {
+        return rendered.to_string();
+    }
+    if original.contains("outputs") {
+        return rendered.to_string();
+    }
+    let block = "\n# Pictures for one named screen. A screen without an entry here\n\
+                 # uses the common settings above. Entries are kept when the screen\n\
+                 # is unplugged. mode is `theme` or `single`; an empty scale means\n\
+                 # the common scale.\n";
+    if let Some(pos) = rendered.find("[[wallpaper.outputs]]") {
+        let mut out = String::with_capacity(rendered.len() + block.len());
+        out.push_str(&rendered[..pos]);
+        out.push_str(block);
+        out.push_str(&rendered[pos..]);
+        return out;
+    }
+    rendered.to_string()
+}
+
+/// The X connection a change needs, or the offline answer for commands that
+/// only read files.
+fn connect_for_change() -> Result<(x11rb::rust_connection::RustConnection, Window)> {
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    Ok((c, root))
+}
+
+/// Ask the running window manager to reload and wait for its acknowledgement.
+fn reload_wallpaper_and_wait() -> Result<()> {
+    let (c, root) = connect_for_change()?;
+    let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
+    let serial = command_serial();
+    send(&c, root, atom(CMD_ATOM)?, [4, serial, 0, 0, 0])?;
+    c.change_property32(
+        PropMode::REPLACE,
+        root,
+        atom(CONFIG_SERIAL)?,
+        AtomEnum::CARDINAL,
+        &[serial],
+    )?;
+    c.flush()?;
+    if property_u32(&c, root, atom("_NIRUWM_ACK_CONTROL")?) == Some(1) {
+        wait_reload_ack(&c, root, &atom, serial)?;
+    } else {
+        std::thread::sleep(Duration::from_millis(30));
+        eprintln!("niructl: the running window manager cannot confirm reload");
+    }
+    Ok(())
+}
+
+/// `niructl wallpaper output ...`: one screen's picture, scale or reset.
+fn wallpaper_output(args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).ok_or(USAGE)?;
+    match sub {
+        "list" => wallpaper_output_list(),
+        "set" => {
+            let output = args.get(1).ok_or(USAGE)?.clone();
+            let key = args.get(2).map(String::as_str).ok_or(USAGE)?;
+            let value = args.get(3).cloned();
+            wallpaper_transaction(
+                |document| set_output_entry(document, &output, key, value.as_deref()),
+                false,
+            )
+        }
+        "reset" => {
+            let output = args.get(1).ok_or(USAGE)?.clone();
+            wallpaper_transaction(|document| reset_output_entry(document, &output), false)
+        }
+        _ => Err(USAGE.into()),
+    }
+}
+
+/// The screens RandR reports now, with the effective settings per screen.
+fn wallpaper_output_list() -> Result<()> {
+    let cfg = Config::load()?;
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    let wall = wallpaper::Wallpaper::new(&cfg.wallpaper, &cfg.theme);
+    let mut out = Vec::new();
+    for output in randr_outputs(&c, root)? {
+        let entry = cfg
+            .wallpaper
+            .outputs
+            .iter()
+            .find(|o| o.output == output.name);
+        let scale = entry
+            .map(|o| o.scale.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| cfg.wallpaper.scale.clone());
+        out.push(serde_json::json!({
+            "output": output.name,
+            "x": output.x,
+            "y": output.y,
+            "width": output.width,
+            "height": output.height,
+            "source": if entry.is_some() { "override" } else { "inherit" },
+            "mode": entry.map(|o| o.mode.clone()).unwrap_or_else(|| "inherit".into()),
+            "file": entry.map(|o| o.file.clone()).unwrap_or_default(),
+            "scale": scale,
+        }));
+    }
+    let _ = wall;
+    println!("{}", serde_json::to_string(&out)?);
+    Ok(())
+}
+
+fn randr_outputs(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+) -> Result<Vec<wallpaper::Output>> {
+    // The automated acceptance run supplies a layout; an ordinary session
+    // never sets the variable.
+    if let Some(path) = std::env::var_os("NIRU_RANDR_EMU") {
+        if let Ok(text) = fs::read_to_string(path) {
+            let mut out = Vec::new();
+            for line in text.lines() {
+                let Some((name, rest)) = line.trim().split_once(' ') else {
+                    continue;
+                };
+                let Some((size, pos)) = rest.split_once('+') else {
+                    continue;
+                };
+                let (Some((w, h)), Some((x, y))) = (size.split_once('x'), pos.split_once('+')) else {
+                    continue;
+                };
+                let (Ok(w), Ok(h), Ok(x), Ok(y)) = (
+                    w.parse::<u32>(),
+                    h.parse::<u32>(),
+                    x.parse::<i32>(),
+                    y.parse::<i32>(),
+                ) else {
+                    continue;
+                };
+                out.push(wallpaper::Output {
+                    name: name.to_string(),
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                });
+            }
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+    }
+    let resources = c.randr_get_screen_resources_current(root)?.reply()?;
+    let mut out = Vec::new();
+    for output in resources.outputs {
+        let info = c
+            .randr_get_output_info(output, resources.config_timestamp)?
+            .reply()?;
+        if info.connection != x11rb::protocol::randr::Connection::CONNECTED || info.crtc == 0 {
+            continue;
+        }
+        let crtc = c
+            .randr_get_crtc_info(info.crtc, resources.config_timestamp)?
+            .reply()?;
+        if crtc.width == 0 || crtc.height == 0 {
+            continue;
+        }
+        out.push(wallpaper::Output {
+            name: String::from_utf8_lossy(&info.name).to_string(),
+            x: i32::from(crtc.x),
+            y: i32::from(crtc.y),
+            width: u32::from(crtc.width),
+            height: u32::from(crtc.height),
+        });
+    }
+    Ok(out)
 }
 
 fn wallpaper_update(args: &[String]) -> Result<()> {
@@ -3072,6 +3795,12 @@ fn run() -> Result<()> {
         if sub == "list" || sub == "status" {
             return wallpaper(sub);
         }
+        if sub == "status-json" {
+            return wallpaper_status_json();
+        }
+        if sub == "output" {
+            return wallpaper_output(&args[2..]);
+        }
     }
     // Repair the configuration before touching X: a truncated file must be
     // fixed even when the theme cannot be applied (no display, WM not
@@ -3203,6 +3932,9 @@ fn run() -> Result<()> {
             (4, 0)
         }
         "wallpaper" => {
+            if args.get(1).map(String::as_str) == Some("apply") {
+                return wallpaper_apply(&args[2..]).map_err(|e| e.to_string().into());
+            }
             wallpaper_update(&args[1..])?;
             (4, 0)
         }

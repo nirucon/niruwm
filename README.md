@@ -2,8 +2,8 @@
 
 **Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
 
-**Beta.** A small Rust/X11 tiling window manager and session layer for the
-NIRU desktop, built in the spirit of [suckless dwm](https://dwm.suckless.org/),
+**Early beta.** A small Rust/X11 tiling window manager and session layer for the
+NIRUX X11 desktop, built in the spirit of [suckless dwm](https://dwm.suckless.org/),
 which the author used for many years.
 
 It keeps what makes dwm pleasant: tags instead of virtual desktops, a single
@@ -212,6 +212,34 @@ niructl theme niru-nord
 
 This enables wallpapers and changes a single-file override to fixed mode; the
 manual file remains in the config for `niructl wallpaper mode single`.
+
+`niructl wallpaper status-json` reports the same settings as one JSON document
+together with `planned` (what each screen will show) and `rendered` (what the
+running session actually set, or `null` when no window manager is running).
+NIRUWM publishes the rendered result on `_NIRUWM_WALLPAPER_STATE`, so a
+configuration is never reported as a displayed picture.
+
+### More than one screen
+
+Every connected screen is set separately, at its own geometry (for example
+`1080x1920+1600+0` for a portrait screen to the right of a laptop panel). The
+common settings apply to every screen that has no entry of its own:
+
+```sh
+niructl wallpaper output list                  # screens with source, mode and scale
+niructl wallpaper output set DP-1 image PATH   # this screen's own picture
+niructl wallpaper output set DP-1 scale fit
+niructl wallpaper output set DP-1 mode theme   # follow the theme on this screen
+niructl wallpaper output reset DP-1            # inherit the common settings
+```
+
+`[[wallpaper.outputs]]` entries are keyed by RandR output name, kept while a
+screen is unplugged and reused when it returns to the same port. A change is
+written with comments, permissions and unrelated keys preserved, then checked
+against the configuration rules; a rejected reload restores the previous file
+unless someone edited it meanwhile. The setter is `feh` (without writing
+`~/.fehbg`), then `hsetroot`, `nitrogen` or `xwallpaper`; a screen whose theme
+has no picture is painted with the theme's background colour.
 
 `niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
 display profiles, power profiles, DND, diagnostics, work modes and workspace
