@@ -368,6 +368,11 @@ impl Wallpaper {
                  Install the wallpaper set with `nirux wallpapers download`, or pick one in the launcher.",
                 self.theme
             );
+            // A session picture chosen earlier belongs to the theme it was
+            // chosen for. Keeping it here would repaint the previous theme's
+            // picture while the colour was supposed to take over.
+            self.fixed_image = None;
+            self.rotation_image = None;
         } else if self.mode == Mode::Fixed {
             self.fixed_image = path.clone();
         }
@@ -762,6 +767,39 @@ mod tests {
         cfg.theme_dir = dir.display().to_string();
         w = Wallpaper::new(&cfg, "niru-noir");
         assert_eq!(w.theme_image(), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A theme that ships no wallpaper must show its colour, not the picture
+    /// the previous theme chose. `fixed` mode caches that picture for the
+    /// session, and the cache belongs to the theme it was chosen for.
+    #[test]
+    fn a_theme_without_a_picture_forgets_the_previous_picture() {
+        let dir = tmpdir("no-picture");
+        File::create(dir.join("nirux-wallpaper-nord-4k.png")).unwrap();
+        let mut cfg = config(&dir);
+        cfg.mode = "fixed".into();
+        let mut w = Wallpaper::new(&cfg, "niru-nord");
+        // No display here, so `apply_theme` stops at the setter; the picture it
+        // would use is what this test is about.
+        let _ = w.set_theme("niru-nord");
+        assert_eq!(
+            w.common_image(),
+            Some(dir.join("nirux-wallpaper-nord-4k.png")),
+            "the theme with a picture is shown"
+        );
+        // niru-satie has no picture in this directory.
+        let _ = w.set_theme("niru-satie");
+        assert_eq!(
+            w.common_image(),
+            None,
+            "the old theme's picture must not stand in for the colour"
+        );
+        assert_eq!(
+            w.plan_for("eDP-1").0,
+            "colour",
+            "the screen paints the theme colour"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
