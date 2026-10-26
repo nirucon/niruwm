@@ -20,6 +20,8 @@ pub enum Action {
     LauncherSearch,
     /// Lock the screen with the first available locker.
     Lock,
+    /// Lock, wait for verified readiness, then suspend the machine.
+    Suspend,
     WindowSwitcher,
     Start(String),
     /// Run a shell command (used by configured pipelines and user bindings).
@@ -243,6 +245,9 @@ impl Action {
         add("super+w", "window_switcher");
         add("super+shift+f", "start pcmanfm");
         add("super+Escape", "lock");
+        // Lock, wait for verified readiness, then suspend. The shared
+        // niructl path owns the readiness check and the delay.
+        add("super+shift+Escape", "suspend");
         // The old reload key is a native reload.
         add("super+shift+r", "reload");
         add("super+n", "nightlight_toggle");
@@ -397,6 +402,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         // Lock with the best available locker: NIRUWM's own nirulock when
         // installed, then slock.
         "lock" => Action::Lock,
+        // Lock, verify, wait three seconds, verify again, then suspend.
+        "suspend" => Action::Suspend,
         "start" => Action::Start(arg()?.to_string()),
         "shell" => Action::Shell(arg()?.to_string()),
         "focus_next" => Action::FocusNext,

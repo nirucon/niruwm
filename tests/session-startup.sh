@@ -59,3 +59,27 @@ ln -s pgrep "$TEST/bin/xrdb"
 "$TEST/bin/niruwm-session"
 grep -q 'could not load optional .Xresources' "$XDG_STATE_HOME/niruwm/session.log"
 printf 'PASS: optional xrdb failure does not terminate session\n'
+
+# A session killed without its cleanup leaves niruidle reparented to init.
+# The next session must stop the one for this display, or two ladders compete
+# and lock the screen again right after an unlock.
+cat > "$TEST/bin/pgrep" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *"-x niruidle"*) if [ -f "$HOME/stale-pid" ]; then cat "$HOME/stale-pid"; exit 0; fi ;;
+esac
+exit 1
+EOF
+chmod +x "$TEST/bin/pgrep"
+DISPLAY=:99 sleep 60 & STALE=$!
+printf '%s\n' "$STALE" > "$HOME/stale-pid"
+"$TEST/bin/niruwm-session"
+if kill -0 "$STALE" 2>/dev/null; then kill "$STALE" 2>/dev/null || :; echo "FAIL stale niruidle survived"; exit 1; fi
+grep -q 'stopping stale niruidle' "$XDG_STATE_HOME/niruwm/session.log"
+printf 'PASS: stale idle daemon from an earlier session is stopped\n'
+rm -f "$HOME/stale-pid"
+cat > "$TEST/bin/pgrep" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$TEST/bin/pgrep"

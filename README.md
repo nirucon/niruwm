@@ -64,6 +64,7 @@ installations are maintained with `nirux update`.
 | Super+W | Window switcher |
 | Super+Shift+F | File manager |
 | Super+Escape | Lock |
+| Super+Shift+Escape | Lock, wait three seconds, then suspend |
 | Super+Shift+R | Reload |
 | Super+R / Super+Ctrl+Shift+R | Reload |
 | Super+Shift+D | Toggle DND |
@@ -176,7 +177,18 @@ dpms_off_after_lock = 15      # minutes after locking before the display sleeps
 ```
 
 `niruidle` owns both timers in one process, so the ladder
-active -> screensaver -> locked has a single timer on each step. A legacy
+active -> screensaver -> locked has a single timer on each step. `niructl timing
+show` prints the effective values and `niructl timing set KEY MINUTES` changes
+one of them in place (comments and unrelated keys are preserved); the running
+`niruidle` reloads the file within a few seconds.
+
+`Super+Shift+Escape` is the explicit suspend shortcut. It starts NIRULOCK,
+waits for the verified `_NIRU_LOCK_READY` contract, keeps the lock screen
+visible for three seconds, verifies that the same lock window is still there
+and only then requests suspend through the login1 API. Repeated presses are
+coalesced, and unlocking during the delay cancels the request. The existing
+lid/sleep inhibitor path in the session keeps its own lock-before-sleep
+behaviour. A legacy
 `~/.config/niruui/screensaver.toml` is still read for any value `[idle]` does
 not set, so an older installation keeps its timing. Notifications use
 NIRUNOTIFY when installed, with Dunst fallback.

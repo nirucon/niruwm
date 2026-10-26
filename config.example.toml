@@ -444,6 +444,13 @@ action = "window_switcher"
 keys = "super+Escape"
 action = "lock"
 
+# Lock, wait for verified readiness, keep the lock screen visible for three
+# seconds, verify again and suspend. Repeat presses are coalesced, and unlocking
+# during the delay cancels the request.
+[[keys]]
+keys = "super+shift+Escape"
+action = "suspend"
+
 [[keys]]
 keys = "super+shift+q"
 action = "launcher_unified"

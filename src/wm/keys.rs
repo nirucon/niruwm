@@ -144,6 +144,11 @@ impl Wm {
                 }
             }
             Action::Lock => self.lock_screen(),
+            Action::Suspend => {
+                // The helper waits for NIRULOCK's readiness and the three
+                // second safety window, so the WM event loop never blocks.
+                self.spawn_helper("suspend", &["niructl".into(), "suspend".into()]);
+            }
             Action::Scratchpad => self.toggle_scratchpad()?,
             Action::BrightnessStep(step) => {
                 let direction = if step >= 0 { "up" } else { "down" };

@@ -112,6 +112,14 @@ fn load_settings() -> Settings {
     s
 }
 
+/// The shared config's modification time, used to reload timers in place.
+fn shared_config_stamp() -> Option<std::time::SystemTime> {
+    std::fs::metadata(crate::config::directory().join("config.toml"))
+        .ok()?
+        .modified()
+        .ok()
+}
+
 /// The `[idle]` section of the shared config, already clamped to safe values.
 /// A broken shared file must not stop the idle daemon: the defaults already in
 /// `Settings` stay in place.
@@ -235,7 +243,7 @@ fn main() {
         println!("NIRUIDLE {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    let settings = load_settings();
+    let mut settings = load_settings();
     if arg == "--config" {
         println!(
             "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking\nlegacy lock_timeout_minutes: {} (ignored; never terminate a locker)",
@@ -265,16 +273,17 @@ fn main() {
     let locker = first_available(&lockers());
     let saver = first_available(&["niruscreensaver".to_string()]);
 
-    let screen_at = settings.screen.saturating_mul(60);
-    let lock_at = settings
+    let mut screen_at = settings.screen.saturating_mul(60);
+    let mut lock_at = settings
         .screen
         .saturating_add(settings.lock_after)
         .saturating_mul(60);
-    let dpms_at = settings
+    let mut dpms_at = settings
         .screen
         .saturating_add(settings.lock_after)
         .saturating_add(settings.dpms_after)
         .saturating_mul(60);
+    let mut config_stamp = shared_config_stamp();
 
     eprintln!(
         "niruidle: screen after {} min, lock {} min later, display off {} min after that{}{}",
@@ -302,6 +311,28 @@ fn main() {
     let mut inhibited = false;
 
     loop {
+        // `niructl timing set` writes the shared file. Pick the new values up
+        // without a logout, without a signal and without polling the content:
+        // one metadata stat per five-second tick is effectively free.
+        let stamp = shared_config_stamp();
+        if stamp != config_stamp {
+            settings = load_settings();
+            screen_at = settings.screen.saturating_mul(60);
+            lock_at = settings
+                .screen
+                .saturating_add(settings.lock_after)
+                .saturating_mul(60);
+            dpms_at = settings
+                .screen
+                .saturating_add(settings.lock_after)
+                .saturating_add(settings.dpms_after)
+                .saturating_mul(60);
+            config_stamp = stamp;
+            eprintln!(
+                "niruidle: timing reloaded: screen after {} min, lock {} min later, display off {} min after that",
+                settings.screen, settings.lock_after, settings.dpms_after
+            );
+        }
         reap(&mut saver_child);
         if let Some(status) = reap(&mut locker_child) {
             if status.success() {

@@ -308,6 +308,17 @@ NIRUIDLE_BIN=""
 for candidate in "$SELF_DIR/niruidle" "$HOME/.local/bin/niruidle"; do
   [ -x "$candidate" ] && { NIRUIDLE_BIN="$candidate"; break; }
 done
+# A killed session (rather than a normal logout) can leave its idle daemon
+# reparented to init. Two ladders then compete: the stale one sees the same X
+# idle time and can lock the screen again right after an unlock. Stop only the
+# one for this display; another X session keeps its own.
+for pid in $(pgrep -u "$(id -u)" -x niruidle 2>/dev/null); do
+  [ -n "$pid" ] || continue
+  old_display=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p')
+  [ "$old_display" = "$DISPLAY" ] || continue
+  log "stopping stale niruidle $pid from an earlier session"
+  kill "$pid" 2>/dev/null || :
+done
 if [ "$START_IDLE" = 1 ] && [ -n "$NIRUIDLE_BIN" ]; then
   "$NIRUIDLE_BIN" >/dev/null 2>&1 & IDLE_PID=$!
 elif [ "$START_IDLE" = 1 ]; then

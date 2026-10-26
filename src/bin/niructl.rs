@@ -42,6 +42,7 @@ const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME |
 theme NAME | themes | keys | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
+timing show|set KEY MINUTES | \
 wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
@@ -554,18 +555,43 @@ fn login_action(action: &str) -> Result<()> {
     Err(format!("no power backend for {action}: install dbus-send and logind/elogind").into())
 }
 
+/// How long the lock screen stays visible before the machine suspends.
+const SUSPEND_DELAY: Duration = Duration::from_secs(3);
+
 fn power_action(action: &str) -> Result<()> {
-    if action == "suspend" {
-        ensure_lock_ready()?;
+    let result = (|| -> Result<()> {
+        if action == "suspend" {
+            // A second request while the first one waits is coalesced, not
+            // queued: holding the advisory lock is the whole mechanism.
+            let _suspend_guard = match acquire_suspend_lock() {
+                Ok(Some(guard)) => Some(guard),
+                Ok(None) => return Ok(()),
+                Err(e) => {
+                    eprintln!("niructl: cannot create the suspend lock: {e}");
+                    None
+                }
+            };
+            let (c, root, lock_window) = ensure_lock_ready()?;
+            std::thread::sleep(SUSPEND_DELAY);
+            // Unlocking or a locker crash during the delay cancels this
+            // request. A quick unlock-and-relock creates a new window, so it
+            // cannot revive the old request either.
+            if !lock_still_held(ready_lock(&c, root), lock_window) {
+                return Err("cancelled: the screen was unlocked before suspend".into());
+            }
+        }
+        login_action(action)
+    })();
+    if let Err(e) = &result {
+        let text = e.to_string();
+        let body = if let Some(reason) = text.strip_prefix("cancelled: ") {
+            format!("Suspend cancelled: {reason}")
+        } else {
+            format!("{action} failed: {text}")
+        };
+        notify("Power", &body, None);
     }
-    if let Err(e) = login_action(action) {
-        let body = format!("{action} failed: {e}");
-        let _ = std::process::Command::new("notify-send")
-            .args(["-a", "NIRU", "-t", "8000", "Power", &body])
-            .status();
-        return Err(e);
-    }
-    Ok(())
+    result
 }
 
 fn desktop(action: &str, args: &[String]) -> Result<()> {
@@ -688,6 +714,95 @@ fn idle(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The effective idle, lock and display-off timers.
+fn timing(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str).unwrap_or("show") {
+        "show" => {
+            let cfg = Config::load()?;
+            println!("screensaver_timeout={}", cfg.idle.screensaver_timeout);
+            println!("lock_after_screensaver={}", cfg.idle.lock_after_screensaver);
+            println!("dpms_off_after_lock={}", cfg.idle.dpms_off_after_lock);
+            Ok(())
+        }
+        "set" => {
+            let key = args
+                .get(1)
+                .map(String::as_str)
+                .ok_or("timing set needs a key and minutes")?;
+            let raw = args
+                .get(2)
+                .map(String::as_str)
+                .ok_or("timing set needs a key and minutes")?;
+            let minutes: u32 = raw
+                .parse()
+                .map_err(|_| "timing minutes: not a number".to_string())?;
+            let min = match key {
+                "screensaver_timeout" => 1,
+                "lock_after_screensaver" | "dpms_off_after_lock" => 0,
+                _ => {
+                    return Err("timing key must be screensaver_timeout, \
+                                lock_after_screensaver or dpms_off_after_lock"
+                        .into())
+                }
+            };
+            if !(min..=crate::config::IdleConfig::MAX_MINUTES).contains(&minutes) {
+                return Err(format!(
+                    "{key} must be between {min} and {} minutes",
+                    crate::config::IdleConfig::MAX_MINUTES
+                )
+                .into());
+            }
+            write_timing(key, minutes)?;
+            println!("{key}={minutes}");
+            Ok(())
+        }
+        _ => Err("timing needs show or set KEY MINUTES".into()),
+    }
+}
+
+/// Write one `[idle]` value without disturbing comments or unrelated keys.
+fn write_timing(key: &str, minutes: u32) -> Result<()> {
+    let path = config::directory().join("config.toml");
+    let original = fs::read_to_string(&path).unwrap_or_default();
+    let rendered = updated_timing(&original, key, minutes)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if !original.is_empty() {
+        let _ = fs::write(path.with_extension("toml.bak"), &original);
+    }
+    let temp = path.with_file_name(format!(".config.toml.{}", std::process::id()));
+    fs::write(&temp, rendered)?;
+    if let Ok(metadata) = fs::metadata(&path) {
+        let _ = fs::set_permissions(&temp, metadata.permissions());
+    }
+    fs::rename(&temp, &path)?;
+    Ok(())
+}
+
+/// Apply one timing value to the file text and validate the whole result
+/// before anything is written.
+fn updated_timing(text: &str, key: &str, minutes: u32) -> Result<String> {
+    let mut document: toml_edit::DocumentMut = text.parse()?;
+    let has_table = document
+        .get("idle")
+        .map(|item| item.is_table())
+        .unwrap_or(false);
+    if !has_table {
+        if document.get("idle").is_some() {
+            return Err("idle must be a [idle] table".into());
+        }
+        document["idle"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document["idle"][key] = toml_edit::value(i64::from(minutes));
+    let rendered = document.to_string();
+    // Validate the whole file before replacing the working one. A typo in an
+    // unrelated section must not turn this into a partial write.
+    let candidate: Config = toml::from_str(&rendered)?;
+    candidate.validate()?;
+    Ok(rendered)
+}
+
 /// Lock and, for NIRULOCK, wait for verified readiness before returning.
 ///
 /// `slock` has no readiness contract, so it is still usable interactively but
@@ -741,19 +856,56 @@ fn wait_ready_lock(c: &x11rb::rust_connection::RustConnection, root: Window) -> 
     Err("screen locker did not publish readiness; not suspending".into())
 }
 
-/// Lock before suspending. Requires NIRULOCK's readiness contract; a bare
-/// `slock` cannot be verified and is therefore not accepted for suspend.
-fn ensure_lock_ready() -> Result<()> {
+/// The verified lock window a suspend has to keep seeing.
+///
+/// The second window is the locker's X window; unlocking destroys it, so a
+/// comparison after the safety delay also catches an unlock and a quick
+/// relock that happened in between.
+fn ensure_lock_ready() -> Result<(x11rb::rust_connection::RustConnection, Window, Window)> {
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
-    if ready_lock(&c, root).is_some() {
-        return Ok(());
+    if let Some(window) = ready_lock(&c, root) {
+        return Ok((c, root, window));
     }
     let locker = program("nirulock")
         .ok_or("cannot lock before suspend: install nirulock (slock cannot confirm readiness)")?;
     spawn_action(&locker, &[])?;
-    wait_ready_lock(&c, root)?;
-    Ok(())
+    let window = wait_ready_lock(&c, root)?;
+    Ok((c, root, window))
+}
+
+/// One suspend request at a time. The file is only a handle: the kernel
+/// releases the advisory lock when this process exits, so a crash cannot leave
+/// a permanent "busy" marker behind.
+fn acquire_suspend_lock() -> std::io::Result<Option<fs::File>> {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+        });
+    fs::create_dir_all(&base)?;
+    acquire_lock_at(&base.join("niruwm-suspend.lock"))
+}
+
+/// Take a non-blocking exclusive advisory lock. A second open file description
+/// fails at once, which is what makes repeated suspend presses coalesce.
+fn acquire_lock_at(path: &Path) -> std::io::Result<Option<fs::File>> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    use std::os::unix::io::AsRawFd;
+    let acquired = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+    Ok(acquired.then_some(file))
+}
+
+/// The lock is still safe to suspend under only while the same lock window is
+/// mapped. A different window means the screen was unlocked and relocked.
+fn lock_still_held(ready: Option<Window>, expected: Window) -> bool {
+    ready == Some(expected)
 }
 
 /// Do-not-disturb through the active provider's documented control.
@@ -3846,6 +3998,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "idle" {
         return idle(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "timing" {
+        return timing(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if matches!(
         cmd,
         "lock" | "screensaver" | "logout" | "suspend" | "reboot" | "shutdown" | "dnd"
@@ -4047,6 +4202,7 @@ fn run() -> Result<()> {
             | "powerprofile"
             | "mode"
             | "idle"
+            | "timing"
             | "monitors"
     ) {
         return offline(cmd);
@@ -5012,5 +5168,49 @@ screensaver_timeout = 15
         std::fs::write(&path, "1\n").unwrap();
         assert!(idle_until().is_none(), "expired inhibition stayed active");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn timing_update_preserves_comments_order_and_unrelated_keys() {
+        let text = "# my config\ntheme = \"niru-nord\"\n\n[idle]\n# keep this comment\nscreensaver_timeout = 15\nlock_after_screensaver = 15\ndpms_off_after_lock = 15\n";
+        let out = super::updated_timing(text, "screensaver_timeout", 5).unwrap();
+        assert!(out.contains("# my config"));
+        assert!(out.contains("# keep this comment"));
+        assert!(out.contains("theme = \"niru-nord\""));
+        assert!(out.contains("screensaver_timeout = 5"));
+        assert!(out.contains("lock_after_screensaver = 15"));
+    }
+
+    #[test]
+    fn timing_update_rejects_an_unlocked_screen_and_unknown_keys() {
+        let text = "[idle]\nscreensaver_timeout = 15\n";
+        assert!(super::updated_timing(text, "screensaver_timeout", 0).is_err());
+        assert!(super::updated_timing(text, "bogus", 5).is_err());
+    }
+
+    #[test]
+    fn a_second_suspend_request_is_coalesced() {
+        let dir = std::env::temp_dir().join(format!("niructl-suspend-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("suspend.lock");
+        let first = super::acquire_lock_at(&path).unwrap();
+        assert!(first.is_some(), "the first request takes the lock");
+        assert!(
+            super::acquire_lock_at(&path).unwrap().is_none(),
+            "a second request must not queue"
+        );
+        drop(first);
+        assert!(
+            super::acquire_lock_at(&path).unwrap().is_some(),
+            "the lock is released when the request finishes"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn suspend_is_cancelled_when_the_lock_window_changes() {
+        assert!(super::lock_still_held(Some(42), 42));
+        assert!(!super::lock_still_held(Some(43), 42));
+        assert!(!super::lock_still_held(None, 42));
     }
 }
