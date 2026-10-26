@@ -133,16 +133,18 @@ impl Wm {
             Some(r) => (r.monitor.min(self.monitors.len().saturating_sub(1)), r.tag),
             None => match requested {
                 Some((monitor, tag)) => (monitor, tag as u32),
-                None => (
-                    if suite_settings && self.focused_monitor < self.monitors.len() {
-                        self.focused_monitor
-                    } else {
-                        pointer_monitor
-                    },
-                    rule.as_ref()
+                None => {
+                    // Suite settings belong to the screen the user is working on.
+                    // The pointer is the active screen even when the desktop has no
+                    // focused client, and the window must use that screen's tag.
+                    let monitor = pointer_monitor;
+                    let tag = rule
+                        .as_ref()
                         .and_then(|r| r.workspace)
-                        .unwrap_or_else(|| self.active_tag()),
-                ),
+                        .or_else(|| self.monitors.get(monitor).map(|m| m.active as u32))
+                        .unwrap_or_else(|| self.active_tag());
+                    (monitor, tag)
+                }
             },
         };
         let monitor_name = self
@@ -218,6 +220,9 @@ impl Wm {
         self.c.map_window(w)?;
         // A restored window must not move focus while its siblings are still
         // starting; the saved focus is applied once restore has settled.
+        if suite_settings {
+            self.focused_monitor = monitor;
+        }
         if restored.is_none() && tag == self.active_tag() {
             self.set_focus(w)?;
         }
