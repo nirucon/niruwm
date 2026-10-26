@@ -94,6 +94,12 @@ impl Wm {
         // by the program. Matching every argument made *every* kitty window a
         // scratchpad, because "kitty" was one of them.
         let class = self.window_class(w);
+        let suite_settings = class.split('\0').any(|part| {
+            matches!(
+                part.to_ascii_lowercase().as_str(),
+                "niruthemeselector" | "niruwallpaper"
+            )
+        });
         let is_scratchpad = self.cfg.scratchpad.matches_class(&class);
         if is_scratchpad {
             self.scratchpad = Some(w);
@@ -105,6 +111,7 @@ impl Wm {
         let pid = self.values(w, "_NET_WM_PID").first().copied();
         let restored = self.take_restored(pid, is_scratchpad);
         let floating = dialog_floating
+            || suite_settings
             || is_scratchpad
             || rule.as_ref().and_then(|r| r.floating).unwrap_or(false)
             || restored.as_ref().is_some_and(|r| r.floating);
@@ -127,7 +134,11 @@ impl Wm {
             None => match requested {
                 Some((monitor, tag)) => (monitor, tag as u32),
                 None => (
-                    pointer_monitor,
+                    if suite_settings && self.focused_monitor < self.monitors.len() {
+                        self.focused_monitor
+                    } else {
+                        pointer_monitor
+                    },
                     rule.as_ref()
                         .and_then(|r| r.workspace)
                         .unwrap_or_else(|| self.active_tag()),
@@ -161,15 +172,13 @@ impl Wm {
             self.restore_focus = Some((w, monitor, tag));
         }
 
-        if floating && rule.as_ref().and_then(|r| r.center).unwrap_or(false) {
-            let screen = self
-                .monitors
-                .get(monitor)
-                .map(|m| m.rect)
-                .unwrap_or_else(|| self.work_area());
+        if floating && (suite_settings || rule.as_ref().and_then(|r| r.center).unwrap_or(false)) {
+            let screen = self.monitor_area(monitor, self.work_area());
             if let Some(c) = self.clients.last_mut() {
-                c.geom.x = screen.x + (screen.w as i16 - c.geom.w as i16) / 2;
-                c.geom.y = screen.y + (screen.h as i16 - c.geom.h as i16) / 2;
+                c.geom.w = c.geom.w.min(screen.w.saturating_sub(border * 2).max(1));
+                c.geom.h = c.geom.h.min(screen.h.saturating_sub(border * 2).max(1));
+                c.geom.x = screen.x + (screen.w as i16 - c.geom.w as i16 - (border * 2) as i16) / 2;
+                c.geom.y = screen.y + (screen.h as i16 - c.geom.h as i16 - (border * 2) as i16) / 2;
                 c.geom.x = c.geom.x.max(screen.x);
                 c.geom.y = c.geom.y.max(screen.y);
             }

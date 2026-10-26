@@ -18,9 +18,9 @@ done
 "$BIN" display save Test
 "$BIN" display list | grep -q '^Test	1	display profile$'
 "$BIN" display apply Test
-"$BIN" display preview Test 5
+TOKEN=$("$BIN" display preview Test 5 | sed -n 's/^preview-token: //p')
 "$BIN" display status | grep -q '^display preview Test remaining '
-"$BIN" display keep
+"$BIN" display keep "$TOKEN"
 "$BIN" display status | grep -qx 'display preview off'
 "$BIN" display revert | grep -qx 'no display preview active'
 grep -q '^\[\[profile\]\]' "$XDG_CONFIG_HOME/niruwm/displays.toml"

@@ -1630,6 +1630,24 @@ fn display_preview_path() -> PathBuf {
     base.join("niruwm/display-preview.toml")
 }
 
+fn display_transaction_lock() -> Result<std::fs::File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let path = display_preview_path().with_extension("lock");
+    std::fs::create_dir_all(path.parent().ok_or("missing display state directory")?)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err("could not lock display transaction".into());
+    }
+    Ok(file)
+}
+
 fn display_outputs() -> Result<Vec<DisplayOutputState>> {
     let out = command("xrandr", &["--query".into()])?;
     Ok(display_outputs_from(&String::from_utf8_lossy(&out.stdout)))
@@ -1839,7 +1857,9 @@ fn display_apply(outputs: &[DisplayOutputState], profile: &DisplayProfile) -> Re
             ]);
         }
     }
-    command("xrandr", &args)?;
+    let mut bounded = vec!["5".to_string(), "xrandr".to_string()];
+    bounded.extend(args);
+    command("timeout", &bounded)?;
     Ok(())
 }
 
@@ -2171,6 +2191,8 @@ fn display_read_profile_from_stdin() -> Result<DisplayProfile> {
 }
 
 fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe()?;
     let outputs = display_outputs()?;
     // A second preview must undo to the layout before the first preview, not
     // to the already-previewed layout. Keep the original recovery snapshot.
@@ -2181,10 +2203,6 @@ fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
     if previous.is_empty() {
         return Err("no active display layout to revert to".into());
     }
-    if let Err(error) = display_apply(&outputs, profile) {
-        let _ = display_restore(&previous);
-        return Err(error);
-    }
     let seconds = seconds.clamp(5, 120);
     let token = format!("{}-{}", now_secs(), std::process::id());
     let expiry = now_secs() + seconds;
@@ -2194,7 +2212,6 @@ fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
         expiry,
         previous: previous.clone(),
     }) {
-        let _ = display_restore(&previous);
         return Err(format!("could not save the preview transaction: {error}").into());
     }
     display_notify(
@@ -2204,15 +2221,36 @@ fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
             profile.name
         ),
     );
-    let exe = std::env::current_exe()?;
+    let ready = display_preview_path().with_file_name(format!("display-{token}.ready"));
     match std::process::Command::new(exe)
         .args(["display", "expire", &token])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .process_group(0)
         .spawn()
     {
-        Ok(_) => {
+        Ok(mut watchdog) => {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !ready.is_file() && std::time::Instant::now() < deadline {
+                if watchdog.try_wait()?.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if !ready.is_file() {
+                let _ = watchdog.kill();
+                let _ = watchdog.wait();
+                let _ = std::fs::remove_file(display_preview_path());
+                return Err("display recovery did not become ready; layout unchanged".into());
+            }
+            let _ = std::fs::remove_file(&ready);
+            if let Err(error) = display_apply(&outputs, profile) {
+                let _ = display_restore(&previous);
+                let _ = std::fs::remove_file(display_preview_path());
+                return Err(error);
+            }
+            println!("preview-token: {token}");
             println!("previewing display profile {} for {seconds}s", profile.name);
             Ok(())
         }
@@ -2240,6 +2278,11 @@ fn display_save_profile(profile: &DisplayProfile, name: &str) -> Result<()> {
 
 fn display(args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("list");
+    let _guard = if matches!(action, "list" | "status" | "expire") {
+        None
+    } else {
+        Some(display_transaction_lock()?)
+    };
     match action {
         "list" => {
             if args.iter().any(|arg| arg == "--json") {
@@ -2348,12 +2391,17 @@ fn display(args: &[String]) -> Result<()> {
             display_preview_apply(&profile, seconds)?;
         }
         "keep" => {
-            if display_preview_read().is_none() {
-                println!("no display preview active");
-            } else {
+            if let Some(state) = display_preview_read() {
+                if args.get(1).map(String::as_str) != Some(state.token.as_str()) {
+                    return Err(
+                        "stale or missing display transaction token; refresh the view".into(),
+                    );
+                }
                 let _ = std::fs::remove_file(display_preview_path());
                 display_notify("Display layout kept", "Preview confirmed");
                 println!("display preview kept");
+            } else {
+                println!("no display preview active");
             }
         }
         "revert" => {
@@ -2361,6 +2409,9 @@ fn display(args: &[String]) -> Result<()> {
                 println!("no display preview active");
                 return Ok(());
             };
+            if args.get(1).map(String::as_str) != Some(state.token.as_str()) {
+                return Err("stale or missing display transaction token; refresh the view".into());
+            }
             display_restore(&state.previous)?;
             let _ = std::fs::remove_file(display_preview_path());
             display_notify("Display layout reverted", "Previous layout restored");
@@ -2376,10 +2427,14 @@ fn display(args: &[String]) -> Result<()> {
             if state.token != *token {
                 return Ok(());
             }
+            let ready = display_preview_path().with_file_name(format!("display-{token}.ready"));
+            std::fs::write(&ready, b"ready")?;
             let wait = state.expiry.saturating_sub(now_secs());
             if wait > 0 {
                 std::thread::sleep(Duration::from_secs(wait));
             }
+            let _guard = display_transaction_lock()?;
+            let _ = std::fs::remove_file(&ready);
             let Some(state) = display_preview_read() else {
                 return Ok(());
             };

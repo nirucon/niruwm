@@ -1482,6 +1482,131 @@ fn valid_theme_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+fn theme_lock(dir: &Path) -> Result<fs::File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    fs::create_dir_all(dir)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(dir.join(".operation.lock"))?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return Err("another theme operation is running".into());
+    }
+    Ok(file)
+}
+
+/// Stage every write before committing any destination. Backup files stay beside
+/// their destinations so rollback uses atomic renames even across filesystems.
+fn theme_transaction(changes: Vec<(PathBuf, Option<Vec<u8>>)>) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    struct Prepared {
+        target: PathBuf,
+        staged: PathBuf,
+        backup: PathBuf,
+        had: bool,
+        write: bool,
+    }
+    struct Cleanup(Vec<Prepared>);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            for item in &self.0 {
+                let _ = fs::remove_file(&item.staged);
+                let _ = fs::remove_file(&item.backup);
+            }
+        }
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let mut prepared = Cleanup(Vec::new());
+    for (target, data) in changes {
+        let metadata = match fs::symlink_metadata(&target) {
+            Ok(meta) if meta.file_type().is_file() => Some(meta),
+            Ok(_) => return Err("theme destination must be a regular file, not a symlink".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let parent = target.parent().ok_or("missing theme directory")?;
+        let index = prepared.0.len();
+        let staged = parent.join(format!(".niru-theme-{nonce}-{index}.new"));
+        let backup = parent.join(format!(".niru-theme-{nonce}-{index}.bak"));
+        prepared.0.push(Prepared {
+            target,
+            staged,
+            backup,
+            had: metadata.is_some(),
+            write: data.is_some(),
+        });
+        let item = prepared.0.last().unwrap();
+        if let Some(data) = data {
+            use std::io::Write;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&item.staged)?;
+            file.write_all(&data)?;
+            if let Some(meta) = &metadata {
+                file.set_permissions(meta.permissions())?;
+            }
+            file.sync_all()?;
+        }
+        if metadata.is_some() {
+            fs::copy(&item.target, &item.backup)?;
+        }
+    }
+    for (index, item) in prepared.0.iter().enumerate() {
+        let result = if item.write {
+            fs::rename(&item.staged, &item.target)
+        } else if item.had {
+            fs::remove_file(&item.target)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = result {
+            let mut rollback_failed = false;
+            for old in prepared.0[..index].iter().rev() {
+                if old.had {
+                    rollback_failed |= fs::rename(&old.backup, &old.target).is_err();
+                } else {
+                    rollback_failed |= fs::remove_file(&old.target).is_err();
+                }
+            }
+            if rollback_failed {
+                // Retain backups for manual recovery rather than deleting them.
+                std::mem::forget(prepared);
+                return Err(
+                    format!("theme commit failed ({error}); recovery backups retained").into(),
+                );
+            }
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_theme_png(bytes: &[u8]) -> Result<()> {
+    if bytes.len() > 256 * 1024 * 1024 {
+        return Err("theme PNG is too large".into());
+    }
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info()?;
+    let info = reader.info();
+    if info.width == 0
+        || info.height == 0
+        || u64::from(info.width) * u64::from(info.height) > 80_000_000
+    {
+        return Err("theme PNG dimensions are unsupported".into());
+    }
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    reader.next_frame(&mut pixels)?;
+    Ok(())
+}
+
 /// Import a validated theme file. Built-in ids are protected unless the user
 /// already has an override. An optional PNG wallpaper can be copied into the
 /// configured theme directory and is recorded for safe removal.
@@ -1514,7 +1639,7 @@ pub fn theme_import(
         return Err("theme id must use letters, digits, - and _".into());
     }
     let dir = directory().join("themes");
-    fs::create_dir_all(&dir)?;
+    let _guard = theme_lock(&dir)?;
     let target = dir.join(format!("{id}.toml"));
     let builtin = Theme::builtin().contains(&id.as_str());
     if builtin && !target.is_file() {
@@ -1523,14 +1648,10 @@ pub fn theme_import(
     if target.is_file() && !replace {
         return Err(format!("a user theme named {id} already exists").into());
     }
-    let temp = dir.join(format!(".{id}.{}.new", std::process::id()));
-    fs::write(&temp, text)?;
-    fs::rename(&temp, &target)?;
+    let mut changes = Vec::new();
     if let Some(wallpaper) = wallpaper {
         let bytes = fs::read(wallpaper)?;
-        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-            return Err("theme wallpaper must be a PNG file".into());
-        }
+        validate_theme_png(&bytes)?;
         let cfg = Config::load().unwrap_or_default();
         let theme_dir = expand_home(&cfg.wallpaper.theme_dir);
         fs::create_dir_all(&theme_dir)?;
@@ -1540,29 +1661,73 @@ pub fn theme_import(
         if target_wallpaper.exists() && !replace {
             return Err(format!("wallpaper {name} already exists").into());
         }
-        let temp_wallpaper = theme_dir.join(format!(".{name}.{}", std::process::id()));
-        fs::write(&temp_wallpaper, bytes)?;
-        fs::rename(&temp_wallpaper, &target_wallpaper)?;
+        // Replace only bytes this theme already owns. A user's manual edit or a
+        // legacy file without a matching sidecar is never overwritten.
+        if target_wallpaper.exists() {
+            use sha2::{Digest, Sha256};
+            let owned = fs::read_to_string(dir.join(format!("{id}.assets")))
+                .ok()
+                .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+                .filter(|value| value.get("wallpaper").and_then(|v| v.as_str()) == Some(&name))
+                .and_then(|value| {
+                    value
+                        .get("sha256")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                })
+                .and_then(|expected| {
+                    fs::read(&target_wallpaper)
+                        .ok()
+                        .map(|current| format!("{:x}", Sha256::digest(&current)) == expected)
+                })
+                .unwrap_or(false);
+            if !owned {
+                return Err(format!(
+                    "existing wallpaper {name} is not owned by this theme; choose another id"
+                )
+                .into());
+            }
+        }
+        // Never replace a wallpaper recorded by another theme, even with --replace.
+        for entry in fs::read_dir(&dir)?.flatten() {
+            if entry.path().extension().and_then(|ext| ext.to_str()) != Some("assets")
+                || entry.path() == dir.join(format!("{id}.assets"))
+            {
+                continue;
+            }
+            if fs::read_to_string(entry.path())
+                .ok()
+                .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+                .and_then(|value| {
+                    value
+                        .get("wallpaper")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                })
+                .as_deref()
+                == Some(&name)
+            {
+                return Err("wallpaper is shared with another theme; choose another id".into());
+            }
+        }
         let assets = dir.join(format!("{id}.assets"));
-        let assets_text = format!("wallpaper = \"{name}\"\n");
-        let temp_assets = dir.join(format!(".{id}.assets.{}", std::process::id()));
-        fs::write(&temp_assets, assets_text)?;
-        fs::rename(temp_assets, assets)?;
+        use sha2::{Digest, Sha256};
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        let assets_text = format!("schema = 1\nwallpaper = \"{name}\"\nsha256 = \"{hash}\"\n");
+        changes.push((target_wallpaper, Some(bytes)));
+        changes.push((assets, Some(assets_text.into_bytes())));
     }
+    // Publish the catalogue entry last, after its assets are ready.
+    changes.push((target, Some(text.into_bytes())));
+    theme_transaction(changes)?;
     Ok(id)
-}
-
-fn theme_asset_wallpaper(id: &str) -> Option<PathBuf> {
-    let assets = directory().join("themes").join(format!("{id}.assets"));
-    let value: toml::Value = toml::from_str(&fs::read_to_string(assets).ok()?).ok()?;
-    let name = value.get("wallpaper")?.as_str()?;
-    Some(expand_home(&Config::load().unwrap_or_default().wallpaper.theme_dir).join(name))
 }
 
 pub fn theme_remove(id: &str) -> Result<()> {
     if !valid_theme_id(id) {
         return Err("invalid theme id".into());
     }
+    let _guard = theme_lock(&directory().join("themes"))?;
     if Theme::builtin().contains(&id) {
         let user_file = directory().join("themes").join(format!("{id}.toml"));
         if !user_file.is_file() {
@@ -1576,17 +1741,28 @@ pub fn theme_remove(id: &str) -> Result<()> {
     if !user_file.is_file() {
         return Err(format!("no user theme named {id}").into());
     }
-    fs::remove_file(&user_file)?;
-    if let Some(wallpaper) = theme_asset_wallpaper(id) {
-        let theme_dir = expand_home(&Config::load().unwrap_or_default().wallpaper.theme_dir);
-        if wallpaper.starts_with(&theme_dir) && wallpaper.is_file() {
-            let _ = fs::remove_file(&wallpaper);
+    // A sidecar is user-writable and cannot prove deletion authority. Retain all
+    // image data conservatively, including legacy/shared/externally modified PNGs.
+    let mut changes = vec![
+        (user_file, None),
+        (
+            directory().join("themes").join(format!("{id}.assets")),
+            None,
+        ),
+    ];
+    let prefs_path = theme_preferences_path();
+    if prefs_path.exists() {
+        let mut doc: toml_edit::DocumentMut = fs::read_to_string(&prefs_path)?.parse()?;
+        if let Some(hidden) = doc.get("hidden").and_then(|item| item.as_array()) {
+            let mut next = toml_edit::Array::new();
+            for value in hidden.iter().filter(|value| value.as_str() != Some(id)) {
+                next.push(value.clone());
+            }
+            doc["hidden"] = toml_edit::value(next);
         }
+        changes.push((prefs_path, Some(doc.to_string().into_bytes())));
     }
-    let _ = fs::remove_file(directory().join("themes").join(format!("{id}.assets")));
-    let mut prefs = read_theme_preferences();
-    prefs.hidden.retain(|name| name != id);
-    write_theme_preferences(&prefs)?;
+    theme_transaction(changes)?;
     Ok(())
 }
 
@@ -1620,6 +1796,43 @@ pub fn theme_hide(id: &str, hide: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_png_and_failed_staging_do_not_replace_existing_theme() {
+        assert!(validate_theme_png(b"\x89PNG\r\n\x1a\ntruncated").is_err());
+        let dir = std::env::temp_dir().join(format!("niru-theme-atomic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let theme = dir.join("theme.toml");
+        fs::write(&theme, b"original").unwrap();
+        let blocked = dir.join("directory");
+        fs::create_dir(&blocked).unwrap();
+        assert!(theme_transaction(vec![
+            (theme.clone(), Some(b"replacement".to_vec())),
+            (blocked, Some(b"invalid".to_vec()))
+        ])
+        .is_err());
+        assert_eq!(fs::read(&theme).unwrap(), b"original");
+        assert!(fs::read_dir(&dir).unwrap().flatten().all(|entry| !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".niru-theme-")));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_symlink_is_not_a_theme_transaction_destination() {
+        let dir = std::env::temp_dir().join(format!("niru-theme-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let own = dir.join("own.png");
+        let link = dir.join("theme.png");
+        fs::write(&own, b"personal image").unwrap();
+        std::os::unix::fs::symlink(&own, &link).unwrap();
+        assert!(theme_transaction(vec![(link, Some(b"replacement".to_vec()))]).is_err());
+        assert_eq!(fs::read(&own).unwrap(), b"personal image");
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn defaults_are_minimal() {
