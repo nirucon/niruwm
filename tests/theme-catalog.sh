@@ -14,7 +14,9 @@ muted = "90a0b0"
 border = "203040"
 focus = "40a0ff"
 THEME
-printf '\211PNG\r\n\032\n\000\000\000\rIHDR' > "$tmp/wall.png"
+base64 -d > "$tmp/wall.png" <<'PNG'
+iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=
+PNG
 fail() { printf 'theme-catalog: %s\n' "$*" >&2; exit 1; }
 
 "$bin" theme-catalog | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["active"]=="niru-noir"; assert len([t for t in d["themes"] if t["builtin"]])==10'

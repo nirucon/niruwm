@@ -1741,15 +1741,58 @@ pub fn theme_remove(id: &str) -> Result<()> {
     if !user_file.is_file() {
         return Err(format!("no user theme named {id}").into());
     }
-    // A sidecar is user-writable and cannot prove deletion authority. Retain all
-    // image data conservatively, including legacy/shared/externally modified PNGs.
-    let mut changes = vec![
-        (user_file, None),
-        (
-            directory().join("themes").join(format!("{id}.assets")),
-            None,
-        ),
-    ];
+    let assets = directory().join("themes").join(format!("{id}.assets"));
+    // Remove only an image this theme imported, still matching its recorded
+    // hash, not a symlink, and not referenced by another theme. Legacy,
+    // externally modified and shared images are retained.
+    let owned_wallpaper = fs::read_to_string(&assets)
+        .ok()
+        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+        .and_then(|value| {
+            let name = value.get("wallpaper")?.as_str()?;
+            let expected = value.get("sha256")?.as_str()?;
+            let path = Path::new(name);
+            if path.components().count() != 1 || name == "." || name == ".." {
+                return None;
+            }
+            let cfg = Config::load().unwrap_or_default();
+            let theme_dir = expand_home(&cfg.wallpaper.theme_dir);
+            let target = theme_dir.join(name);
+            let meta = fs::symlink_metadata(&target).ok()?;
+            if !meta.file_type().is_file() {
+                return None;
+            }
+            use sha2::{Digest, Sha256};
+            let actual = format!("{:x}", Sha256::digest(fs::read(&target).ok()?));
+            if actual != expected {
+                return None;
+            }
+            let shared = fs::read_dir(directory().join("themes"))
+                .ok()?
+                .flatten()
+                .filter(|entry| entry.path() != assets)
+                .filter(|entry| {
+                    entry.path().extension().and_then(|ext| ext.to_str()) == Some("assets")
+                })
+                .any(|entry| {
+                    fs::read_to_string(entry.path())
+                        .ok()
+                        .and_then(|text| toml::from_str::<toml::Value>(&text).ok())
+                        .and_then(|value| {
+                            value
+                                .get("wallpaper")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_owned)
+                        })
+                        .as_deref()
+                        == Some(name)
+                });
+            (!shared).then_some(target)
+        });
+    let mut changes = vec![(user_file, None), (assets, None)];
+    if let Some(path) = owned_wallpaper {
+        changes.push((path, None));
+    }
     let prefs_path = theme_preferences_path();
     if prefs_path.exists() {
         let mut doc: toml_edit::DocumentMut = fs::read_to_string(&prefs_path)?.parse()?;
