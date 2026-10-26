@@ -6,8 +6,12 @@
 //!
 //! The old 0.1 path `~/.config/niru/config.toml` is still read when the new
 //! file does not exist, so an existing alpha configuration keeps working.
-use serde::Deserialize;
-use std::{error::Error, fs, path::PathBuf};
+use serde::{Deserialize, Serialize};
+use std::{
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -1067,7 +1071,7 @@ fn apply_appearance_defaults(cfg: &mut Config, file: &toml::Value) {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Theme {
     pub name: String,
@@ -1293,6 +1297,324 @@ pub fn dump() -> Result<String> {
         ));
     }
     Ok(out)
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct ThemePreferences {
+    #[serde(default)]
+    hidden: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ThemeEntry {
+    pub id: String,
+    pub name: String,
+    pub builtin: bool,
+    pub overridden: bool,
+    pub hidden: bool,
+    pub valid: bool,
+    pub error: Option<String>,
+    pub colors: Option<Theme>,
+    pub wallpaper: Option<String>,
+    pub wallpaper_available: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ThemeCatalog {
+    pub schema: u32,
+    pub active: String,
+    pub themes: Vec<ThemeEntry>,
+    pub hidden: Vec<String>,
+    pub appearance_overrides: bool,
+    pub follow_theme: bool,
+    pub theme_dir: String,
+}
+
+fn theme_preferences_path() -> PathBuf {
+    directory().join("theme-preferences.toml")
+}
+
+fn read_theme_preferences() -> ThemePreferences {
+    fs::read_to_string(theme_preferences_path())
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_theme_preferences(prefs: &ThemePreferences) -> Result<()> {
+    let path = theme_preferences_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    fs::write(&temp, toml::to_string_pretty(prefs)?)?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
+        return home.join(rest);
+    }
+    PathBuf::from(path)
+}
+
+fn theme_wallpaper(id: &str, theme_dir: &Path) -> Option<PathBuf> {
+    let short = id.strip_prefix("niru-").unwrap_or(id);
+    [
+        format!("nirux-wallpaper-{short}-4k.png"),
+        format!("nirux-wallpaper-{short}-8k.png"),
+        format!("nirux-wallpaper-{short}.png"),
+    ]
+    .into_iter()
+    .map(|name| theme_dir.join(name))
+    .find(|path| path.is_file())
+}
+
+fn appearance_has_overrides() -> bool {
+    appearance_value()
+        .as_ref()
+        .and_then(|value| value.get("colors"))
+        .and_then(|colors| colors.as_table())
+        .map(|table| {
+            table.keys().any(|key| {
+                matches!(
+                    key.as_str(),
+                    "background" | "foreground" | "muted" | "border" | "focus" | "accent"
+                )
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn user_theme_ids() -> Vec<String> {
+    let mut ids: Vec<String> = fs::read_dir(directory().join("themes"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("toml") {
+                return None;
+            }
+            path.file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+                .filter(|id| !id.is_empty())
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+fn all_theme_ids() -> Vec<String> {
+    let mut ids: Vec<String> = Theme::builtin()
+        .iter()
+        .map(|id| (*id).to_string())
+        .collect();
+    for id in user_theme_ids() {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// The complete effective theme catalogue, including hidden and invalid user
+/// files. A malformed user file is an entry with an error, not a failed list.
+pub fn theme_catalog() -> ThemeCatalog {
+    let prefs = read_theme_preferences();
+    let cfg = Config::load().unwrap_or_default();
+    let theme_dir = expand_home(&cfg.wallpaper.theme_dir);
+    let mut themes = Vec::new();
+    for id in all_theme_ids() {
+        let builtin = Theme::builtin().contains(&id.as_str());
+        let user_file = directory().join("themes").join(format!("{id}.toml"));
+        let overridden = user_file.is_file() && builtin;
+        let hidden = prefs.hidden.iter().any(|name| name == &id);
+        let wallpaper = theme_wallpaper(&id, &theme_dir);
+        match Theme::load(&id) {
+            Ok(colors) => themes.push(ThemeEntry {
+                name: colors.name.clone(),
+                id,
+                builtin,
+                overridden,
+                hidden,
+                valid: true,
+                error: None,
+                colors: Some(colors),
+                wallpaper_available: wallpaper.is_some(),
+                wallpaper: wallpaper.map(|path| path.display().to_string()),
+            }),
+            Err(error) => themes.push(ThemeEntry {
+                name: id.clone(),
+                id,
+                builtin,
+                overridden,
+                hidden,
+                valid: false,
+                error: Some(error.to_string()),
+                colors: None,
+                wallpaper_available: wallpaper.is_some(),
+                wallpaper: wallpaper.map(|path| path.display().to_string()),
+            }),
+        }
+    }
+    ThemeCatalog {
+        schema: 1,
+        active: cfg.theme,
+        themes,
+        hidden: prefs.hidden,
+        appearance_overrides: appearance_has_overrides(),
+        follow_theme: cfg.wallpaper.follow_theme,
+        theme_dir: cfg.wallpaper.theme_dir,
+    }
+}
+
+fn valid_theme_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Import a validated theme file. Built-in ids are protected unless the user
+/// already has an override. An optional PNG wallpaper can be copied into the
+/// configured theme directory and is recorded for safe removal.
+pub fn theme_import(
+    source: &Path,
+    id: Option<&str>,
+    wallpaper: Option<&Path>,
+    replace: bool,
+) -> Result<String> {
+    let text = fs::read_to_string(source)?;
+    let theme: Theme = toml::from_str(&text)?;
+    for colour in [
+        &theme.background,
+        &theme.foreground,
+        &theme.muted,
+        &theme.border,
+        &theme.focus,
+    ] {
+        Theme::pixel(colour)?;
+    }
+    let id = id
+        .map(str::to_string)
+        .or_else(|| {
+            source
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().to_string())
+        })
+        .ok_or("the theme file needs a name")?;
+    if !valid_theme_id(&id) {
+        return Err("theme id must use letters, digits, - and _".into());
+    }
+    let dir = directory().join("themes");
+    fs::create_dir_all(&dir)?;
+    let target = dir.join(format!("{id}.toml"));
+    let builtin = Theme::builtin().contains(&id.as_str());
+    if builtin && !target.is_file() {
+        return Err(format!("{id} is a built-in theme; choose another id").into());
+    }
+    if target.is_file() && !replace {
+        return Err(format!("a user theme named {id} already exists").into());
+    }
+    let temp = dir.join(format!(".{id}.{}.new", std::process::id()));
+    fs::write(&temp, text)?;
+    fs::rename(&temp, &target)?;
+    if let Some(wallpaper) = wallpaper {
+        let bytes = fs::read(wallpaper)?;
+        if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err("theme wallpaper must be a PNG file".into());
+        }
+        let cfg = Config::load().unwrap_or_default();
+        let theme_dir = expand_home(&cfg.wallpaper.theme_dir);
+        fs::create_dir_all(&theme_dir)?;
+        let short = id.strip_prefix("niru-").unwrap_or(&id);
+        let name = format!("nirux-wallpaper-{short}-4k.png");
+        let target_wallpaper = theme_dir.join(&name);
+        if target_wallpaper.exists() && !replace {
+            return Err(format!("wallpaper {name} already exists").into());
+        }
+        let temp_wallpaper = theme_dir.join(format!(".{name}.{}", std::process::id()));
+        fs::write(&temp_wallpaper, bytes)?;
+        fs::rename(&temp_wallpaper, &target_wallpaper)?;
+        let assets = dir.join(format!("{id}.assets"));
+        let assets_text = format!("wallpaper = \"{name}\"\n");
+        let temp_assets = dir.join(format!(".{id}.assets.{}", std::process::id()));
+        fs::write(&temp_assets, assets_text)?;
+        fs::rename(temp_assets, assets)?;
+    }
+    Ok(id)
+}
+
+fn theme_asset_wallpaper(id: &str) -> Option<PathBuf> {
+    let assets = directory().join("themes").join(format!("{id}.assets"));
+    let value: toml::Value = toml::from_str(&fs::read_to_string(assets).ok()?).ok()?;
+    let name = value.get("wallpaper")?.as_str()?;
+    Some(expand_home(&Config::load().unwrap_or_default().wallpaper.theme_dir).join(name))
+}
+
+pub fn theme_remove(id: &str) -> Result<()> {
+    if !valid_theme_id(id) {
+        return Err("invalid theme id".into());
+    }
+    if Theme::builtin().contains(&id) {
+        let user_file = directory().join("themes").join(format!("{id}.toml"));
+        if !user_file.is_file() {
+            return Err(format!("{id} is a bundled theme; hide it instead").into());
+        }
+    }
+    if Config::load().map(|cfg| cfg.theme == id).unwrap_or(false) {
+        return Err("choose another theme before removing the active one".into());
+    }
+    let user_file = directory().join("themes").join(format!("{id}.toml"));
+    if !user_file.is_file() {
+        return Err(format!("no user theme named {id}").into());
+    }
+    fs::remove_file(&user_file)?;
+    if let Some(wallpaper) = theme_asset_wallpaper(id) {
+        let theme_dir = expand_home(&Config::load().unwrap_or_default().wallpaper.theme_dir);
+        if wallpaper.starts_with(&theme_dir) && wallpaper.is_file() {
+            let _ = fs::remove_file(&wallpaper);
+        }
+    }
+    let _ = fs::remove_file(directory().join("themes").join(format!("{id}.assets")));
+    let mut prefs = read_theme_preferences();
+    prefs.hidden.retain(|name| name != id);
+    write_theme_preferences(&prefs)?;
+    Ok(())
+}
+
+/// Hide a bundled theme without deleting package/generation files. At least
+/// one visible theme and a non-active target are required.
+pub fn theme_hide(id: &str, hide: bool) -> Result<()> {
+    if !all_theme_ids().iter().any(|name| name == id) {
+        return Err(format!("unknown theme: {id}").into());
+    }
+    let mut prefs = read_theme_preferences();
+    if hide {
+        if Config::load().map(|cfg| cfg.theme == id).unwrap_or(false) {
+            return Err("apply another theme before hiding the active one".into());
+        }
+        let visible = all_theme_ids()
+            .iter()
+            .filter(|name| !prefs.hidden.iter().any(|hidden| hidden == *name))
+            .count();
+        if visible <= 1 {
+            return Err("at least one theme must remain visible".into());
+        }
+        if !prefs.hidden.iter().any(|name| name == id) {
+            prefs.hidden.push(id.to_string());
+        }
+    } else {
+        prefs.hidden.retain(|name| name != id);
+    }
+    write_theme_preferences(&prefs)
 }
 
 #[cfg(test)]

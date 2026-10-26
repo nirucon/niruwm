@@ -7,6 +7,7 @@
 #[allow(dead_code)] // niructl only reads the shared config shape.
 mod bindings;
 #[path = "../config.rs"]
+#[allow(dead_code)] // shared with NIRUWM; theme management consumes part of it
 mod config;
 #[path = "../layout.rs"]
 #[allow(dead_code)] // niructl prints the layout names
@@ -25,7 +26,7 @@ use chrono::{Local, TimeZone, Timelike};
 use config::{Config, Result, Theme};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Read,
     os::unix::fs::PermissionsExt,
@@ -40,7 +41,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
-theme NAME | themes | keys | monitors | reload | restart-bar | quit | save | save-session | \
+theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | quit | save | save-session | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
 timing show|set KEY MINUTES | \
@@ -1956,7 +1957,112 @@ fn display_position_pair(position: &str) -> Option<(i32, i32)> {
     Some((x.parse().ok()?, y.parse().ok()?))
 }
 
-fn display_output_json(state: &DisplayOutputState) -> serde_json::Value {
+fn parse_edid(bytes: &[u8]) -> Option<serde_json::Value> {
+    if bytes.len() < 128 || bytes.get(0..8)? != [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00] {
+        return None;
+    }
+    let manufacturer_id = (u16::from(bytes[8]) << 8) | u16::from(bytes[9]);
+    let manufacturer: String = [10u16, 5u16, 0u16]
+        .iter()
+        .map(|shift| char::from(b'A' - 1 + (((manufacturer_id >> *shift) & 0x1f) as u8)))
+        .collect();
+    let product_code = u16::from_le_bytes([bytes[10], bytes[11]]);
+    let serial_number = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let week = bytes[16];
+    let year = 1990 + u16::from(bytes[17]);
+    let mut model = None;
+    let mut serial_text = None;
+    for block in bytes.get(54..)?.chunks_exact(18) {
+        if block[0] != 0 || block[1] != 0 || block[2] != 0 {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&block[5..18]);
+        let text = text.trim_matches(|c: char| c == '\n' || c == '\r' || c == ' ' || c == '\0');
+        if text.is_empty() {
+            continue;
+        }
+        match block[3] {
+            0xfc if model.is_none() => model = Some(text.to_string()),
+            0xff if serial_text.is_none() => serial_text = Some(text.to_string()),
+            _ => {}
+        }
+    }
+    Some(serde_json::json!({
+        "manufacturer": manufacturer,
+        "model": model,
+        "product_code": product_code,
+        "serial": serial_text.or_else(|| (serial_number != 0).then(|| serial_number.to_string())),
+        "week": week,
+        "year": year,
+    }))
+}
+
+fn display_edid_identities_from(text: &str) -> HashMap<String, serde_json::Value> {
+    let mut identities = HashMap::new();
+    let mut current: Option<(String, Vec<u8>)> = None;
+    let mut collecting = false;
+    for line in text.lines() {
+        if !line.starts_with(|c: char| c.is_whitespace()) {
+            if let Some((name, edid)) = current.take() {
+                if let Some(identity) = parse_edid(&edid) {
+                    identities.insert(name, identity);
+                }
+            }
+            collecting = false;
+            if line.contains(" connected") || line.contains(" disconnected") {
+                if let Some(name) = line.split_whitespace().next() {
+                    current = Some((name.to_string(), Vec::new()));
+                }
+            }
+            continue;
+        }
+        let Some((_, edid)) = current.as_mut() else {
+            continue;
+        };
+        let trimmed = line.trim();
+        if trimmed == "EDID:" {
+            collecting = true;
+            continue;
+        }
+        if !collecting {
+            continue;
+        }
+        let hex: String = trimmed.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        if hex.len() < 32 || hex.len() % 2 != 0 {
+            collecting = false;
+            continue;
+        }
+        for pair in hex.as_bytes().chunks_exact(2) {
+            if let Ok(value) = u8::from_str_radix(std::str::from_utf8(pair).unwrap_or(""), 16) {
+                edid.push(value);
+            }
+        }
+    }
+    if let Some((name, edid)) = current {
+        if let Some(identity) = parse_edid(&edid) {
+            identities.insert(name, identity);
+        }
+    }
+    identities
+}
+
+fn display_edid_identities() -> HashMap<String, serde_json::Value> {
+    let Ok(out) = std::process::Command::new("xrandr")
+        .args(["--verbose"])
+        .output()
+    else {
+        return HashMap::new();
+    };
+    if !out.status.success() {
+        return HashMap::new();
+    }
+    display_edid_identities_from(&String::from_utf8_lossy(&out.stdout))
+}
+
+fn display_output_json(
+    state: &DisplayOutputState,
+    identities: &HashMap<String, serde_json::Value>,
+) -> serde_json::Value {
     let current = state.current.as_ref();
     let (x, y) = current
         .and_then(|current| display_position_pair(&current.position))
@@ -1972,6 +2078,7 @@ fn display_output_json(state: &DisplayOutputState) -> serde_json::Value {
     }
     serde_json::json!({
         "name": state.name,
+        "identity": identities.get(&state.name),
         "connected": state.connected,
         "active": current.is_some(),
         "primary": current.map(|current| current.primary).unwrap_or(false),
@@ -2012,6 +2119,7 @@ fn display_profile_json(profile: &DisplayProfile) -> serde_json::Value {
 
 fn display_status_json() -> Result<()> {
     let outputs = display_outputs()?;
+    let identities = display_edid_identities();
     let file = display_read_file()?;
     let preview = display_preview_read().map(|preview| {
         serde_json::json!({
@@ -2022,7 +2130,7 @@ fn display_status_json() -> Result<()> {
     });
     let value = serde_json::json!({
         "schema": 1,
-        "outputs": outputs.iter().map(display_output_json).collect::<Vec<_>>(),
+        "outputs": outputs.iter().map(|output| display_output_json(output, &identities)).collect::<Vec<_>>(),
         "profiles": file.profile.iter().map(display_profile_json).collect::<Vec<_>>(),
         "startup_profile": file.startup_profile,
         "preview": preview,
@@ -2042,10 +2150,15 @@ fn display_list_json() -> Result<()> {
 }
 
 fn display_read_profile_from_stdin() -> Result<DisplayProfile> {
+    const LIMIT: u64 = 256 * 1024;
     let mut text = String::new();
     std::io::stdin()
+        .take(LIMIT)
         .read_to_string(&mut text)
         .map_err(|e| format!("cannot read the display profile from stdin: {e}"))?;
+    if text.len() as u64 >= LIMIT {
+        return Err("display profile JSON is too large".into());
+    }
     let mut profile: DisplayProfile =
         serde_json::from_str(&text).map_err(|e| format!("invalid display profile JSON: {e}"))?;
     if profile.name.trim().is_empty() {
@@ -2059,7 +2172,12 @@ fn display_read_profile_from_stdin() -> Result<DisplayProfile> {
 
 fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
     let outputs = display_outputs()?;
-    let previous = display_current_layout(&outputs);
+    // A second preview must undo to the layout before the first preview, not
+    // to the already-previewed layout. Keep the original recovery snapshot.
+    let previous = display_preview_read()
+        .map(|preview| preview.previous)
+        .filter(|outputs| !outputs.is_empty())
+        .unwrap_or_else(|| display_current_layout(&outputs));
     if previous.is_empty() {
         return Err("no active display layout to revert to".into());
     }
@@ -2070,12 +2188,15 @@ fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
     let seconds = seconds.clamp(5, 120);
     let token = format!("{}-{}", now_secs(), std::process::id());
     let expiry = now_secs() + seconds;
-    display_preview_write(&DisplayPreview {
+    if let Err(error) = display_preview_write(&DisplayPreview {
         name: profile.name.clone(),
         token: token.clone(),
         expiry,
-        previous,
-    })?;
+        previous: previous.clone(),
+    }) {
+        let _ = display_restore(&previous);
+        return Err(format!("could not save the preview transaction: {error}").into());
+    }
     display_notify(
         "Display preview",
         &format!(
@@ -2084,14 +2205,23 @@ fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
         ),
     );
     let exe = std::env::current_exe()?;
-    let _ = std::process::Command::new(exe)
+    match std::process::Command::new(exe)
         .args(["display", "expire", &token])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
-    println!("previewing display profile {} for {seconds}s", profile.name);
-    Ok(())
+        .spawn()
+    {
+        Ok(_) => {
+            println!("previewing display profile {} for {seconds}s", profile.name);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = display_restore(&previous);
+            let _ = std::fs::remove_file(display_preview_path());
+            Err(format!("cannot start the display preview watchdog: {error}").into())
+        }
+    }
 }
 
 fn display_save_profile(profile: &DisplayProfile, name: &str) -> Result<()> {
@@ -4256,6 +4386,13 @@ fn mode(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn expand_user_path(path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        return PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest);
+    }
+    PathBuf::from(path)
+}
+
 fn offline(cmd: &str) -> Result<()> {
     // The session file is a plain list, so these work without a window
     // manager too: useful from the console before starting a session.
@@ -4391,37 +4528,101 @@ fn offline(cmd: &str) -> Result<()> {
         println!("Cycle with Super+Ctrl+period and Super+Ctrl+comma.");
         return Ok(());
     }
-    if cmd == "themes" {
-        let dir = config::directory().join("themes");
-        println!("NIRUWM themes:");
-        for name in config::Theme::builtin() {
-            let t = Theme::load(name)?;
-            println!("  {:<18} {}", name, t.name);
-        }
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            let mut extra: Vec<String> = entries
-                .flatten()
-                .filter_map(|e| {
-                    let p = e.path();
-                    if p.extension().and_then(|x| x.to_str()) == Some("toml") {
-                        p.file_stem().map(|s| s.to_string_lossy().to_string())
-                    } else {
-                        None
+    if cmd == "theme-catalog" {
+        let catalog = config::theme_catalog();
+        println!("{}", serde_json::to_string_pretty(&catalog)?);
+        return Ok(());
+    }
+    if cmd == "theme-import" {
+        let rest = std::env::args().skip(2).collect::<Vec<_>>();
+        let mut source = None;
+        let mut id = None;
+        let mut wallpaper = None;
+        let mut replace = false;
+        let mut i = 0;
+        while i < rest.len() {
+            match rest[i].as_str() {
+                "--id" => {
+                    i += 1;
+                    id = rest.get(i).cloned();
+                    if id.is_none() {
+                        return Err("theme-import --id needs a name".into());
                     }
-                })
-                .filter(|n| !config::Theme::builtin().contains(&n.as_str()))
-                .collect();
-            extra.sort();
-            if !extra.is_empty() {
-                println!();
-                println!("Your own themes in {}:", dir.display());
-                for name in extra {
-                    println!("  {name}");
                 }
+                "--wallpaper" => {
+                    i += 1;
+                    wallpaper = rest.get(i).cloned();
+                    if wallpaper.is_none() {
+                        return Err("theme-import --wallpaper needs a file".into());
+                    }
+                }
+                "--replace" => replace = true,
+                value if source.is_none() => source = Some(value.to_string()),
+                other => return Err(format!("unknown theme-import argument: {other}").into()),
+            }
+            i += 1;
+        }
+        let source = source.ok_or("theme-import needs a theme file")?;
+        let source = expand_user_path(&source);
+        let wallpaper = wallpaper.as_deref().map(expand_user_path);
+        let imported = config::theme_import(&source, id.as_deref(), wallpaper.as_deref(), replace)?;
+        println!("imported theme {imported}");
+        return Ok(());
+    }
+    if cmd == "theme-remove" {
+        let name = std::env::args()
+            .nth(2)
+            .ok_or("theme-remove needs a theme name")?;
+        config::theme_remove(&name)?;
+        println!("removed theme {name}");
+        return Ok(());
+    }
+    if cmd == "theme-hide" || cmd == "theme-show" {
+        let name = std::env::args()
+            .nth(2)
+            .ok_or("theme-hide/show needs a theme name")?;
+        config::theme_hide(&name, cmd == "theme-hide")?;
+        println!(
+            "{} theme {name}",
+            if cmd == "theme-hide" { "hid" } else { "shown" }
+        );
+        return Ok(());
+    }
+    if cmd == "themes" {
+        let catalog = config::theme_catalog();
+        println!("NIRUWM themes:");
+        for theme in &catalog.themes {
+            let active = if theme.id == catalog.active { "*" } else { " " };
+            let hidden = if theme.hidden { " hidden" } else { "" };
+            let origin = if theme.overridden {
+                "built-in override"
+            } else if theme.builtin {
+                "built-in"
+            } else {
+                "user"
+            };
+            let wallpaper = if theme.wallpaper_available {
+                ""
+            } else {
+                " no wallpaper"
+            };
+            match &theme.colors {
+                Some(colors) => println!(
+                    "{active} {:<18} {:<20} {:<16}{hidden}{wallpaper}",
+                    theme.id, colors.name, origin
+                ),
+                None => println!(
+                    "{active} {:<18} {:<20} {:<16} invalid: {}{hidden}{wallpaper}",
+                    theme.id,
+                    theme.name,
+                    origin,
+                    theme.error.as_deref().unwrap_or("unknown error")
+                ),
             }
         }
         println!();
-        println!("Select with: niructl theme NAME   (or set theme in config.toml)");
+        println!("Apply with: niructl theme NAME");
+        println!("Inspect with: niructl theme-catalog --json");
         return Ok(());
     }
     Ok(())
@@ -4483,6 +4684,11 @@ fn run() -> Result<()> {
     if matches!(
         cmd.as_str(),
         "themes"
+            | "theme-catalog"
+            | "theme-import"
+            | "theme-remove"
+            | "theme-hide"
+            | "theme-show"
             | "layouts"
             | "keys"
             | "layout"
@@ -5267,6 +5473,28 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
         assert!(rendered.contains("startup_profile = \"Desk\""));
         let empty: super::DisplayFile = toml::from_str("[[profile]]\nname = \"Old\"\n").unwrap();
         assert_eq!(empty.startup_profile, None);
+    }
+
+    #[test]
+    fn edid_identity_is_decoded_without_x() {
+        let mut edid = vec![0u8; 128];
+        edid[0..8].copy_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0]);
+        // DEL: D=4, E=5, L=12.
+        edid[8] = 0x10;
+        edid[9] = 0xac;
+        edid[10] = 0x34;
+        edid[11] = 0x12;
+        edid[12..16].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        edid[16] = 7;
+        edid[17] = 30;
+        edid[54..58].copy_from_slice(&[0, 0, 0, 0xfc]);
+        let model = b"Test Monitor\n   ";
+        edid[59..59 + model.len()].copy_from_slice(model);
+        let identity = super::parse_edid(&edid).expect("valid EDID");
+        assert_eq!(identity["manufacturer"], "DEL");
+        assert_eq!(identity["model"], "Test Monitor");
+        assert_eq!(identity["year"], 2020);
+        assert_eq!(identity["product_code"], 0x1234);
     }
 
     #[test]

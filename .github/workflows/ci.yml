@@ -38,6 +38,8 @@ jobs:
           sh tests/power-actions.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: Truncated config is repaired, invalid config is refused
         run: sh tests/config-repair.sh "$PWD/target/x86_64-unknown-linux-musl/release"
+      - name: Theme catalogue, import, hide and removal
+        run: sh tests/theme-catalog.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
       - name: A release is built from a tag, never a branch
         run: sh tests/release-source.sh
       - name: The 0.11.0 configuration contract

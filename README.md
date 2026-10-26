@@ -164,7 +164,18 @@ niruwm --reset-config   # restore the full example; keeps .niruwm-backup
 niructl reload
 niructl restart-bar
 niructl theme niru-nord
+niructl themes                         # catalogue, origin and active marker
+niructl theme-catalog                  # the same catalogue as JSON for GUIs
+niructl theme-import ~/theme.toml --id my-theme --wallpaper ~/wall.png
+niructl theme-hide niru-satie          # hide a bundled theme
+niructl theme-show niru-satie
+niructl theme-remove my-theme          # user themes only
 ```
+
+`niruthemeselector` is the graphical front end: it previews wallpaper and
+palette, applies through the same path and manages user imports and hidden
+bundled themes. NIRUWM's theme change still owns the terminal-hook, wallpaper,
+bar and running-session propagation.
 
 Session options live in `~/.config/niruwm/session.conf`. Screensaver and lock
 timing live in the shared config under `[idle]`:

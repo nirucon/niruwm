@@ -1,4 +1,5 @@
 mod bindings;
+#[allow(dead_code)] // the catalogue is consumed by other binaries
 mod config;
 mod doctor;
 mod keyboard;
