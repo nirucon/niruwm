@@ -296,7 +296,21 @@ niructl display auto                          # side by side, preferred modes
 A failed switch puts the previous layout back. Profiles live in
 `~/.config/niruwm/displays.toml`; `displays.example.toml` in the source tree
 shows the file format, and the launcher lists the same profiles under
-Displays.
+Displays. Each output can record a refresh rate, and old profiles without one
+keep xrandr's choice for the selected mode.
+
+An opt-in startup profile is applied once by `niruwm-session` before the WM
+reads the monitor layout:
+
+```sh
+niructl display startup show
+niructl display startup set Desk
+niructl display startup off
+niructl display startup apply   # what the session runs at login
+```
+
+There is no automatic switching by default. A missing profile or output leaves
+the current connected screens usable and logs why the profile was skipped.
 
 `niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
 display profiles, power profiles, DND, diagnostics, work modes and workspace

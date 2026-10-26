@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
+    io::Read,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Stdio,
@@ -46,7 +47,7 @@ timing show|set KEY MINUTES | \
 wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
-display list|save NAME|preview NAME|apply NAME|keep|revert|status|rotate OUTPUT normal|left|right|inverted|auto | \
+display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto | \
 layout show|save | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
@@ -1483,11 +1484,15 @@ fn bluetooth(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct DisplayOutput {
     name: String,
     #[serde(default = "display_preferred_mode")]
     mode: String,
+    /// Refresh rate in Hz. Older profiles have none, and then xrandr's own
+    /// choice for the mode is kept instead of silently changing it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rate: Option<f64>,
     #[serde(default = "display_zero_position")]
     position: String,
     #[serde(default = "display_normal_rotation")]
@@ -1570,6 +1575,7 @@ fn display_normal_rotation() -> String {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct DisplayProfile {
+    #[serde(default)]
     name: String,
     #[serde(default)]
     outputs: Vec<DisplayOutput>,
@@ -1579,13 +1585,23 @@ struct DisplayProfile {
 struct DisplayFile {
     #[serde(default)]
     profile: Vec<DisplayProfile>,
+    /// Opt-in profile applied once at login by niruwm-session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    startup_profile: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DisplayMode {
+    mode: String,
+    rates: Vec<f64>,
+    preferred: bool,
 }
 
 #[derive(Clone, Debug)]
 struct DisplayOutputState {
     name: String,
     connected: bool,
-    modes: Vec<String>,
+    modes: Vec<DisplayMode>,
     /// The mode xrandr marks preferred, when it names one.
     preferred: Option<String>,
     current: Option<DisplayOutput>,
@@ -1625,20 +1641,37 @@ fn display_outputs_from(text: &str) -> Vec<DisplayOutputState> {
     for line in text.lines() {
         if !line.starts_with(|c: char| !c.is_whitespace()) {
             if let Some(output) = outputs.last_mut() {
-                if let Some(mode) = line.split_whitespace().next() {
+                let mut words = line.split_whitespace();
+                if let Some(mode) = words.next() {
                     if !mode.is_empty() && mode.contains('x') {
-                        output.modes.push(mode.to_string());
-                        // `+` marks the preferred mode; the first line is not
-                        // necessarily it. `*` marks the current one.
-                        let flags = line.split_whitespace().nth(1).unwrap_or("");
-                        if flags.contains('+') && output.preferred.is_none() {
+                        let rate_words: Vec<&str> = words.collect();
+                        let rates: Vec<f64> = rate_words
+                            .iter()
+                            .filter_map(|word| {
+                                word.trim_end_matches(['*', '+']).parse::<f64>().ok()
+                            })
+                            .collect();
+                        // `+` marks the preferred rate; `*` marks the one in
+                        // use. The current mode's geometry is on the output
+                        // line above, while its rate is on this line.
+                        let preferred = rate_words.iter().any(|word| word.contains('+'));
+                        let current_rate = rate_words
+                            .iter()
+                            .find(|word| word.contains('*'))
+                            .and_then(|word| word.trim_end_matches(['*', '+']).parse::<f64>().ok());
+                        if preferred && output.preferred.is_none() {
                             output.preferred = Some(mode.to_string());
                         }
-                        if line.split_whitespace().any(|word| word.contains('*')) {
-                            if let Some(current) = output.current.as_mut() {
-                                current.mode = mode.to_string();
-                            }
+                        if let (Some(rate), Some(current)) = (current_rate, output.current.as_mut())
+                        {
+                            current.mode = mode.to_string();
+                            current.rate = Some(rate);
                         }
+                        output.modes.push(DisplayMode {
+                            mode: mode.to_string(),
+                            rates,
+                            preferred,
+                        });
                     }
                 }
             }
@@ -1672,6 +1705,7 @@ fn display_outputs_from(text: &str) -> Vec<DisplayOutputState> {
             DisplayOutput {
                 name: name.to_string(),
                 mode: mode.to_string(),
+                rate: None,
                 position: geometry
                     .split_once('+')
                     .and_then(|(_, rest)| rest.split_once('+'))
@@ -1711,9 +1745,9 @@ fn display_resolve(
             .preferred
             .clone()
             .or_else(|| state.current.as_ref().map(|current| current.mode.clone()))
-            .or_else(|| state.modes.first().cloned())
+            .or_else(|| state.modes.first().map(|mode| mode.mode.clone()))
             .ok_or_else(|| format!("display output {} has no modes", output.name))?
-    } else if state.modes.iter().any(|mode| mode == &output.mode) {
+    } else if state.modes.iter().any(|mode| mode.mode == output.mode) {
         output.mode.clone()
     } else {
         return Err(format!(
@@ -1721,6 +1755,29 @@ fn display_resolve(
             output.mode, output.name
         )
         .into());
+    };
+    let available = state
+        .modes
+        .iter()
+        .find(|available| available.mode == mode)
+        .map(|available| available.rates.as_slice())
+        .unwrap_or(&[]);
+    let rate = match output.rate {
+        Some(rate) => {
+            if !available.is_empty()
+                && !available
+                    .iter()
+                    .any(|available| (available - rate).abs() < 0.01)
+            {
+                return Err(format!(
+                    "display rate {rate} is not available on {} mode {mode}",
+                    output.name
+                )
+                .into());
+            }
+            Some(rate)
+        }
+        None => None,
     };
     if !matches!(
         output.rotation.as_str(),
@@ -1737,6 +1794,7 @@ fn display_resolve(
     }
     Ok(DisplayOutput {
         mode,
+        rate,
         position: format!("{x}x{y}"),
         ..output.clone()
     })
@@ -1763,6 +1821,10 @@ fn display_apply(outputs: &[DisplayOutputState], profile: &DisplayProfile) -> Re
             "--rotate".to_string(),
             resolved.rotation,
         ]);
+        if let Some(rate) = resolved.rate {
+            args.push("--rate".to_string());
+            args.push(format!("{rate:.2}"));
+        }
         if resolved.primary {
             args.push("--primary".into());
         }
@@ -1839,10 +1901,220 @@ fn display_notify(summary: &str, body: &str) {
         .status();
 }
 
+fn display_startup(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("show");
+    match action {
+        "show" => match display_read_file()?.startup_profile {
+            Some(name) => println!("{name}"),
+            None => println!("off"),
+        },
+        "set" => {
+            let name = args
+                .get(1)
+                .ok_or("display startup set needs a profile name")?;
+            let mut file = display_read_file()?;
+            if !file.profile.iter().any(|profile| profile.name == *name) {
+                return Err(format!("unknown display profile: {name}").into());
+            }
+            file.startup_profile = Some(name.clone());
+            display_write_file(&file)?;
+            println!("startup display profile set to {name}");
+        }
+        "off" | "none" => {
+            let mut file = display_read_file()?;
+            file.startup_profile = None;
+            display_write_file(&file)?;
+            println!("startup display profile disabled");
+        }
+        "apply" => {
+            let Some(name) = display_read_file()?.startup_profile else {
+                return Ok(());
+            };
+            let profile = display_read_file()?
+                .profile
+                .into_iter()
+                .find(|profile| profile.name == name)
+                .ok_or_else(|| format!("startup display profile not found: {name}"))?;
+            let outputs = display_outputs()?;
+            let previous = display_current_layout(&outputs);
+            if let Err(error) = display_apply(&outputs, &profile) {
+                if !previous.is_empty() {
+                    let _ = display_restore(&previous);
+                }
+                return Err(error);
+            }
+            println!("applied startup display profile {name}");
+        }
+        _ => return Err("display startup needs show, set NAME, off or apply".into()),
+    }
+    Ok(())
+}
+
+fn display_position_pair(position: &str) -> Option<(i32, i32)> {
+    let position = position.trim_start_matches('+');
+    let (x, y) = position.split_once('x')?;
+    Some((x.parse().ok()?, y.parse().ok()?))
+}
+
+fn display_output_json(state: &DisplayOutputState) -> serde_json::Value {
+    let current = state.current.as_ref();
+    let (x, y) = current
+        .and_then(|current| display_position_pair(&current.position))
+        .unwrap_or((0, 0));
+    let (mut width, mut height) = current
+        .and_then(|current| display_mode_size(&current.mode, state))
+        .unwrap_or((0, 0));
+    if current
+        .map(|current| matches!(current.rotation.as_str(), "left" | "right"))
+        .unwrap_or(false)
+    {
+        std::mem::swap(&mut width, &mut height);
+    }
+    serde_json::json!({
+        "name": state.name,
+        "connected": state.connected,
+        "active": current.is_some(),
+        "primary": current.map(|current| current.primary).unwrap_or(false),
+        "geometry": current.map(|_| serde_json::json!({
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        })),
+        "current": current.map(|current| serde_json::json!({
+            "mode": current.mode,
+            "rate": current.rate,
+            "position": current.position,
+            "rotation": current.rotation,
+            "primary": current.primary,
+        })),
+        "modes": state.modes.iter().map(|mode| serde_json::json!({
+            "mode": mode.mode,
+            "rates": mode.rates,
+            "preferred": mode.preferred,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn display_profile_json(profile: &DisplayProfile) -> serde_json::Value {
+    serde_json::json!({
+        "name": profile.name,
+        "outputs": profile.outputs.iter().map(|output| serde_json::json!({
+            "name": output.name,
+            "mode": output.mode,
+            "rate": output.rate,
+            "position": output.position,
+            "rotation": output.rotation,
+            "primary": output.primary,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+fn display_status_json() -> Result<()> {
+    let outputs = display_outputs()?;
+    let file = display_read_file()?;
+    let preview = display_preview_read().map(|preview| {
+        serde_json::json!({
+            "name": preview.name,
+            "token": preview.token,
+            "seconds_left": preview.expiry.saturating_sub(now_secs()),
+        })
+    });
+    let value = serde_json::json!({
+        "schema": 1,
+        "outputs": outputs.iter().map(display_output_json).collect::<Vec<_>>(),
+        "profiles": file.profile.iter().map(display_profile_json).collect::<Vec<_>>(),
+        "startup_profile": file.startup_profile,
+        "preview": preview,
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn display_list_json() -> Result<()> {
+    let file = display_read_file()?;
+    let value = serde_json::json!({
+        "schema": 1,
+        "profiles": file.profile.iter().map(display_profile_json).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn display_read_profile_from_stdin() -> Result<DisplayProfile> {
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|e| format!("cannot read the display profile from stdin: {e}"))?;
+    let mut profile: DisplayProfile =
+        serde_json::from_str(&text).map_err(|e| format!("invalid display profile JSON: {e}"))?;
+    if profile.name.trim().is_empty() {
+        profile.name = "draft".into();
+    }
+    if profile.outputs.is_empty() {
+        return Err("display profile has no outputs".into());
+    }
+    Ok(profile)
+}
+
+fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
+    let outputs = display_outputs()?;
+    let previous = display_current_layout(&outputs);
+    if previous.is_empty() {
+        return Err("no active display layout to revert to".into());
+    }
+    if let Err(error) = display_apply(&outputs, profile) {
+        let _ = display_restore(&previous);
+        return Err(error);
+    }
+    let seconds = seconds.clamp(5, 120);
+    let token = format!("{}-{}", now_secs(), std::process::id());
+    let expiry = now_secs() + seconds;
+    display_preview_write(&DisplayPreview {
+        name: profile.name.clone(),
+        token: token.clone(),
+        expiry,
+        previous,
+    })?;
+    display_notify(
+        "Display preview",
+        &format!(
+            "{}: keep within {seconds}s or the previous layout returns",
+            profile.name
+        ),
+    );
+    let exe = std::env::current_exe()?;
+    let _ = std::process::Command::new(exe)
+        .args(["display", "expire", &token])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    println!("previewing display profile {} for {seconds}s", profile.name);
+    Ok(())
+}
+
+fn display_save_profile(profile: &DisplayProfile, name: &str) -> Result<()> {
+    if name.is_empty() || name.chars().any(|c| c.is_control()) {
+        return Err("invalid display profile name".into());
+    }
+    let mut file = display_read_file()?;
+    let mut saved = profile.clone();
+    saved.name = name.to_string();
+    file.profile.retain(|profile| profile.name != name);
+    file.profile.push(saved);
+    display_write_file(&file)?;
+    println!("saved display profile {name}");
+    Ok(())
+}
+
 fn display(args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("list");
     match action {
         "list" => {
+            if args.iter().any(|arg| arg == "--json") {
+                return display_list_json();
+            }
             for profile in display_read_file()?.profile {
                 println!(
                     "{}\t{}\tdisplay profile",
@@ -1870,6 +2142,47 @@ fn display(args: &[String]) -> Result<()> {
             display_write_file(&file)?;
             println!("saved display profile {name}");
         }
+        "save-json" => {
+            let profile = display_read_profile_from_stdin()?;
+            let name = args
+                .get(1)
+                .map(String::as_str)
+                .unwrap_or(profile.name.as_str());
+            display_save_profile(&profile, name)?;
+        }
+        "startup" => {
+            display_startup(&args[1..])?;
+        }
+        "delete" => {
+            let name = args.get(1).ok_or("display delete needs a profile name")?;
+            let mut file = display_read_file()?;
+            let before = file.profile.len();
+            file.profile.retain(|profile| profile.name != *name);
+            if file.profile.len() == before {
+                return Err(format!("unknown display profile: {name}").into());
+            }
+            display_write_file(&file)?;
+            println!("deleted display profile {name}");
+        }
+        "rename" => {
+            let old = args.get(1).ok_or("display rename needs an old name")?;
+            let new = args.get(2).ok_or("display rename needs a new name")?;
+            if new.is_empty() || new.chars().any(|c| c.is_control()) {
+                return Err("invalid display profile name".into());
+            }
+            let mut file = display_read_file()?;
+            if file.profile.iter().any(|profile| profile.name == *new) {
+                return Err(format!("display profile already exists: {new}").into());
+            }
+            let profile = file
+                .profile
+                .iter_mut()
+                .find(|profile| profile.name == *old)
+                .ok_or_else(|| format!("unknown display profile: {old}"))?;
+            profile.name = new.to_string();
+            display_write_file(&file)?;
+            println!("renamed display profile {old} to {new}");
+        }
         "apply" | "preview" => {
             let name = args.get(1).ok_or("display command needs a profile name")?;
             let profile = display_read_file()?
@@ -1890,39 +2203,19 @@ fn display(args: &[String]) -> Result<()> {
                 println!("applied display profile {name}");
                 return Ok(());
             }
-            let previous = display_current_layout(&outputs);
-            if previous.is_empty() {
-                return Err("no active display layout to revert to".into());
-            }
-            if let Err(error) = display_apply(&outputs, &profile) {
-                let _ = display_restore(&previous);
-                return Err(error);
-            }
             let seconds = args
                 .get(2)
                 .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(15)
-                .clamp(5, 120);
-            let token = format!("{}-{}", now_secs(), std::process::id());
-            let expiry = now_secs() + seconds;
-            display_preview_write(&DisplayPreview {
-                name: name.clone(),
-                token: token.clone(),
-                expiry,
-                previous,
-            })?;
-            display_notify(
-                "Display preview",
-                &format!("{name}: keep within {seconds}s or the previous layout returns"),
-            );
-            let exe = std::env::current_exe()?;
-            let _ = std::process::Command::new(exe)
-                .args(["display", "expire", &token])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
-            println!("previewing display profile {name} for {seconds}s");
+                .unwrap_or(15);
+            display_preview_apply(&profile, seconds)?;
+        }
+        "preview-json" => {
+            let profile = display_read_profile_from_stdin()?;
+            let seconds = args
+                .get(1)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(15);
+            display_preview_apply(&profile, seconds)?;
         }
         "keep" => {
             if display_preview_read().is_none() {
@@ -1994,11 +2287,13 @@ fn display(args: &[String]) -> Result<()> {
                 let mut output = state.current.clone().unwrap_or(DisplayOutput {
                     name: state.name.clone(),
                     mode: "preferred".into(),
+                    rate: None,
                     position: display_zero_position(),
                     rotation: display_normal_rotation(),
                     primary: false,
                 });
                 output.mode = "preferred".into();
+                output.rate = None;
                 output.rotation = "normal".into();
                 output.position = format!("{position}x0");
                 // Place the next screen past this one's real preferred size.
@@ -2032,16 +2327,21 @@ fn display(args: &[String]) -> Result<()> {
             display_notify("Displays arranged", &summary);
             println!("displays arranged side by side: {summary}");
         }
-        "status" => match display_preview_read() {
-            Some(state) if state.expiry > now_secs() => {
-                println!(
-                    "display preview {} remaining {}s",
-                    state.name,
-                    state.expiry - now_secs()
-                );
+        "status" => {
+            if args.iter().any(|arg| arg == "--json") {
+                return display_status_json();
             }
-            _ => println!("display preview off"),
-        },
+            match display_preview_read() {
+                Some(state) if state.expiry > now_secs() => {
+                    println!(
+                        "display preview {} remaining {}s",
+                        state.name,
+                        state.expiry - now_secs()
+                    );
+                }
+                _ => println!("display preview off"),
+            }
+        }
         _ => return Err(USAGE.into()),
     }
     Ok(())
@@ -4919,11 +5219,63 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
     }
 
     #[test]
+    fn the_current_refresh_rate_is_read_from_the_mode_line() {
+        let outputs = display_outputs_from(SAMPLE);
+        let four = outputs.iter().find(|o| o.name == "DisplayPort-4").unwrap();
+        assert!((four.current.as_ref().unwrap().rate.unwrap() - 59.95).abs() < 0.001);
+        let mode = four
+            .modes
+            .iter()
+            .find(|mode| mode.mode == "2560x1440")
+            .unwrap();
+        assert!(mode.rates.iter().any(|rate| (rate - 74.97).abs() < 0.001));
+        assert!(mode.preferred);
+    }
+
+    #[test]
+    fn a_saved_rate_is_validated_and_old_profiles_still_apply() {
+        let outputs = display_outputs_from(SAMPLE);
+        let with_rate = DisplayOutput {
+            name: "DisplayPort-4".into(),
+            mode: "2560x1440".into(),
+            rate: Some(74.97),
+            position: "0x0".into(),
+            rotation: "normal".into(),
+            primary: true,
+        };
+        let resolved = display_resolve(&outputs, &with_rate).unwrap();
+        assert_eq!(resolved.rate, Some(74.97));
+        let bad = DisplayOutput {
+            rate: Some(60.0),
+            ..with_rate.clone()
+        };
+        assert!(display_resolve(&outputs, &bad).is_err());
+        let old = DisplayOutput {
+            rate: None,
+            ..with_rate
+        };
+        assert_eq!(display_resolve(&outputs, &old).unwrap().rate, None);
+    }
+
+    #[test]
+    fn the_startup_profile_is_optional_and_round_trips() {
+        let text = "startup_profile = \"Desk\"\n\n[[profile]]\nname = \"Desk\"\n[[profile.outputs]]\nname = \"eDP-1\"\nmode = \"preferred\"\nposition = \"0x0\"\nrotation = \"normal\"\nprimary = true\n";
+        let file: super::DisplayFile = toml::from_str(text).unwrap();
+        assert_eq!(file.startup_profile.as_deref(), Some("Desk"));
+        assert_eq!(file.profile[0].name, "Desk");
+        let rendered = toml::to_string(&file).unwrap();
+        assert!(rendered.contains("startup_profile = \"Desk\""));
+        let empty: super::DisplayFile = toml::from_str("[[profile]]\nname = \"Old\"\n").unwrap();
+        assert_eq!(empty.startup_profile, None);
+    }
+
+    #[test]
     fn a_connected_but_switched_off_screen_can_be_placed() {
         let outputs = display_outputs_from(SAMPLE);
         let profile = DisplayOutput {
             name: "DisplayPort-6".into(),
             mode: "preferred".into(),
+            rate: None,
             position: "5120x0".into(),
             rotation: "normal".into(),
             primary: false,
