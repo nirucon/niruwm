@@ -71,7 +71,7 @@ esac
 exit 1
 EOF
 chmod +x "$TEST/bin/pgrep"
-DISPLAY=:99 sleep 60 & STALE=$!
+/bin/sleep 60 & STALE=$!
 printf '%s\n' "$STALE" > "$HOME/stale-pid"
 "$TEST/bin/niruwm-session"
 if kill -0 "$STALE" 2>/dev/null; then kill "$STALE" 2>/dev/null || :; echo "FAIL stale niruidle survived"; exit 1; fi
