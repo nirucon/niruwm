@@ -28,7 +28,8 @@ the `niructl`/`niruidle` tools.
   profile, brightness, night-light and screenshot integration.
 - Shared NIRU themes, font metrics and appearance contract.
 - `niructl`: provider-neutral controls, diagnostics, work modes, recipes, storage
-  review, task status, off-screen window recovery and the optional OpenCode handoff.
+  review, task status, off-screen window recovery, input settings and the optional
+  OpenCode handoff.
 - NIRU Actions: `Super+A` opens the focused action catalogue; the same entries are
   available in the larger `Super+Shift+P` launcher view.
 - `niruidle`: idle, lock and DPMS timing without a separate idle daemon. The
@@ -168,6 +169,9 @@ niruwm --reset-config   # restore the full example; keeps .niruwm-backup
 niructl reload
 niructl restart-bar
 niructl storage review
+niructl input status
+niructl input set-keyboard se
+niructl input set-pointer natural on
 niructl task list
 niructl agent --dry-run "explain why the microphone is silent"
 niructl theme niru-nord

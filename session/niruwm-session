@@ -63,7 +63,7 @@ NM_CONF="$CONFIG_HOME/niruwm/session.conf"
 # ── User preferences (optional, never required) ──────────────────────────────
 # shellcheck source=/dev/null
 [ -r "$NM_CONF" ] && . "$NM_CONF"
-KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-se}"
+KEYBOARD_LAYOUT="${KEYBOARD_LAYOUT:-}"
 KEYBOARD_VARIANT="${KEYBOARD_VARIANT:-}"
 START_DUNST="${START_DUNST:-1}"
 # auto, native, dunst or external. Auto prefers the verified native service
@@ -159,12 +159,17 @@ export COLORTERM=truecolor
 export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-NIRUWM}"
 
 # ── Keyboard: Swedish by default, overridable ───────────────────────────────
-if command -v setxkbmap >/dev/null 2>&1; then
+if [ -n "$KEYBOARD_LAYOUT" ] && command -v setxkbmap >/dev/null 2>&1; then
   if [ -n "$KEYBOARD_VARIANT" ]; then
     setxkbmap "$KEYBOARD_LAYOUT" -variant "$KEYBOARD_VARIANT" 2>/dev/null || log "setxkbmap failed"
   else
     setxkbmap "$KEYBOARD_LAYOUT" 2>/dev/null || log "setxkbmap failed"
   fi
+fi
+# Input settings are one canonical config for the session and the launcher.
+# Apply them after the system layout, so an explicit user choice wins.
+if command -v niructl >/dev/null 2>&1; then
+  niructl input apply --quiet >/dev/null 2>&1 || log 'input settings could not be applied'
 fi
 
 if [ -r "$HOME/.Xresources" ] && command -v xrdb >/dev/null 2>&1; then
