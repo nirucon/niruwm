@@ -5036,34 +5036,16 @@ struct InputConfig {
     pointer: PointerInput,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct KeyboardInput {
     #[serde(default)]
     layout: String,
     #[serde(default)]
     variant: String,
-    #[serde(default = "default_repeat_delay")]
-    repeat_delay: u16,
-    #[serde(default = "default_repeat_rate")]
-    repeat_rate: u16,
-}
-
-impl Default for KeyboardInput {
-    fn default() -> Self {
-        Self {
-            layout: String::new(),
-            variant: String::new(),
-            repeat_delay: default_repeat_delay(),
-            repeat_rate: default_repeat_rate(),
-        }
-    }
-}
-
-fn default_repeat_delay() -> u16 {
-    250
-}
-fn default_repeat_rate() -> u16 {
-    40
+    #[serde(default)]
+    repeat_delay: Option<u16>,
+    #[serde(default)]
+    repeat_rate: Option<u16>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -5116,14 +5098,12 @@ fn input_apply_keyboard(config: &KeyboardInput) -> Result<()> {
                 .into());
         }
     }
-    if config.repeat_delay > 0 && config.repeat_rate > 0 {
+    if let (Some(delay), Some(rate)) = (config.repeat_delay, config.repeat_rate) {
+        if delay == 0 || rate == 0 {
+            return Ok(());
+        }
         let out = std::process::Command::new("xset")
-            .args([
-                "r",
-                "rate",
-                &config.repeat_delay.to_string(),
-                &config.repeat_rate.to_string(),
-            ])
+            .args(["r", "rate", &delay.to_string(), &rate.to_string()])
             .output()
             .map_err(|e| format!("cannot run xset: {e}"))?;
         if !out.status.success() {
@@ -5334,8 +5314,16 @@ fn input(args: &[String]) -> Result<()> {
                 } else {
                     config.keyboard.variant.clone()
                 },
-                config.keyboard.repeat_delay,
-                config.keyboard.repeat_rate
+                config
+                    .keyboard
+                    .repeat_delay
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "system".into()),
+                config
+                    .keyboard
+                    .repeat_rate
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "system".into())
             );
             println!(
                 "pointer natural_scroll={} tap={} speed={}",
@@ -5373,8 +5361,8 @@ fn input(args: &[String]) -> Result<()> {
             if !(100..=2000).contains(&delay) || !(10..=200).contains(&rate) {
                 return Err("repeat delay must be 100..2000 and rate 10..200".into());
             }
-            config.keyboard.repeat_delay = delay;
-            config.keyboard.repeat_rate = rate;
+            config.keyboard.repeat_delay = Some(delay);
+            config.keyboard.repeat_rate = Some(rate);
             write_input_config(&config)?;
             input_apply_keyboard(&config.keyboard)?;
             println!("Keyboard repeat set to {delay} ms / {rate} per second.");
@@ -6951,8 +6939,8 @@ mod action_tests {
             keyboard: KeyboardInput {
                 layout: "se".into(),
                 variant: "nodeadkeys".into(),
-                repeat_delay: 300,
-                repeat_rate: 30,
+                repeat_delay: Some(300),
+                repeat_rate: Some(30),
             },
             pointer: PointerInput {
                 natural_scroll: Some(true),
@@ -6963,10 +6951,10 @@ mod action_tests {
         let text = toml::to_string_pretty(&config).unwrap();
         let parsed: InputConfig = toml::from_str(&text).unwrap();
         assert_eq!(parsed.keyboard.layout, "se");
-        assert_eq!(parsed.keyboard.repeat_delay, 300);
+        assert_eq!(parsed.keyboard.repeat_delay, Some(300));
         assert_eq!(parsed.pointer.natural_scroll, Some(true));
         let empty: InputConfig = toml::from_str("").unwrap();
-        assert_eq!(empty.keyboard.repeat_delay, 250);
+        assert_eq!(empty.keyboard.repeat_delay, None);
         assert_eq!(empty.pointer.tap, None);
     }
 
