@@ -57,7 +57,8 @@ bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
 storage review [--json]|clean cache --yes | \
 agent [--dry-run] TASK | task list [--json]|clear | \
-windows rescue [--dry-run]";
+windows rescue [--dry-run] | \
+input status [--json]|apply|set-keyboard LAYOUT [VARIANT]|set-repeat DELAY RATE|set-pointer natural|tap on|off|toggle natural|tap|set-speed VALUE|cycle-speed|reset";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -5027,6 +5028,440 @@ fn monitors_intersect(
     false
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct InputConfig {
+    #[serde(default)]
+    keyboard: KeyboardInput,
+    #[serde(default)]
+    pointer: PointerInput,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct KeyboardInput {
+    #[serde(default)]
+    layout: String,
+    #[serde(default)]
+    variant: String,
+    #[serde(default = "default_repeat_delay")]
+    repeat_delay: u16,
+    #[serde(default = "default_repeat_rate")]
+    repeat_rate: u16,
+}
+
+impl Default for KeyboardInput {
+    fn default() -> Self {
+        Self {
+            layout: String::new(),
+            variant: String::new(),
+            repeat_delay: default_repeat_delay(),
+            repeat_rate: default_repeat_rate(),
+        }
+    }
+}
+
+fn default_repeat_delay() -> u16 {
+    250
+}
+fn default_repeat_rate() -> u16 {
+    40
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+struct PointerInput {
+    #[serde(default)]
+    natural_scroll: Option<bool>,
+    #[serde(default)]
+    tap: Option<bool>,
+    #[serde(default)]
+    speed: Option<f32>,
+}
+
+fn input_path() -> PathBuf {
+    config::directory().join("input.toml")
+}
+
+fn read_input_config() -> InputConfig {
+    fs::read_to_string(input_path())
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_input_config(config: &InputConfig) -> Result<()> {
+    let path = input_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    fs::write(&temp, toml::to_string_pretty(config)?)?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn input_apply_keyboard(config: &KeyboardInput) -> Result<()> {
+    if !config.layout.trim().is_empty() {
+        let mut args = vec!["-layout".to_string(), config.layout.trim().to_string()];
+        if !config.variant.trim().is_empty() {
+            args.push("-variant".to_string());
+            args.push(config.variant.trim().to_string());
+        }
+        let out = std::process::Command::new("setxkbmap")
+            .args(&args)
+            .output()
+            .map_err(|e| format!("cannot run setxkbmap: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .to_string()
+                .into());
+        }
+    }
+    if config.repeat_delay > 0 && config.repeat_rate > 0 {
+        let out = std::process::Command::new("xset")
+            .args([
+                "r",
+                "rate",
+                &config.repeat_delay.to_string(),
+                &config.repeat_rate.to_string(),
+            ])
+            .output()
+            .map_err(|e| format!("cannot run xset: {e}"))?;
+        if !out.status.success() {
+            return Err(String::from_utf8_lossy(&out.stderr)
+                .trim()
+                .to_string()
+                .into());
+        }
+    }
+    Ok(())
+}
+
+fn xinput_devices() -> Result<Vec<(String, String)>> {
+    let out = std::process::Command::new("xinput")
+        .args(["list", "--short"])
+        .output()
+        .map_err(|e| format!("xinput is not available: {e}"))?;
+    if !out.status.success() {
+        return Err("xinput could not list pointer devices".into());
+    }
+    let mut devices = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if !line.contains("[slave") || !line.contains("pointer") || !line.contains("id=") {
+            continue;
+        }
+        let Some(id) = line
+            .split("id=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+        else {
+            continue;
+        };
+        let name = line
+            .split("id=")
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches('↳')
+            .trim()
+            .to_string();
+        if name.contains("Virtual core") || name.contains("XTEST") {
+            continue;
+        }
+        devices.push((id.to_string(), name));
+    }
+    Ok(devices)
+}
+
+fn xinput_properties(id: &str) -> Vec<String> {
+    let Ok(out) = std::process::Command::new("xinput")
+        .args(["list-props", id])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.split('(').next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn xinput_set(id: &str, property: &str, value: &str) -> Result<()> {
+    let out = std::process::Command::new("xinput")
+        .args(["set-prop", id, property, value])
+        .output()
+        .map_err(|e| format!("cannot run xinput: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr)
+            .trim()
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+fn input_apply_pointer(config: &PointerInput) -> Result<usize> {
+    let devices = xinput_devices()?;
+    let mut changes = 0;
+    for (id, _) in devices {
+        let properties = xinput_properties(&id);
+        let find = |names: &[&str]| {
+            names
+                .iter()
+                .find(|name| properties.iter().any(|candidate| candidate == *name))
+                .map(|name| (*name).to_string())
+        };
+        if let Some(value) = config.natural_scroll {
+            if let Some(property) = find(&[
+                "libinput Natural Scrolling Enabled",
+                "Natural Scrolling Enabled",
+            ]) {
+                xinput_set(&id, &property, if value { "1" } else { "0" })?;
+                changes += 1;
+            }
+        }
+        if let Some(value) = config.tap {
+            if let Some(property) = find(&["libinput Tapping Enabled", "Tapping Enabled"]) {
+                xinput_set(&id, &property, if value { "1" } else { "0" })?;
+                changes += 1;
+            }
+        }
+        if let Some(value) = config.speed {
+            if let Some(property) = find(&["libinput Accel Speed", "Accel Speed"]) {
+                xinput_set(&id, &property, &format!("{value:.2}"))?;
+                changes += 1;
+            }
+        }
+    }
+    Ok(changes)
+}
+
+fn input_apply(config: &InputConfig, quiet: bool) -> Result<()> {
+    input_apply_keyboard(&config.keyboard)?;
+    let pointer_requested = config.pointer.natural_scroll.is_some()
+        || config.pointer.tap.is_some()
+        || config.pointer.speed.is_some();
+    if pointer_requested {
+        match input_apply_pointer(&config.pointer) {
+            Ok(changes) => {
+                if !quiet {
+                    println!("Applied {changes} pointer property change(s).");
+                }
+            }
+            Err(error) => {
+                if !quiet {
+                    println!("Pointer settings not applied: {error}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn input_capabilities() -> (bool, bool, bool) {
+    let Ok(devices) = xinput_devices() else {
+        return (false, false, false);
+    };
+    let mut natural = false;
+    let mut tap = false;
+    let mut speed = false;
+    for (id, _) in devices {
+        let properties = xinput_properties(&id);
+        natural |= properties.iter().any(|property| {
+            matches!(
+                property.as_str(),
+                "libinput Natural Scrolling Enabled" | "Natural Scrolling Enabled"
+            )
+        });
+        tap |= properties.iter().any(|property| {
+            matches!(
+                property.as_str(),
+                "libinput Tapping Enabled" | "Tapping Enabled"
+            )
+        });
+        speed |= properties
+            .iter()
+            .any(|property| matches!(property.as_str(), "libinput Accel Speed" | "Accel Speed"));
+    }
+    (natural, tap, speed)
+}
+
+fn input(args: &[String]) -> Result<()> {
+    let command = args.first().map(String::as_str).unwrap_or("status");
+    let mut config = read_input_config();
+    match command {
+        "status" => {
+            if args.iter().any(|arg| arg == "--json") {
+                let (natural_supported, tap_supported, speed_supported) = input_capabilities();
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "keyboard": {
+                            "layout": config.keyboard.layout,
+                            "variant": config.keyboard.variant,
+                            "repeat_delay": config.keyboard.repeat_delay,
+                            "repeat_rate": config.keyboard.repeat_rate,
+                        },
+                        "pointer": {
+                            "natural_scroll": config.pointer.natural_scroll,
+                            "tap": config.pointer.tap,
+                            "speed": config.pointer.speed,
+                        },
+                        "xinput_available": which("xinput"),
+                        "pointer_support": {
+                            "natural_scroll": natural_supported,
+                            "tap": tap_supported,
+                            "speed": speed_supported,
+                        },
+                    })
+                );
+                return Ok(());
+            }
+            println!(
+                "keyboard layout={} variant={} repeat={}ms/{}",
+                if config.keyboard.layout.is_empty() {
+                    "system".to_string()
+                } else {
+                    config.keyboard.layout.clone()
+                },
+                if config.keyboard.variant.is_empty() {
+                    "-".to_string()
+                } else {
+                    config.keyboard.variant.clone()
+                },
+                config.keyboard.repeat_delay,
+                config.keyboard.repeat_rate
+            );
+            println!(
+                "pointer natural_scroll={} tap={} speed={}",
+                option_label(config.pointer.natural_scroll),
+                option_label(config.pointer.tap),
+                config
+                    .pointer
+                    .speed
+                    .map(|value| format!("{value:.2}"))
+                    .unwrap_or_else(|| "unchanged".into())
+            );
+            println!(
+                "xinput={}",
+                if which("xinput") { "available" } else { "missing" }
+            );
+        }
+        "apply" => input_apply(&config, args.iter().any(|arg| arg == "--quiet"))?,
+        "set-keyboard" => {
+            let layout = args.get(1).ok_or("set-keyboard needs a layout")?;
+            if !layout
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+            {
+                return Err("invalid keyboard layout".into());
+            }
+            config.keyboard.layout = layout.to_string();
+            config.keyboard.variant = args.get(2).cloned().unwrap_or_default();
+            write_input_config(&config)?;
+            input_apply_keyboard(&config.keyboard)?;
+            println!("Keyboard layout set to {}.", layout);
+        }
+        "set-repeat" => {
+            let delay = args.get(1).ok_or("set-repeat needs a delay")?.parse::<u16>()?;
+            let rate = args.get(2).ok_or("set-repeat needs a rate")?.parse::<u16>()?;
+            if !(100..=2000).contains(&delay) || !(10..=200).contains(&rate) {
+                return Err("repeat delay must be 100..2000 and rate 10..200".into());
+            }
+            config.keyboard.repeat_delay = delay;
+            config.keyboard.repeat_rate = rate;
+            write_input_config(&config)?;
+            input_apply_keyboard(&config.keyboard)?;
+            println!("Keyboard repeat set to {delay} ms / {rate} per second.");
+        }
+        "set-pointer" => {
+            let which = args.get(1).ok_or("set-pointer needs natural or tap")?;
+            let value = args.get(2).ok_or("set-pointer needs on or off")?;
+            let value = match value.as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err("pointer setting must be on or off".into()),
+            };
+            match which.as_str() {
+                "natural" => config.pointer.natural_scroll = Some(value),
+                "tap" => config.pointer.tap = Some(value),
+                _ => return Err("set-pointer needs natural or tap".into()),
+            }
+            write_input_config(&config)?;
+            let changed = input_apply_pointer(&config.pointer)?;
+            if changed == 0 {
+                return Err("no pointer device exposes that property".into());
+            }
+            println!("Pointer {which} set to {}.", if value { "on" } else { "off" });
+        }
+        "toggle" => {
+            let which = args.get(1).ok_or("toggle needs natural or tap")?;
+            match which.as_str() {
+                "natural" => {
+                    config.pointer.natural_scroll = Some(!config.pointer.natural_scroll.unwrap_or(false))
+                }
+                "tap" => config.pointer.tap = Some(!config.pointer.tap.unwrap_or(false)),
+                _ => return Err("toggle needs natural or tap".into()),
+            }
+            write_input_config(&config)?;
+            let changed = input_apply_pointer(&config.pointer)?;
+            if changed == 0 {
+                return Err("no pointer device exposes that property".into());
+            }
+            println!("Toggled pointer {which}.");
+        }
+        "set-speed" => {
+            let value = args
+                .get(1)
+                .ok_or("set-speed needs a value")?
+                .parse::<f32>()?;
+            if !(-1.0..=1.0).contains(&value) {
+                return Err("pointer speed must be between -1 and 1".into());
+            }
+            config.pointer.speed = Some(value);
+            write_input_config(&config)?;
+            let changed = input_apply_pointer(&config.pointer)?;
+            if changed == 0 {
+                return Err("no pointer device exposes a speed property".into());
+            }
+            println!("Pointer speed set to {value:.2}.");
+        }
+        "cycle-speed" => {
+            let current = config.pointer.speed.unwrap_or(0.0);
+            let mut next = current + 0.2;
+            if next > 0.61 {
+                next = -0.6;
+            }
+            config.pointer.speed = Some(next);
+            write_input_config(&config)?;
+            let changed = input_apply_pointer(&config.pointer)?;
+            if changed == 0 {
+                return Err("no pointer device exposes a speed property".into());
+            }
+            println!("Pointer speed set to {next:.2}.");
+        }
+        "reset" => {
+            let _ = fs::remove_file(input_path());
+            println!("Input settings removed; the system defaults remain active.");
+        }
+        other => return Err(format!("input needs status, apply, set-keyboard, set-repeat, set-pointer, toggle, set-speed, cycle-speed or reset, not {other}").into()),
+    }
+    Ok(())
+}
+
+fn option_label(value: Option<bool>) -> String {
+    match value {
+        Some(true) => "on".into(),
+        Some(false) => "off".into(),
+        None => "unchanged".into(),
+    }
+}
+
 fn expand_user_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         return PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest);
@@ -5087,6 +5522,9 @@ fn offline(cmd: &str) -> Result<()> {
     }
     if cmd == "task" {
         return task(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "input" {
+        return input(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if matches!(
         cmd,
@@ -5363,6 +5801,7 @@ fn run() -> Result<()> {
             | "storage"
             | "agent"
             | "task"
+            | "input"
     ) {
         return offline(cmd);
     }
@@ -6488,7 +6927,7 @@ screensaver_timeout = 15
 
 #[cfg(test)]
 mod action_tests {
-    use super::{human_bytes, scan_size};
+    use super::{human_bytes, scan_size, InputConfig, KeyboardInput, PointerInput};
     use std::fs;
 
     #[test]
@@ -6504,6 +6943,31 @@ mod action_tests {
         assert_eq!(bytes, 6);
         assert_eq!(files, 2);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn input_config_round_trips_and_defaults() {
+        let config = InputConfig {
+            keyboard: KeyboardInput {
+                layout: "se".into(),
+                variant: "nodeadkeys".into(),
+                repeat_delay: 300,
+                repeat_rate: 30,
+            },
+            pointer: PointerInput {
+                natural_scroll: Some(true),
+                tap: Some(false),
+                speed: Some(0.2),
+            },
+        };
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: InputConfig = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.keyboard.layout, "se");
+        assert_eq!(parsed.keyboard.repeat_delay, 300);
+        assert_eq!(parsed.pointer.natural_scroll, Some(true));
+        let empty: InputConfig = toml::from_str("").unwrap();
+        assert_eq!(empty.keyboard.repeat_delay, 250);
+        assert_eq!(empty.pointer.tap, None);
     }
 
     #[test]
