@@ -423,6 +423,12 @@ action = "launcher"
 keys = "super+shift+p"
 action = "launcher_unified"
 
+# Practical system actions (maintenance, diagnostics, contexts and optional
+# OpenCode assistance) in one focused view.
+[[keys]]
+keys = "super+a"
+action = "launcher_actions"
+
 # Type a phrase and Enter opens it in the first web search engine
 # (DuckDuckGo); Tab moves to the next engine before Enter.
 [[keys]]
