@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.107'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.114'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -194,7 +194,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
 cleanup() {
   # Work modes are session-scoped. Clear them before helpers disappear, so a
   # timer from this session cannot change the next login.
@@ -206,7 +206,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -373,6 +373,17 @@ fi
 # command restores the previous layout on a failed apply and logs the reason.
 if command -v niructl >/dev/null 2>&1; then
   niructl display startup apply >>"$WM_LOG" 2>&1 || log 'startup display profile was not applied'
+else
+  log 'startup display profile skipped: niructl is not installed'
+fi
+
+# Watch for dock and hotplug layout changes for the rest of the session. The
+# watcher owns a per-DISPLAY PID file, so a second one exits immediately
+# instead of competing; start it in the background so the WM is never delayed.
+if command -v niructl >/dev/null 2>&1; then
+  niructl display watch --quiet >>"$WM_LOG" 2>&1 & DISPLAY_WATCH_PID=$!
+else
+  log 'display watch unavailable: niructl is not installed'
 fi
 
 # The WM owns every bar, including restart and logout cleanup.

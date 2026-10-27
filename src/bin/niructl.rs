@@ -48,7 +48,8 @@ timing show|set KEY MINUTES | \
 wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
-display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto | \
+display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto|watch [--once] [--quiet] | \
+action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD NEW|pin NAME|unpin NAME | \
 layout show|save | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
@@ -1926,6 +1927,26 @@ fn display_notify(summary: &str, body: &str) {
         .status();
 }
 
+fn display_startup_apply_profile() -> Result<Option<String>> {
+    let Some(name) = display_read_file()?.startup_profile else {
+        return Ok(None);
+    };
+    let profile = display_read_file()?
+        .profile
+        .into_iter()
+        .find(|profile| profile.name == name)
+        .ok_or_else(|| format!("startup display profile not found: {name}"))?;
+    let outputs = display_outputs()?;
+    let previous = display_current_layout(&outputs);
+    if let Err(error) = display_apply(&outputs, &profile) {
+        if !previous.is_empty() {
+            let _ = display_restore(&previous);
+        }
+        return Err(error);
+    }
+    Ok(Some(name))
+}
+
 fn display_startup(args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("show");
     match action {
@@ -1952,27 +1973,248 @@ fn display_startup(args: &[String]) -> Result<()> {
             println!("startup display profile disabled");
         }
         "apply" => {
-            let Some(name) = display_read_file()?.startup_profile else {
-                return Ok(());
-            };
-            let profile = display_read_file()?
-                .profile
-                .into_iter()
-                .find(|profile| profile.name == name)
-                .ok_or_else(|| format!("startup display profile not found: {name}"))?;
-            let outputs = display_outputs()?;
-            let previous = display_current_layout(&outputs);
-            if let Err(error) = display_apply(&outputs, &profile) {
-                if !previous.is_empty() {
-                    let _ = display_restore(&previous);
-                }
-                return Err(error);
+            if let Some(name) = display_startup_apply_profile()? {
+                println!("applied startup display profile {name}");
             }
-            println!("applied startup display profile {name}");
         }
         _ => return Err("display startup needs show, set NAME, off or apply".into()),
     }
     Ok(())
+}
+
+fn display_output_signature(outputs: &[DisplayOutputState]) -> Vec<(String, bool)> {
+    let mut signature: Vec<(String, bool)> = outputs
+        .iter()
+        .filter(|output| output.connected)
+        .map(|output| (output.name.clone(), output.current.is_some()))
+        .collect();
+    signature.sort();
+    signature
+}
+
+/// Only the set of connected outputs. A manual `xrandr --output ... --off`
+/// changes the enabled state but not this set, so it must not re-apply a
+/// startup profile and undo the user's choice.
+fn display_connected_signature(outputs: &[DisplayOutputState]) -> Vec<String> {
+    let mut signature: Vec<String> = outputs
+        .iter()
+        .filter(|output| output.connected)
+        .map(|output| output.name.clone())
+        .collect();
+    signature.sort();
+    signature
+}
+
+fn profile_outputs_connected(outputs: &[DisplayOutputState], profile: &DisplayProfile) -> bool {
+    !profile.outputs.is_empty()
+        && profile.outputs.iter().all(|wanted| {
+            outputs
+                .iter()
+                .any(|output| output.name == wanted.name && output.connected)
+        })
+}
+
+fn display_watch_pid_path() -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let display = std::env::var("DISPLAY").unwrap_or_default();
+    let key = format!("{:x}", Sha256::digest(display.as_bytes()));
+    state_dir().join(format!("display-watch-{}.pid", &key[..16]))
+}
+
+fn process_alive(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid as i32, 0) };
+    result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[derive(Debug)]
+struct WatchPidFile {
+    path: PathBuf,
+    pid: u32,
+}
+
+impl WatchPidFile {
+    fn acquire(path: PathBuf, pid: u32) -> Result<Option<Self>> {
+        Self::acquire_with(path, pid, process_alive)
+    }
+
+    fn acquire_with<F>(path: PathBuf, pid: u32, alive: F) -> Result<Option<Self>>
+    where
+        F: Fn(u32) -> bool,
+    {
+        use std::io::Write;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        for _ in 0..4 {
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    writeln!(file, "{pid}")?;
+                    file.sync_all().ok();
+                    return Ok(Some(Self { path, pid }));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let existing = fs::read_to_string(&path)
+                        .ok()
+                        .and_then(|text| text.trim().parse::<u32>().ok());
+                    if let Some(existing) = existing {
+                        if alive(existing) {
+                            return Ok(None);
+                        }
+                    }
+                    match fs::remove_file(&path) {
+                        Ok(()) => continue,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error.into()),
+                    }
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err("could not acquire the display watch PID file".into())
+    }
+}
+
+impl Drop for WatchPidFile {
+    fn drop(&mut self) {
+        let current = fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|text| text.trim().parse::<u32>().ok());
+        if current == Some(self.pid) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn display_watch_reconcile(quiet: bool, allow_startup: bool) -> Result<()> {
+    let _guard = display_transaction_lock()?;
+    let outputs = display_outputs()?;
+    let file = display_read_file()?;
+    let mut startup_error = None;
+    let startup_ready = allow_startup
+        && match file.startup_profile.as_deref() {
+            Some(name) => match file.profile.iter().find(|profile| profile.name == name) {
+                Some(profile) if profile_outputs_connected(&outputs, profile) => true,
+                Some(_) => false,
+                None => {
+                    startup_error = Some(format!("startup display profile not found: {name}"));
+                    false
+                }
+            },
+            None => false,
+        };
+    if startup_ready {
+        if let Some(name) = display_startup_apply_profile()? {
+            let body = format!("Startup display profile {name} applied.");
+            if !quiet {
+                println!("display watch: {body}");
+            }
+            display_notify("Display layout changed", &body);
+            return Ok(());
+        }
+    }
+    let (c, screen) = x11rb::connect(None)?;
+    let root = c.setup().roots[screen].root;
+    let moved = windows_rescue_run(&c, root, false, quiet)?;
+    let body = if let Some(error) = startup_error {
+        format!("{error}; moved {moved} window(s) to the active display.")
+    } else if !allow_startup {
+        format!("Manual display change kept; moved {moved} window(s) to the active display.")
+    } else if moved == 0 {
+        "No startup profile applied; all managed windows are already on a connected display.".into()
+    } else {
+        format!("No startup profile applied; moved {moved} window(s) to the active display.")
+    };
+    if !quiet {
+        println!("display watch: {body}");
+    }
+    display_notify("Display layout changed", &body);
+    Ok(())
+}
+
+fn display_watch(args: &[String]) -> Result<()> {
+    let once = args.iter().any(|arg| arg == "--once");
+    let quiet = args.iter().any(|arg| arg == "--quiet");
+    let _guard = if once {
+        None
+    } else {
+        let path = display_watch_pid_path();
+        match WatchPidFile::acquire(path, std::process::id())? {
+            Some(guard) => Some(guard),
+            None => {
+                if !quiet {
+                    println!("display watch is already running for this display");
+                }
+                return Ok(());
+            }
+        }
+    };
+    let mut last = match display_outputs() {
+        Ok(outputs) => Some(display_output_signature(&outputs)),
+        Err(error) => {
+            eprintln!("niructl: display watch: {error}");
+            None
+        }
+    };
+    let mut last_connected = display_outputs()
+        .ok()
+        .map(|outputs| display_connected_signature(&outputs));
+    if once {
+        match &last {
+            Some(signature) => {
+                if !quiet {
+                    for (name, enabled) in signature {
+                        println!("{name}\t{}", if *enabled { "enabled" } else { "disabled" });
+                    }
+                }
+                return Ok(());
+            }
+            None => return Err("cannot read the display output state".into()),
+        }
+    }
+    if !quiet {
+        println!("display watch: monitoring display output state");
+    }
+    loop {
+        std::thread::sleep(Duration::from_secs(2));
+        let outputs = match display_outputs() {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                eprintln!("niructl: display watch: {error}");
+                continue;
+            }
+        };
+        let signature = display_output_signature(&outputs);
+        let connected = display_connected_signature(&outputs);
+        if last.is_none() {
+            last = Some(signature);
+            last_connected = Some(connected);
+            continue;
+        }
+        if last.as_ref() == Some(&signature) {
+            last_connected = Some(connected);
+            continue;
+        }
+        let allow_startup = last_connected.as_ref() != Some(&connected);
+        last = Some(signature);
+        last_connected = Some(connected);
+        std::thread::sleep(Duration::from_secs(1));
+        if let Err(error) = display_watch_reconcile(quiet, allow_startup) {
+            eprintln!("niructl: display watch: {error}");
+        }
+        // Record the settled state so an intermediate xrandr state does not
+        // trigger the same transition twice.
+        if let Ok(outputs) = display_outputs() {
+            last = Some(display_output_signature(&outputs));
+            last_connected = Some(display_connected_signature(&outputs));
+        }
+    }
 }
 
 fn display_position_pair(position: &str) -> Option<(i32, i32)> {
@@ -2313,7 +2555,10 @@ fn display_save_profile(profile: &DisplayProfile, name: &str) -> Result<()> {
 
 fn display(args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("list");
-    let _guard = if matches!(action, "list" | "status" | "expire") {
+    // `watch` owns the lock only around each transition. Taking it for the
+    // whole watch loop would make the watcher block against itself when it
+    // reconciles the first output change.
+    let _guard = if matches!(action, "list" | "status" | "expire" | "watch") {
         None
     } else {
         Some(display_transaction_lock()?)
@@ -2476,6 +2721,7 @@ fn display(args: &[String]) -> Result<()> {
             };
             display_rotate(name, rotation)?;
         }
+        "watch" => display_watch(&args[1..])?,
         "auto" => {
             // Lay the connected screens out side by side in xrandr's own
             // order, each at its preferred mode and upright. This is the
@@ -4562,6 +4808,323 @@ fn task(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+const ACTIONS_VERSION: u32 = 1;
+const MAX_ACTIONS: usize = 200;
+const MAX_ACTION_NAME_CHARS: usize = 80;
+const MAX_ACTION_ARGS: usize = 32;
+const MAX_ACTION_ARG_BYTES: usize = 8 * 1024;
+const MAX_ACTION_TOTAL_BYTES: usize = 64 * 1024;
+const MAX_ACTIONS_FILE_BYTES: u64 = 256 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct SavedAction {
+    name: String,
+    command: Vec<String>,
+    #[serde(default)]
+    favorite: bool,
+    #[serde(default)]
+    created: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ActionsFile {
+    version: u32,
+    #[serde(default, rename = "action")]
+    actions: Vec<SavedAction>,
+}
+
+impl Default for ActionsFile {
+    fn default() -> Self {
+        Self {
+            version: ACTIONS_VERSION,
+            actions: Vec::new(),
+        }
+    }
+}
+
+fn actions_path() -> PathBuf {
+    config::directory().join("actions.toml")
+}
+
+fn validate_action_name(name: &str) -> Result<()> {
+    let length = name.chars().count();
+    if length == 0 || length > MAX_ACTION_NAME_CHARS || name.trim().is_empty() {
+        return Err(format!("action name must be 1..{MAX_ACTION_NAME_CHARS} characters").into());
+    }
+    if name.chars().any(|c| c == '\0' || c.is_control()) {
+        return Err("action name must not contain NUL or control characters".into());
+    }
+    Ok(())
+}
+
+fn validate_action_command(command: &[String]) -> Result<()> {
+    if command.is_empty() || command.len() > MAX_ACTION_ARGS {
+        return Err(format!("action command must have 1..{MAX_ACTION_ARGS} arguments").into());
+    }
+    let mut total = 0usize;
+    for arg in command {
+        if arg.is_empty() {
+            return Err("action command arguments must not be empty".into());
+        }
+        if arg.contains('\0') {
+            return Err("action command arguments must not contain NUL".into());
+        }
+        if arg.len() > MAX_ACTION_ARG_BYTES {
+            return Err(format!(
+                "action command argument is longer than {MAX_ACTION_ARG_BYTES} bytes"
+            )
+            .into());
+        }
+        total = total.saturating_add(arg.len());
+    }
+    if total > MAX_ACTION_TOTAL_BYTES {
+        return Err(
+            format!("action command exceeds the {MAX_ACTION_TOTAL_BYTES}-byte limit").into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_saved_action(action: &SavedAction) -> Result<()> {
+    validate_action_name(&action.name)?;
+    validate_action_command(&action.command)?;
+    Ok(())
+}
+
+fn validate_actions_file(file: &ActionsFile) -> Result<()> {
+    if file.version != ACTIONS_VERSION {
+        return Err(format!("unsupported actions file version: {}", file.version).into());
+    }
+    if file.actions.len() > MAX_ACTIONS {
+        return Err(format!("at most {MAX_ACTIONS} actions are allowed").into());
+    }
+    let mut names = HashSet::new();
+    let mut total = 0usize;
+    for action in &file.actions {
+        validate_saved_action(action)?;
+        if !names.insert(action.name.clone()) {
+            return Err(format!("duplicate action name: {}", action.name).into());
+        }
+        total = total.saturating_add(action.name.len());
+        total = total.saturating_add(action.command.iter().map(String::len).sum::<usize>());
+    }
+    if total > MAX_ACTION_TOTAL_BYTES {
+        return Err(format!("actions exceed the {MAX_ACTION_TOTAL_BYTES}-byte limit").into());
+    }
+    Ok(())
+}
+
+fn read_actions_from(path: &Path) -> Result<ActionsFile> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ActionsFile::default())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if metadata.len() > MAX_ACTIONS_FILE_BYTES {
+        return Err(format!("actions file is larger than {MAX_ACTIONS_FILE_BYTES} bytes").into());
+    }
+    let text = fs::read_to_string(path)?;
+    if text.len() as u64 > MAX_ACTIONS_FILE_BYTES {
+        return Err(format!("actions file is larger than {MAX_ACTIONS_FILE_BYTES} bytes").into());
+    }
+    let file: ActionsFile = toml::from_str(&text)?;
+    validate_actions_file(&file)?;
+    Ok(file)
+}
+
+fn read_actions() -> Result<ActionsFile> {
+    read_actions_from(&actions_path())
+}
+
+fn write_actions_to(path: &Path, file: &ActionsFile) -> Result<()> {
+    validate_actions_file(file)?;
+    let text = toml::to_string_pretty(file)?;
+    if text.len() as u64 > MAX_ACTIONS_FILE_BYTES {
+        return Err(format!("actions file would exceed {MAX_ACTIONS_FILE_BYTES} bytes").into());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("actions.toml");
+    let temp = path.with_file_name(format!(".{name}.{}.new", std::process::id()));
+    if let Err(error) = fs::write(&temp, text) {
+        let _ = fs::remove_file(&temp);
+        return Err(error.into());
+    }
+    if let Err(error) = fs::rename(&temp, path) {
+        let _ = fs::remove_file(&temp);
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+fn write_actions(file: &ActionsFile) -> Result<()> {
+    write_actions_to(&actions_path(), file)
+}
+
+fn action_save(
+    file: &mut ActionsFile,
+    name: &str,
+    command: Vec<String>,
+    created: u64,
+) -> Result<()> {
+    validate_action_name(name)?;
+    validate_action_command(&command)?;
+    if file.actions.len() >= MAX_ACTIONS {
+        return Err(format!("at most {MAX_ACTIONS} actions are allowed").into());
+    }
+    if file.actions.iter().any(|action| action.name == name) {
+        return Err(format!("action already exists: {name}").into());
+    }
+    file.actions.push(SavedAction {
+        name: name.to_string(),
+        command,
+        favorite: false,
+        created,
+    });
+    validate_actions_file(file)?;
+    Ok(())
+}
+
+fn action_rename(file: &mut ActionsFile, old: &str, new: &str) -> Result<()> {
+    validate_action_name(new)?;
+    if old != new && file.actions.iter().any(|action| action.name == new) {
+        return Err(format!("action already exists: {new}").into());
+    }
+    let action = file
+        .actions
+        .iter_mut()
+        .find(|action| action.name == old)
+        .ok_or_else(|| format!("unknown action: {old}"))?;
+    action.name = new.to_string();
+    validate_actions_file(file)?;
+    Ok(())
+}
+
+fn action_delete(file: &mut ActionsFile, name: &str) -> Result<()> {
+    let before = file.actions.len();
+    file.actions.retain(|action| action.name != name);
+    if file.actions.len() == before {
+        return Err(format!("unknown action: {name}").into());
+    }
+    Ok(())
+}
+
+fn action_set_favorite(file: &mut ActionsFile, name: &str, favorite: bool) -> Result<()> {
+    let action = file
+        .actions
+        .iter_mut()
+        .find(|action| action.name == name)
+        .ok_or_else(|| format!("unknown action: {name}"))?;
+    action.favorite = favorite;
+    Ok(())
+}
+
+fn actions_json_value(file: &ActionsFile) -> serde_json::Value {
+    serde_json::Value::Array(
+        file.actions
+            .iter()
+            .map(|action| {
+                serde_json::json!({
+                    "name": action.name,
+                    "command": action.command,
+                    "favorite": action.favorite,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn actions(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("list");
+    match action {
+        "list" => {
+            let file = read_actions()?;
+            if args.iter().any(|arg| arg == "--json") {
+                println!("{}", serde_json::to_string(&actions_json_value(&file))?);
+            } else {
+                for action in file.actions {
+                    println!("{}", action.name);
+                }
+            }
+        }
+        "save" => {
+            let name = args.get(1).ok_or("action save needs a name")?;
+            if args.get(2).map(String::as_str) != Some("--") {
+                return Err("action save needs -- before the command".into());
+            }
+            let command = args[3..].to_vec();
+            if command.is_empty() {
+                return Err("action save needs a command after --".into());
+            }
+            let mut file = read_actions()?;
+            action_save(&mut file, name, command, now_secs())?;
+            write_actions(&file)?;
+            println!("saved action {name}");
+        }
+        "run" => {
+            use std::os::unix::process::CommandExt;
+            let name = args.get(1).ok_or("action run needs a name")?;
+            let file = read_actions()?;
+            let action = file
+                .actions
+                .iter()
+                .find(|action| action.name == *name)
+                .ok_or_else(|| format!("unknown action: {name}"))?;
+            validate_saved_action(action)?;
+            std::process::Command::new(&action.command[0])
+                .args(&action.command[1..])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+                .map_err(|error| format!("cannot run action {name}: {error}"))?;
+            println!("started action {name}");
+        }
+        "delete" => {
+            let name = args.get(1).ok_or("action delete needs a name")?;
+            let mut file = read_actions()?;
+            action_delete(&mut file, name)?;
+            write_actions(&file)?;
+            println!("deleted action {name}");
+        }
+        "rename" => {
+            let old = args.get(1).ok_or("action rename needs an old name")?;
+            let new = args.get(2).ok_or("action rename needs a new name")?;
+            let mut file = read_actions()?;
+            action_rename(&mut file, old, new)?;
+            write_actions(&file)?;
+            println!("renamed action {old} to {new}");
+        }
+        "pin" | "unpin" => {
+            let name = args
+                .get(1)
+                .ok_or_else(|| format!("action {action} needs a name"))?;
+            let favorite = action == "pin";
+            let mut file = read_actions()?;
+            action_set_favorite(&mut file, name, favorite)?;
+            write_actions(&file)?;
+            println!(
+                "{} action {name}",
+                if favorite { "pinned" } else { "unpinned" }
+            );
+        }
+        other => {
+            return Err(format!(
+                "action needs list, save, run, delete, rename, pin or unpin, not {other}"
+            )
+            .into())
+        }
+    }
+    Ok(())
+}
+
 fn human_bytes(bytes: u64) -> String {
     let units = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;
@@ -4830,6 +5393,19 @@ fn windows_rescue(
     args: &[String],
 ) -> Result<()> {
     let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let moved = windows_rescue_run(c, root, dry_run, false)?;
+    if moved == 0 {
+        println!("All managed windows are on a connected display.");
+    }
+    Ok(())
+}
+
+fn windows_rescue_run(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    dry_run: bool,
+    quiet: bool,
+) -> Result<usize> {
     let atom =
         |name: &str| -> Result<Atom> { Ok(c.intern_atom(false, name.as_bytes())?.reply()?.atom) };
     let client_list = atom("_NET_CLIENT_LIST")?;
@@ -4897,15 +5473,17 @@ fn windows_rescue(
             .and_then(|cookie| cookie.reply().ok())
             .map(|reply| String::from_utf8_lossy(&reply.value).to_string())
             .unwrap_or_else(|| format!("0x{window:x}"));
-        println!(
-            "{}: {} at {},{}x{},{}",
-            if dry_run { "would move" } else { "moving" },
-            name.trim(),
-            x,
-            y,
-            width,
-            height
-        );
+        if !quiet {
+            println!(
+                "{}: {} at {},{}x{},{}",
+                if dry_run { "would move" } else { "moving" },
+                name.trim(),
+                x,
+                y,
+                width,
+                height
+            );
+        }
         if !dry_run {
             let x = target.x.saturating_add(40);
             let y = target.y.saturating_add(40);
@@ -4927,10 +5505,7 @@ fn windows_rescue(
         moved += 1;
     }
     c.flush()?;
-    if moved == 0 {
-        println!("All managed windows are on a connected display.");
-    }
-    Ok(())
+    Ok(moved)
 }
 
 fn monitor_rect(
@@ -5511,6 +6086,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "task" {
         return task(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "action" {
+        return actions(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "input" {
         return input(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -5789,6 +6367,7 @@ fn run() -> Result<()> {
             | "storage"
             | "agent"
             | "task"
+            | "action"
             | "input"
     ) {
         return offline(cmd);
@@ -6478,8 +7057,9 @@ fn main() {
 #[cfg(test)]
 mod display_parse_tests {
     use super::{
-        display_delete_profile, display_outputs_from, display_rename_profile, display_resolve,
-        DisplayFile, DisplayOutput, DisplayProfile,
+        display_connected_signature, display_delete_profile, display_output_signature,
+        display_outputs_from, display_rename_profile, display_resolve, profile_outputs_connected,
+        DisplayFile, DisplayOutput, DisplayProfile, WatchPidFile,
     };
 
     const SAMPLE: &str = "Screen 0: minimum 320 x 200, current 5120 x 1440, maximum 16384 x 16384
@@ -6628,6 +7208,147 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
         };
         let resolved = display_resolve(&outputs, &profile).expect("an off screen is placeable");
         assert_eq!(resolved.mode, "1920x1200");
+    }
+
+    fn wanted_output(name: &str) -> DisplayOutput {
+        DisplayOutput {
+            name: name.into(),
+            mode: "preferred".into(),
+            rate: None,
+            position: "0x0".into(),
+            rotation: "normal".into(),
+            primary: false,
+        }
+    }
+
+    #[test]
+    fn the_output_signature_tracks_connected_names_and_enabled_state() {
+        let outputs = display_outputs_from(SAMPLE);
+        let signature = display_output_signature(&outputs);
+        assert_eq!(
+            signature,
+            vec![
+                ("DisplayPort-4".into(), true),
+                ("DisplayPort-5".into(), true),
+                ("DisplayPort-6".into(), false),
+            ]
+        );
+        // Re-reading the same state, as an ordinary pointer or window event
+        // would, must not look like a display transition.
+        assert_eq!(
+            display_output_signature(&display_outputs_from(SAMPLE)),
+            signature
+        );
+
+        let mut enabled = outputs.clone();
+        enabled
+            .iter_mut()
+            .find(|output| output.name == "DisplayPort-6")
+            .unwrap()
+            .current = Some(wanted_output("DisplayPort-6"));
+        assert_ne!(display_output_signature(&enabled), signature);
+
+        let mut removed = outputs;
+        removed
+            .iter_mut()
+            .find(|output| output.name == "DisplayPort-5")
+            .unwrap()
+            .connected = false;
+        removed
+            .iter_mut()
+            .find(|output| output.name == "DisplayPort-4")
+            .unwrap()
+            .current = None;
+        let changed = display_output_signature(&removed);
+        assert_eq!(
+            changed,
+            vec![
+                ("DisplayPort-4".into(), false),
+                ("DisplayPort-6".into(), false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_manual_enabled_change_does_not_change_the_connected_set() {
+        let outputs = display_outputs_from(SAMPLE);
+        let connected = display_connected_signature(&outputs);
+        let mut manual = outputs.clone();
+        manual
+            .iter_mut()
+            .find(|output| output.name == "DisplayPort-4")
+            .unwrap()
+            .current = None;
+        assert_ne!(
+            display_output_signature(&manual),
+            display_output_signature(&outputs)
+        );
+        assert_eq!(display_connected_signature(&manual), connected);
+    }
+
+    #[test]
+    fn a_startup_profile_matches_only_when_every_output_is_connected() {
+        let outputs = display_outputs_from(SAMPLE);
+        let profile = DisplayProfile {
+            name: "Dock".into(),
+            outputs: vec![
+                wanted_output("DisplayPort-4"),
+                wanted_output("DisplayPort-6"),
+            ],
+        };
+        // DisplayPort-6 is connected but switched off; that is still matched.
+        assert!(profile_outputs_connected(&outputs, &profile));
+        let missing = DisplayProfile {
+            name: "Missing".into(),
+            outputs: vec![
+                wanted_output("DisplayPort-4"),
+                wanted_output("DisplayPort-3"),
+            ],
+        };
+        assert!(!profile_outputs_connected(&outputs, &missing));
+        let empty = DisplayProfile {
+            name: "Empty".into(),
+            outputs: Vec::new(),
+        };
+        assert!(!profile_outputs_connected(&outputs, &empty));
+    }
+
+    #[test]
+    fn a_stale_watch_pid_file_is_reclaimed() {
+        let dir = std::env::temp_dir().join(format!("niructl-watch-{}-stale", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("display-watch.pid");
+        std::fs::write(&path, "999999\n").unwrap();
+        let guard = WatchPidFile::acquire_with(path.clone(), 4242, |pid| pid == 4242)
+            .unwrap()
+            .expect("a stale PID must be reclaimed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "4242");
+        assert!(
+            WatchPidFile::acquire_with(path.clone(), 5500, |pid| pid == 4242)
+                .unwrap()
+                .is_none(),
+            "a live watcher must block a duplicate"
+        );
+        drop(guard);
+        assert!(!path.exists(), "the owner removes its PID file");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_invalid_watch_pid_file_is_reclaimed() {
+        let dir =
+            std::env::temp_dir().join(format!("niructl-watch-{}-invalid", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("display-watch.pid");
+        std::fs::write(&path, "not-a-pid\n").unwrap();
+        let guard = WatchPidFile::acquire_with(path.clone(), 4243, |_| true)
+            .unwrap()
+            .expect("an unreadable PID must be reclaimed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "4243");
+        drop(guard);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
 
@@ -6963,5 +7684,143 @@ mod action_tests {
         assert_eq!(human_bytes(0), "0 B");
         assert_eq!(human_bytes(1024), "1.0 KiB");
         assert_eq!(human_bytes(1024 * 1024), "1.0 MiB");
+    }
+}
+
+#[cfg(test)]
+mod saved_action_tests {
+    use super::{
+        action_delete, action_rename, action_save, action_set_favorite, actions_json_value,
+        read_actions_from, validate_action_command, validate_action_name, validate_actions_file,
+        write_actions_to, ActionsFile, SavedAction,
+    };
+    use std::fs;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("niructl-actions-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn action_names_and_commands_are_bounded() {
+        assert!(validate_action_name("").is_err());
+        assert!(validate_action_name("   ").is_err());
+        assert!(validate_action_name(&"x".repeat(81)).is_err());
+        assert!(validate_action_name("bad\0name").is_err());
+        assert!(validate_action_name("bad\nname").is_err());
+        assert!(validate_action_name("Edit notes").is_ok());
+        assert!(validate_action_command(&[]).is_err());
+        assert!(validate_action_command(&["".into()]).is_err());
+        assert!(validate_action_command(&["bad\0arg".into()]).is_err());
+        let too_many = vec!["arg".to_string(); 33];
+        assert!(validate_action_command(&too_many).is_err());
+        assert!(validate_action_command(&["kitty".into(), "-e".into()]).is_ok());
+    }
+
+    #[test]
+    fn actions_round_trip_atomically_and_reject_duplicates() {
+        let dir = temp_dir("roundtrip");
+        let path = dir.join("actions.toml");
+        let mut file = ActionsFile::default();
+        action_save(
+            &mut file,
+            "Edit",
+            vec!["kitty".into(), "-e".into(), "vim".into()],
+            123,
+        )
+        .unwrap();
+        assert!(action_save(&mut file, "Edit", vec!["nvim".into()], 124).is_err());
+        action_set_favorite(&mut file, "Edit", true).unwrap();
+        write_actions_to(&path, &file).unwrap();
+        let loaded = read_actions_from(&path).unwrap();
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.actions.len(), 1);
+        assert_eq!(loaded.actions[0].name, "Edit");
+        assert_eq!(
+            loaded.actions[0].command,
+            vec!["kitty".to_string(), "-e".into(), "vim".into()]
+        );
+        assert!(loaded.actions[0].favorite);
+        assert_eq!(loaded.actions[0].created, 123);
+        // Only the owned file remains; no temporary file is left behind.
+        let names: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["actions.toml".to_string()]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_entries_never_replace_the_stored_file() {
+        let dir = temp_dir("validate-before-replace");
+        let path = dir.join("actions.toml");
+        let mut file = ActionsFile::default();
+        action_save(&mut file, "One", vec!["true".into()], 1).unwrap();
+        write_actions_to(&path, &file).unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+
+        let duplicate = SavedAction {
+            name: "One".into(),
+            command: vec!["false".into()],
+            favorite: false,
+            created: 2,
+        };
+        file.actions.push(duplicate);
+        assert!(validate_actions_file(&file).is_err());
+        assert!(write_actions_to(&path, &file).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn rename_delete_and_pin_have_exact_idempotent_semantics() {
+        let mut file = ActionsFile::default();
+        action_save(&mut file, "One", vec!["one".into()], 1).unwrap();
+        action_save(&mut file, "Two", vec!["two".into()], 2).unwrap();
+        action_set_favorite(&mut file, "One", true).unwrap();
+        action_set_favorite(&mut file, "One", true).unwrap();
+        action_rename(&mut file, "One", "Renamed").unwrap();
+        assert!(file.actions[0].favorite, "rename keeps the favorite flag");
+        assert!(action_rename(&mut file, "Renamed", "Two").is_err());
+        assert!(action_rename(&mut file, "Missing", "Other").is_err());
+        action_set_favorite(&mut file, "Two", false).unwrap();
+        action_set_favorite(&mut file, "Two", false).unwrap();
+        action_delete(&mut file, "Renamed").unwrap();
+        assert!(action_delete(&mut file, "Renamed").is_err());
+        assert_eq!(file.actions.len(), 1);
+        assert_eq!(file.actions[0].name, "Two");
+    }
+
+    #[test]
+    fn json_listing_is_an_array_with_launcher_fields_only() {
+        let mut file = ActionsFile::default();
+        action_save(&mut file, "Edit", vec!["kitty".into(), "-e".into()], 1).unwrap();
+        action_save(&mut file, "Files", vec!["thunar".into()], 2).unwrap();
+        action_set_favorite(&mut file, "Files", true).unwrap();
+        let value = actions_json_value(&file);
+        let array = value.as_array().expect("a JSON array");
+        assert_eq!(array.len(), 2);
+        assert_eq!(array[0]["name"], "Edit");
+        assert_eq!(array[0]["command"][0], "kitty");
+        assert_eq!(array[0]["favorite"], false);
+        assert_eq!(array[1]["name"], "Files");
+        assert_eq!(array[1]["favorite"], true);
+        for item in array {
+            let mut keys: Vec<&str> = item
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(keys, vec!["command", "favorite", "name"]);
+            assert!(item["name"].is_string());
+            assert!(item["command"].is_array());
+            assert!(item["favorite"].is_boolean());
+        }
     }
 }
