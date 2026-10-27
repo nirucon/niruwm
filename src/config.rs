@@ -277,7 +277,7 @@ impl Default for BrightnessConfig {
 }
 
 /// Every layout name a workspace can start with.
-pub const VALID_LAYOUTS: [&str; 7] = [
+pub const VALID_LAYOUTS: [&str; 8] = [
     "tile",
     "left",
     "monocle",
@@ -285,6 +285,7 @@ pub const VALID_LAYOUTS: [&str; 7] = [
     "centeredfloat",
     "floating",
     "fibonacci",
+    "scroll",
 ];
 
 #[derive(Clone, Debug, Deserialize)]

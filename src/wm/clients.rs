@@ -129,10 +129,17 @@ impl Wm {
                 self.focused_monitor
             }
         };
+        let parent_place = transient.and_then(|parent| {
+            self.clients
+                .iter()
+                .find(|c| c.win == parent)
+                .map(|c| (c.monitor, c.tag))
+        });
         let (monitor, tag) = match &restored {
             Some(r) => (r.monitor.min(self.monitors.len().saturating_sub(1)), r.tag),
             None => match requested {
                 Some((monitor, tag)) => (monitor, tag as u32),
+                None if parent_place.is_some() => parent_place.unwrap(),
                 None => {
                     // Suite settings belong to the screen the user is working on.
                     // The pointer is the active screen even when the desktop has no
@@ -152,7 +159,7 @@ impl Wm {
             .get(monitor)
             .map(|m| m.name.clone())
             .unwrap_or_default();
-        self.clients.push(Client {
+        let client = Client {
             win: w,
             monitor,
             monitor_name,
@@ -167,7 +174,30 @@ impl Wm {
             },
             take_focus,
             pid,
-        });
+            parent: transient,
+        };
+        let scroll = self
+            .monitors
+            .get(monitor)
+            .and_then(|m| m.layouts.get(tag as usize))
+            .is_some_and(|layout| *layout == Layout::Scroll);
+        let insert_at = if scroll && !floating {
+            self.focus
+                .and_then(|focused| {
+                    self.clients.iter().position(|c| {
+                        c.win == focused
+                            && c.monitor == monitor
+                            && c.tag == tag
+                            && !c.floating
+                            && !c.fullscreen
+                    })
+                })
+                .map(|index| index + 1)
+                .unwrap_or(self.clients.len())
+        } else {
+            self.clients.len()
+        };
+        self.clients.insert(insert_at, client);
         if restored.as_ref().is_some_and(|r| r.focused) {
             // Remember the window that had focus last time; switching to its
             // workspace waits until the other restored windows have mapped.
@@ -238,12 +268,47 @@ impl Wm {
             self.scratchpad = None;
             self.scratchpad_shown = false;
         }
+        let neighbor = if self.focus == Some(w) {
+            self.clients
+                .iter()
+                .find(|c| c.win == w)
+                .and_then(|removed| {
+                    let monitor = removed.monitor;
+                    let tag = removed.tag;
+                    if removed.floating
+                        || removed.fullscreen
+                        || self
+                            .monitors
+                            .get(monitor)
+                            .and_then(|m| m.layouts.get(tag as usize))
+                            .map_or(true, |layout| *layout != Layout::Scroll)
+                    {
+                        return None;
+                    }
+                    let tiled: Vec<Window> = self
+                        .clients
+                        .iter()
+                        .filter(|c| {
+                            c.monitor == monitor && c.tag == tag && !c.floating && !c.fullscreen
+                        })
+                        .map(|c| c.win)
+                        .collect();
+                    let index = tiled.iter().position(|candidate| *candidate == w)?;
+                    tiled
+                        .get(index + 1)
+                        .or_else(|| index.checked_sub(1).and_then(|i| tiled.get(i)))
+                        .copied()
+                })
+        } else {
+            None
+        };
         if let Some(pos) = self.clients.iter().position(|c| c.win == w) {
             self.clients.remove(pos);
         }
         self.hidden.remove(&w);
         if self.focus == Some(w) {
-            self.focus = None;
+            self.focus = neighbor;
+            self.focus_dirty = neighbor.is_some();
         }
     }
 
@@ -486,18 +551,65 @@ impl Wm {
                 .get(mi)
                 .map(Monitor::layout)
                 .unwrap_or(Layout::Tile);
-            let n = self
+            let tiled: Vec<Window> = self
                 .clients
                 .iter()
                 .filter(|c| c.monitor == mi && c.tag == active && !c.floating && !c.fullscreen)
-                .count();
-            let boxes = layout.arrange_master(
-                screen,
-                n,
-                self.monitors.get(mi).map(|m| m.nmaster).unwrap_or(1),
-                self.cfg.master_ratio,
-                self.cfg.gap,
-            );
+                .map(|c| c.win)
+                .collect();
+            let n = tiled.len();
+            let fullscreen_active = self
+                .clients
+                .iter()
+                .any(|c| c.monitor == mi && c.tag == active && c.fullscreen);
+            let (scroll_start, scroll_columns) = if layout == Layout::Scroll {
+                let effective = if self
+                    .monitors
+                    .get(mi)
+                    .map(Monitor::scroll_columns)
+                    .unwrap_or(crate::layout::ScrollColumns::Two)
+                    == crate::layout::ScrollColumns::Two
+                    && screen.w < crate::layout::SCROLL_MIN_COLUMN_WIDTH.saturating_mul(2)
+                {
+                    1
+                } else {
+                    self.monitors
+                        .get(mi)
+                        .map(Monitor::scroll_columns)
+                        .unwrap_or(crate::layout::ScrollColumns::Two)
+                        .count()
+                };
+                let focus = self.focus.and_then(|w| {
+                    tiled
+                        .iter()
+                        .position(|candidate| *candidate == w)
+                        .or_else(|| {
+                            self.clients
+                                .iter()
+                                .find(|c| c.win == w)
+                                .and_then(|c| c.parent)
+                                .and_then(|parent| {
+                                    tiled.iter().position(|candidate| *candidate == parent)
+                                })
+                        })
+                });
+                let monitor = self.monitors.get_mut(mi).unwrap();
+                let (start, mode) = monitor.reveal_scroll(focus, n, effective);
+                (start, mode.count())
+            } else {
+                (0, 1)
+            };
+            let boxes = if layout == Layout::Scroll {
+                crate::layout::scroll(screen, n, scroll_start, scroll_columns, self.cfg.gap)
+            } else {
+                layout.arrange_master(
+                    screen,
+                    n,
+                    self.monitors.get(mi).map(|m| m.nmaster).unwrap_or(1),
+                    self.cfg.master_ratio,
+                    self.cfg.gap,
+                )
+            };
             let mut idx = 0;
             for c in &self.clients {
                 if c.monitor != mi {
@@ -506,7 +618,25 @@ impl Wm {
                 if c.tag != active {
                     continue;
                 }
-                visible.push(c.win);
+                let shown = if self.scratchpad == Some(c.win) && !self.scratchpad_shown {
+                    false
+                } else if layout == Layout::Scroll {
+                    if fullscreen_active {
+                        c.fullscreen
+                    } else if c.floating || c.fullscreen {
+                        true
+                    } else {
+                        let at = tiled.iter().position(|candidate| *candidate == c.win);
+                        at.is_some_and(|at| {
+                            at >= scroll_start && at < scroll_start + scroll_columns
+                        })
+                    }
+                } else {
+                    true
+                };
+                if shown {
+                    visible.push(c.win);
+                }
                 let r = if c.fullscreen {
                     self.monitors
                         .get(mi)
@@ -519,7 +649,10 @@ impl Wm {
                     idx += 1;
                     r
                 };
-                let smart = !c.floating && (n == 1 || layout == Layout::Monocle);
+                let smart = !c.floating
+                    && (n == 1
+                        || layout == Layout::Monocle
+                        || (layout == Layout::Scroll && scroll_columns == 1));
                 let b = if c.fullscreen || smart {
                     0
                 } else {
@@ -574,6 +707,13 @@ impl Wm {
                         .map(|c| c.win)
                 });
             self.focus_client(next)?;
+        } else if self.focus_dirty {
+            if let Some(w) = self.focus.filter(|w| visible.contains(w)) {
+                self.set_focus(w)?;
+            }
+            self.focus_dirty = false;
+        } else {
+            self.focus_dirty = false;
         }
 
         self.publish_desktop_state()?;
@@ -685,7 +825,7 @@ impl Wm {
                 start,
                 m.workspaces.len(),
                 m.active,
-                m.layout().name()
+                m.layout_label()
             ));
         }
         if layout.is_empty() {
@@ -844,7 +984,15 @@ impl Wm {
         let Some(i) = visible.iter().position(|x| *x == w) else {
             return Ok(());
         };
-        let j = (i as isize + delta).rem_euclid(visible.len() as isize) as usize;
+        let scroll = self
+            .monitors
+            .get(self.focused_monitor)
+            .is_some_and(|m| m.layout() == Layout::Scroll);
+        let j = if scroll {
+            (i as isize + delta).clamp(0, visible.len() as isize - 1) as usize
+        } else {
+            (i as isize + delta).rem_euclid(visible.len() as isize) as usize
+        };
         let a = visible[i];
         let b = visible[j];
         let ia = self.clients.iter().position(|c| c.win == a);
@@ -892,6 +1040,40 @@ impl Wm {
             .collect();
         if visible.is_empty() {
             return Ok(());
+        }
+        if self
+            .monitors
+            .get(monitor)
+            .is_some_and(|m| m.layout() == Layout::Scroll)
+        {
+            if self
+                .clients
+                .iter()
+                .any(|c| Some(c.win) == self.focus && c.fullscreen)
+            {
+                return Ok(());
+            }
+            let tiled: Vec<Window> = visible
+                .iter()
+                .copied()
+                .filter(|w| {
+                    self.clients
+                        .iter()
+                        .any(|c| c.win == *w && !c.floating && !c.fullscreen)
+                })
+                .collect();
+            if tiled.is_empty() {
+                return Ok(());
+            }
+            let i = tiled.iter().position(|w| Some(*w) == self.focus);
+            let j = match i {
+                Some(i) => (i as isize + delta).clamp(0, tiled.len() as isize - 1) as usize,
+                None if delta > 0 => 0,
+                None => tiled.len() - 1,
+            };
+            self.focus = Some(tiled[j]);
+            self.arrange()?;
+            return self.set_focus(tiled[j]);
         }
         let i = visible
             .iter()

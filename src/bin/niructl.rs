@@ -40,8 +40,9 @@ use x11rb::{
     wrapper::ConnectionExt as _,
 };
 
-const USAGE: &str = "Usage: niructl status | tag N | movetotag N | layout NAME | layouts | \
+const USAGE: &str = "Usage: niructl status | tag N | movetotag N | \
 theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | quit | save | save-session | \
+layout NAME|columns 1|2|toggle | layouts | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
 timing show|set KEY MINUTES | \
@@ -6118,6 +6119,50 @@ fn offline(cmd: &str) -> Result<()> {
         match rest.first().map(String::as_str) {
             None | Some("show") => return layout_show(),
             Some("save") => return layout_save(),
+            Some("columns") => {
+                let requested = rest.get(1).map(String::as_str).unwrap_or("");
+                let (c, root) = connect_for_change()?;
+                let atom = |n: &str| -> Result<Atom> {
+                    Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom)
+                };
+                let current =
+                    property_string(&c, root, atom("_NIRUWM_LAYOUT")?)?.unwrap_or_default();
+                if !current.starts_with("scroll") {
+                    return Err("layout columns applies only while Scroll is active".into());
+                }
+                let (value, want) = match requested {
+                    "1" => (1, "scroll 1".to_string()),
+                    "2" => (2, "scroll 2".to_string()),
+                    "toggle" => (
+                        0,
+                        if current.trim() == "scroll 1" {
+                            "scroll 2".to_string()
+                        } else {
+                            "scroll 1".to_string()
+                        },
+                    ),
+                    other => {
+                        return Err(
+                            format!("layout columns must be 1, 2 or toggle, got {other}").into(),
+                        )
+                    }
+                };
+                send(&c, root, atom(CMD_ATOM)?, [11, value, 0, 0, 0])?;
+                let deadline = std::time::Instant::now() + Duration::from_millis(500);
+                loop {
+                    let shown =
+                        property_string(&c, root, atom("_NIRUWM_LAYOUT")?)?.unwrap_or_default();
+                    if shown.trim() == want {
+                        return Ok(());
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(
+                            "the window manager did not apply the Scroll column mode".into()
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
             // Any other word is a layout name. It goes through the same
             // command as Super+T and friends, so the two can never diverge.
             Some(name) => {
@@ -6145,7 +6190,7 @@ fn offline(cmd: &str) -> Result<()> {
                         .and_then(|r| r.reply().ok())
                         .map(|r| String::from_utf8_lossy(&r.value).to_string())
                         .unwrap_or_default();
-                    if shown == name {
+                    if shown.split_whitespace().next() == Some(name) {
                         return Ok(());
                     }
                     if std::time::Instant::now() >= deadline {
@@ -6167,6 +6212,7 @@ fn offline(cmd: &str) -> Result<()> {
             ("centeredfloat", "Super+U"),
             ("fibonacci", "Super+Ctrl+E"),
             ("floating", "Super+F"),
+            ("scroll", "Super+Ctrl+S"),
         ];
         println!("NIRUWM layouts, in cycling order:");
         for l in layout::Layout::all() {
@@ -6179,6 +6225,7 @@ fn offline(cmd: &str) -> Result<()> {
         }
         println!();
         println!("Change with the key above, or: niructl layout NAME");
+        println!("Scroll columns: Super+Ctrl+Shift+S or niructl layout columns 1|2|toggle.");
         println!("Cycle with Super+Ctrl+period and Super+Ctrl+comma.");
         return Ok(());
     }
@@ -6503,9 +6550,10 @@ fn run() -> Result<()> {
                 Some("centeredfloat") => 6,
                 Some("fibonacci") => 4,
                 Some("floating") => 5,
+                Some("scroll") => 7,
                 Some(other) => {
                     return Err(format!(
-                        "layout {other}: use show, save, or one of tile, left, monocle, centered, centeredfloat, fibonacci, floating"
+                        "layout {other}: use show, save, columns, or one of tile, left, monocle, centered, centeredfloat, fibonacci, floating, scroll"
                     )
                     .into())
                 }
@@ -6758,6 +6806,25 @@ fn property_u32(c: &x11rb::rust_connection::RustConnection, w: Window, atom: Ato
         .ok()?
         .value32()?
         .next()
+}
+
+fn property_string(
+    c: &x11rb::rust_connection::RustConnection,
+    w: Window,
+    atom: Atom,
+) -> Result<Option<String>> {
+    let Some(reply) = c
+        .get_property(false, w, atom, AtomEnum::ANY, 0, 64)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    else {
+        return Ok(None);
+    };
+    if reply.value.is_empty() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&reply.value).trim().to_string();
+    Ok((!text.is_empty()).then_some(text))
 }
 
 /// Top-level sections every config must keep. A file written before a section

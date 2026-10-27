@@ -20,7 +20,11 @@ use std::{
 };
 use x11rb::{
     connection::Connection,
-    protocol::{xproto::*, Event},
+    protocol::{
+        randr::{ConnectionExt as _, NotifyMask},
+        xproto::*,
+        Event,
+    },
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
@@ -46,6 +50,9 @@ pub(crate) struct Client {
     /// toolkits and is what every desktop reads to answer the question.
     /// Without it, a saved session could not say what to start again.
     pid: Option<u32>,
+    /// The transient parent, when the client supplied one. Scroll uses it to
+    /// reveal the parent column behind a dialog.
+    parent: Option<Window>,
 }
 
 /// One restored command and the windows it still has to map.
@@ -126,6 +133,8 @@ pub(crate) struct Wm {
     children: Vec<Child>,
     helpers: HelperPool,
     pub(crate) hidden: HashSet<Window>,
+    /// A close selected a neighbour: arrange must also move the X input focus.
+    pub(crate) focus_dirty: bool,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
     /// reload, so a key press costs a lookup, never an X round trip.
     pub(crate) bindings: Vec<Binding>,
@@ -176,6 +185,10 @@ impl Wm {
         let root = c.setup().roots[s].root;
         let screen_w = c.setup().roots[s].width_in_pixels;
         let screen_h = c.setup().roots[s].height_in_pixels;
+        let _ = c.randr_select_input(
+            root,
+            NotifyMask::SCREEN_CHANGE | NotifyMask::OUTPUT_CHANGE | NotifyMask::CRTC_CHANGE,
+        );
 
         // SubstructureRedirect is the standard "no other WM" lock. It fails
         // cleanly when another window manager owns the display, so the session
@@ -265,6 +278,7 @@ impl Wm {
             children: Vec::new(),
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
+            focus_dirty: false,
             bindings: Vec::new(),
             wallpaper,
             monitors: Vec::new(),
@@ -422,6 +436,31 @@ impl Wm {
         self.layout = layout;
     }
 
+    /// The layout label includes the session-only Scroll column mode.
+    pub(crate) fn layout_label(&self) -> String {
+        self.monitors
+            .get(self.focused_monitor)
+            .map(Monitor::layout_label)
+            .unwrap_or_else(|| self.layout.name().to_string())
+    }
+
+    /// Set the focused Scroll workspace to one or two visible columns.
+    /// Returns false when the focused workspace is not Scroll.
+    pub(crate) fn set_scroll_columns(
+        &mut self,
+        mode: Option<crate::layout::ScrollColumns>,
+    ) -> bool {
+        let Some(monitor) = self.monitors.get_mut(self.focused_monitor) else {
+            return false;
+        };
+        if monitor.layout() != Layout::Scroll {
+            return false;
+        }
+        let mode = mode.unwrap_or_else(|| monitor.scroll_columns().toggle());
+        monitor.set_scroll_columns(mode);
+        true
+    }
+
     /// Announce the layout without writing the config; used where only a
     /// shared reference to the manager exists.
     fn publish_layout_readonly(&self) -> Result<()> {
@@ -430,7 +469,7 @@ impl Wm {
             self.root,
             self.atom("_NIRUWM_LAYOUT"),
             self.atom("UTF8_STRING"),
-            self.layout().name().as_bytes(),
+            self.layout_label().as_bytes(),
         )?;
         Ok(())
     }
@@ -446,7 +485,7 @@ impl Wm {
             self.root,
             self.atom("_NIRUWM_LAYOUT"),
             self.atom("UTF8_STRING"),
-            self.layout().name().as_bytes(),
+            self.layout_label().as_bytes(),
         )?;
         // Layouts are per workspace, so the file says which one each shows
         // and an update keeps the arrangement the user chose.
@@ -568,6 +607,12 @@ impl Wm {
         for m in monitors.iter_mut() {
             if let Some(old) = previous.iter().find(|p| p.name == m.name) {
                 m.nmaster = old.nmaster;
+                m.scroll_modes = old.scroll_modes.clone();
+                m.scroll_starts = old.scroll_starts.clone();
+                let count = m.workspaces.len().max(1);
+                m.scroll_modes
+                    .resize(count, crate::layout::ScrollColumns::Two);
+                m.scroll_starts.resize(count, 0);
             }
         }
         if self.focused_monitor >= count {

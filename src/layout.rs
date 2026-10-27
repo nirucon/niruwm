@@ -71,6 +71,99 @@ pub fn tile_with_master(area: Rect, n: usize, nmaster: usize, ratio: f32, gap: u
     out
 }
 
+/// How many adjacent Scroll columns are visible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ScrollColumns {
+    One,
+    #[default]
+    Two,
+}
+
+impl ScrollColumns {
+    pub fn count(self) -> usize {
+        match self {
+            Self::One => 1,
+            Self::Two => 2,
+        }
+    }
+
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::One => Self::Two,
+            Self::Two => Self::One,
+        }
+    }
+
+    pub fn from_count(count: u32) -> Option<Self> {
+        match count {
+            1 => Some(Self::One),
+            2 => Some(Self::Two),
+            _ => None,
+        }
+    }
+}
+
+/// Minimum usable width for a two-column Scroll arrangement. Below this the
+/// window geometry falls back to one column while the selected mode is kept.
+pub const SCROLL_MIN_COLUMN_WIDTH: u16 = 240;
+
+/// Place a horizontal row of columns and expose `columns` of them starting at
+/// `start`. Every column gets a stable box, including boxes outside the work
+/// area; the window manager only maps the visible ones.
+pub fn scroll(area: Rect, n: usize, start: usize, columns: usize, gap: u16) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let columns = columns.clamp(1, 2).min(n.max(1));
+    let effective = if columns == 2 && area.w < SCROLL_MIN_COLUMN_WIDTH.saturating_mul(2) {
+        1
+    } else {
+        columns
+    };
+    let g = if effective == 1 || n == 1 {
+        0
+    } else {
+        gap.min(area.w / 8)
+            .min((u32::from(area.h) / (n as u32 * 2).max(1)) as u16)
+    };
+    let x = area.x + i16::try_from(g).unwrap_or(0);
+    let y = area.y + i16::try_from(g).unwrap_or(0);
+    let w = area.w.saturating_sub(g * 2).max(1);
+    let h = area.h.saturating_sub(g * 2).max(1);
+    let cell = if effective == 2 {
+        w.saturating_sub(g) / 2
+    } else {
+        w
+    }
+    .max(1);
+    let second = if effective == 2 {
+        w.saturating_sub(g).saturating_sub(cell).max(1)
+    } else {
+        cell
+    };
+    let start = start.min(n.saturating_sub(effective));
+    (0..n)
+        .map(|i| {
+            let offset = i.saturating_sub(start);
+            let x = i32::from(x).saturating_add(
+                i32::try_from(offset)
+                    .unwrap_or(i32::MAX)
+                    .saturating_mul(i32::from(cell) + i32::from(g)),
+            );
+            Rect {
+                x: i16::try_from(x).unwrap_or(if x < 0 { i16::MIN } else { i16::MAX }),
+                y,
+                w: if effective == 2 && offset == 1 {
+                    second
+                } else {
+                    cell
+                },
+                h,
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Layout {
     #[default]
@@ -82,6 +175,7 @@ pub enum Layout {
     CenteredFloat,
     Fibonacci,
     Floating,
+    Scroll,
 }
 
 impl Layout {
@@ -95,6 +189,7 @@ impl Layout {
             Layout::CenteredFloat => "centeredfloat",
             Layout::Fibonacci => "fibonacci",
             Layout::Floating => "floating",
+            Layout::Scroll => "scroll",
         }
     }
 
@@ -109,6 +204,7 @@ impl Layout {
             Layout::CenteredFloat => "master centred at 70% height, the rest floating",
             Layout::Fibonacci => "spiral split, each window half of the rest",
             Layout::Floating => "nothing is tiled, windows keep their own size",
+            Layout::Scroll => "one window per column, one or two columns visible",
         }
     }
 
@@ -121,6 +217,7 @@ impl Layout {
             Layout::CenteredFloat,
             Layout::Fibonacci,
             Layout::Floating,
+            Layout::Scroll,
         ]
     }
 
@@ -238,6 +335,7 @@ impl Layout {
                 }
                 out
             }
+            Self::Scroll => scroll(area, n, 0, 2, gap),
             Self::Fibonacci if n > 1 => {
                 let g = gap.min(area.w / 10).min(area.h / 10);
                 let mut r = Rect {
@@ -321,7 +419,7 @@ mod tests {
     #[test]
     fn layouts_stay_in_bounds() {
         for layout in Layout::all() {
-            if *layout == Layout::Floating {
+            if matches!(*layout, Layout::Floating | Layout::Scroll) {
                 continue;
             }
             for n in 1..12 {
@@ -335,6 +433,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn scroll_exposes_an_adjacent_pair_and_one_column_fills() {
+        let area = area();
+        let pair = scroll(area, 4, 0, 2, 8);
+        assert_eq!(pair.len(), 4);
+        assert!(pair[0].x < pair[1].x);
+        assert!(pair[0].w > 0 && pair[1].w > 0);
+        assert!(i32::from(pair[1].x) + i32::from(pair[1].w) <= 1920);
+        let next = scroll(area, 4, 1, 2, 8);
+        assert!(next[1].x < next[2].x);
+        let one = scroll(area, 4, 2, 1, 8);
+        assert_eq!(one[2].x, area.x);
+        assert_eq!(one[2].w, area.w);
+        let narrow = scroll(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 400,
+                h: 300,
+            },
+            3,
+            1,
+            2,
+            8,
+        );
+        assert_eq!(narrow[1].w, 400);
+        assert_eq!(narrow[1].x, 0);
+    }
+
+    #[test]
+    fn scroll_mode_toggles_and_clamps_the_viewport() {
+        assert_eq!(ScrollColumns::default(), ScrollColumns::Two);
+        assert_eq!(ScrollColumns::Two.toggle(), ScrollColumns::One);
+        assert_eq!(ScrollColumns::One.toggle(), ScrollColumns::Two);
+        assert_eq!(ScrollColumns::from_count(1), Some(ScrollColumns::One));
+        assert_eq!(ScrollColumns::from_count(2), Some(ScrollColumns::Two));
+        assert_eq!(ScrollColumns::from_count(3), None);
+        let boxes = scroll(area(), 4, 99, 2, 8);
+        assert!(i32::from(boxes[3].x) + i32::from(boxes[3].w) <= 1920);
     }
 
     #[test]
@@ -353,6 +492,6 @@ mod tests {
             l = l.next();
         }
         assert_eq!(l, Layout::Tile);
-        assert_eq!(Layout::Tile.prev(), Layout::Floating);
+        assert_eq!(Layout::Tile.prev(), Layout::Scroll);
     }
 }

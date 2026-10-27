@@ -29,6 +29,11 @@ pub struct Monitor {
     /// Each workspace keeps its own layout; the first one is used until a
     /// workspace is given another.
     pub layouts: Vec<crate::layout::Layout>,
+    /// Scroll column mode per workspace. Session state: the layout name is
+    /// persisted, the mode returns to two columns after a restart.
+    pub scroll_modes: Vec<crate::layout::ScrollColumns>,
+    /// First visible Scroll column per workspace.
+    pub scroll_starts: Vec<usize>,
 }
 
 impl Monitor {
@@ -41,6 +46,8 @@ impl Monitor {
             active: 0,
             nmaster: 1,
             layouts: vec![crate::layout::Layout::Tile; workspaces.len()],
+            scroll_modes: vec![crate::layout::ScrollColumns::Two; workspaces.len()],
+            scroll_starts: vec![0; workspaces.len()],
         }
     }
 
@@ -54,10 +61,71 @@ impl Monitor {
 
     /// Give the active workspace another layout, leaving the others alone.
     pub fn set_layout(&mut self, layout: crate::layout::Layout) {
-        let count = self.workspaces.len().max(1);
-        self.layouts.resize(count, crate::layout::Layout::Tile);
+        self.ensure_state();
         if self.active < self.layouts.len() {
             self.layouts[self.active] = layout;
+        }
+    }
+
+    fn ensure_state(&mut self) {
+        let count = self.workspaces.len().max(1);
+        self.layouts.resize(count, crate::layout::Layout::Tile);
+        self.scroll_modes
+            .resize(count, crate::layout::ScrollColumns::Two);
+        self.scroll_starts.resize(count, 0);
+    }
+
+    pub fn scroll_columns(&self) -> crate::layout::ScrollColumns {
+        self.scroll_modes
+            .get(self.active)
+            .copied()
+            .unwrap_or(crate::layout::ScrollColumns::Two)
+    }
+
+    pub fn set_scroll_columns(&mut self, mode: crate::layout::ScrollColumns) {
+        self.ensure_state();
+        if self.active < self.scroll_modes.len() {
+            self.scroll_modes[self.active] = mode;
+        }
+    }
+
+    /// Keep the focused column visible while moving the viewport as little as
+    /// possible. Returns the start and mode for this frame.
+    pub fn reveal_scroll(
+        &mut self,
+        focus: Option<usize>,
+        n: usize,
+        effective_columns: usize,
+    ) -> (usize, crate::layout::ScrollColumns) {
+        self.ensure_state();
+        let mode = self.scroll_columns();
+        let columns = effective_columns.clamp(1, 2).min(n.max(1));
+        let max_start = n.saturating_sub(columns);
+        let mut start = self
+            .scroll_starts
+            .get(self.active)
+            .copied()
+            .unwrap_or(0)
+            .min(max_start);
+        if let Some(focus) = focus {
+            if focus < start {
+                start = focus;
+            } else if focus >= start.saturating_add(columns) {
+                start = focus.saturating_add(1).saturating_sub(columns);
+            }
+        }
+        start = start.min(max_start);
+        if self.active < self.scroll_starts.len() {
+            self.scroll_starts[self.active] = start;
+        }
+        (start, mode)
+    }
+
+    pub fn layout_label(&self) -> String {
+        if self.layout() == crate::layout::Layout::Scroll {
+            format!("scroll {}", self.scroll_columns().count())
+        } else {
+            self.layout().name().to_string()
         }
     }
 
@@ -429,6 +497,51 @@ mod layout_tests {
         assert_eq!(m[0].active, 3);
         assert_eq!(m[1].active, 7);
         assert_ne!(m[0].active_name(), m[1].active_name());
+    }
+
+    #[test]
+    fn scroll_reveals_the_focused_column_with_minimal_movement() {
+        let mut m = two();
+        m[0].set_layout(Layout::Scroll);
+        assert_eq!(m[0].layout_label(), "scroll 2");
+        assert_eq!(
+            m[0].reveal_scroll(Some(2), 4, 2),
+            (1, crate::layout::ScrollColumns::Two)
+        );
+        assert_eq!(
+            m[0].reveal_scroll(Some(1), 4, 2),
+            (1, crate::layout::ScrollColumns::Two)
+        );
+        assert_eq!(
+            m[0].reveal_scroll(Some(0), 4, 2),
+            (0, crate::layout::ScrollColumns::Two)
+        );
+        assert_eq!(
+            m[0].reveal_scroll(Some(3), 4, 2),
+            (2, crate::layout::ScrollColumns::Two)
+        );
+        m[0].set_scroll_columns(crate::layout::ScrollColumns::One);
+        assert_eq!(m[0].layout_label(), "scroll 1");
+        assert_eq!(
+            m[0].reveal_scroll(Some(3), 4, 1),
+            (3, crate::layout::ScrollColumns::One)
+        );
+        m[0].set_scroll_columns(crate::layout::ScrollColumns::Two);
+        assert_eq!(
+            m[0].reveal_scroll(Some(1), 1, 2),
+            (0, crate::layout::ScrollColumns::Two)
+        );
+    }
+
+    #[test]
+    fn scroll_mode_is_per_workspace() {
+        let mut m = two();
+        m[0].set_layout(Layout::Scroll);
+        m[0].set_scroll_columns(crate::layout::ScrollColumns::One);
+        m[0].active = 1;
+        assert_eq!(m[0].scroll_columns(), crate::layout::ScrollColumns::Two);
+        m[0].active = 0;
+        assert_eq!(m[0].scroll_columns(), crate::layout::ScrollColumns::One);
     }
 
     #[test]

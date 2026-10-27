@@ -69,7 +69,7 @@
 # List them with: niructl themes
 theme = "niru-noir"
 # ── Layouts ─────────────────────────────────────────────────────────────────
-# One of: tile, left, monocle, centered, centeredfloat, fibonacci, floating.
+# One of: tile, left, monocle, centered, centeredfloat, fibonacci, floating, scroll.
 # A layout belongs to one workspace on one screen: changing it there leaves
 # every other workspace exactly as it was, and the choice is saved in
 # [monitors] layouts. Change it with Super+T/Y/M/C/U/F, cycle with
@@ -217,7 +217,7 @@ step = 5
 [monitors]
 workspaces = 10
 # Which layout each workspace starts with, in workspace order. Every entry is
-# one of: tile, left, monocle, centered, centeredfloat, floating, fibonacci.
+# one of: tile, left, monocle, centered, centeredfloat, floating, fibonacci, scroll.
 # Leave it empty (the default) and every workspace is tiled; any workspace
 # you switch once keeps that layout for the rest of the session and is saved
 # here, so it is back after the next login. The list may be shorter than the
@@ -394,7 +394,8 @@ tray = true
 #   window_switcher, lock, start CMD, shell CMD,
 #   focus_next, focus_prev, move_next, move_prev,
 #   tag N, movetotag N, toggletag N, togglemovetotag N, tag_next, tag_prev,
-#   layout tile|left|monocle|centered|centeredfloat|floating|fibonacci,
+#   layout tile|left|monocle|centered|centeredfloat|floating|fibonacci|scroll,
+#   scroll_columns 1|2|toggle,
 #   layout_next, layout_prev,
 #   inc_master, dec_master, inc_master_ratio, dec_master_ratio,
 #   toggle_float, toggle_fullscreen, swap_next, swap_prev,
@@ -598,6 +599,7 @@ action = "move_prev"
 #   centered      master in the middle, stack either side
 #   centeredfloat master centred at 70% height, others floating
 #   fibonacci     spiral split
+#   scroll        one/two columns, sliding horizontally
 #   floating      nothing tiled, windows keep their own size
 [[keys]]
 keys = "super+t"
@@ -626,6 +628,16 @@ action = "layout floating"
 [[keys]]
 keys = "super+ctrl+e"
 action = "layout fibonacci"
+
+# Scroll: one window per column, one or two adjacent columns visible.
+# Super+Ctrl+S selects Scroll; Super+Ctrl+Shift+S toggles one/two columns.
+[[keys]]
+keys = "super+ctrl+s"
+action = "layout scroll"
+
+[[keys]]
+keys = "super+ctrl+shift+s"
+action = "scroll_columns toggle"
 
 [[keys]]
 keys = "super+ctrl+comma"

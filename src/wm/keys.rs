@@ -217,6 +217,16 @@ impl Wm {
                 self.set_layout(l.layout());
                 self.publish_layout()?;
             }
+            Action::SetScrollColumns(mode) => {
+                if self.set_scroll_columns(Some(mode)) {
+                    self.publish_layout()?;
+                }
+            }
+            Action::ToggleScrollColumns => {
+                if self.set_scroll_columns(None) {
+                    self.publish_layout()?;
+                }
+            }
             Action::LayoutNext => {
                 let next = self.layout().next();
                 self.set_layout(next);

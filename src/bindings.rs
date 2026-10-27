@@ -37,6 +37,9 @@ pub enum Action {
     MoveToTag(u32),
     ToggleMoveToTag(u32),
     SetLayout(LayoutId),
+    /// Set the focused Scroll workspace to one or two visible columns.
+    SetScrollColumns(crate::layout::ScrollColumns),
+    ToggleScrollColumns,
     LayoutNext,
     LayoutPrev,
     IncMaster,
@@ -88,6 +91,7 @@ pub enum LayoutId {
     CenteredFloat,
     Floating,
     Fibonacci,
+    Scroll,
 }
 
 impl LayoutId {
@@ -101,6 +105,7 @@ impl LayoutId {
             "centeredfloat" => Some(LayoutId::CenteredFloat),
             "floating" => Some(LayoutId::Floating),
             "fibonacci" => Some(LayoutId::Fibonacci),
+            "scroll" => Some(LayoutId::Scroll),
             _ => None,
         }
     }
@@ -116,6 +121,7 @@ impl LayoutId {
             LayoutId::Fibonacci => 4,
             LayoutId::Floating => 5,
             LayoutId::CenteredFloat => 6,
+            LayoutId::Scroll => 7,
         }
     }
 
@@ -129,6 +135,7 @@ impl LayoutId {
             LayoutId::CenteredFloat => crate::layout::Layout::CenteredFloat,
             LayoutId::Floating => crate::layout::Layout::Floating,
             LayoutId::Fibonacci => crate::layout::Layout::Fibonacci,
+            LayoutId::Scroll => crate::layout::Layout::Scroll,
         }
     }
 }
@@ -286,6 +293,8 @@ impl Action {
         add("super+u", "layout centeredfloat");
         add("super+f", "layout floating");
         add("super+ctrl+e", "layout fibonacci");
+        add("super+ctrl+s", "layout scroll");
+        add("super+ctrl+shift+s", "scroll_columns toggle");
         add("super+ctrl+comma", "layout_prev");
         add("super+ctrl+period", "layout_next");
         add("super+shift+space", "toggle_float");
@@ -428,8 +437,19 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
             "centeredfloat" => LayoutId::CenteredFloat,
             "floating" => LayoutId::Floating,
             "fibonacci" => LayoutId::Fibonacci,
+            "scroll" => LayoutId::Scroll,
             other => return Err(format!("unknown layout: {other}")),
         }),
+        "scroll_columns" => match arg()? {
+            "1" => Action::SetScrollColumns(crate::layout::ScrollColumns::One),
+            "2" => Action::SetScrollColumns(crate::layout::ScrollColumns::Two),
+            "toggle" => Action::ToggleScrollColumns,
+            other => {
+                return Err(format!(
+                    "scroll_columns must be 1, 2 or toggle, got {other}"
+                ))
+            }
+        },
         "layout_next" => Action::LayoutNext,
         "layout_prev" => Action::LayoutPrev,
         "inc_master" => Action::IncMaster,

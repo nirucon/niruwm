@@ -133,7 +133,12 @@ impl Wm {
                     self.arrange()?;
                 }
                 // A cable was plugged in or out, or a resolution changed.
+                // The root geometry is the authoritative new size; refresh
+                // would otherwise rebuild the monitors from the old width.
                 Event::RandrScreenChangeNotify(_) => {
+                    let g = self.c.get_geometry(self.root)?.reply()?;
+                    self.screen_w = g.width;
+                    self.screen_h = g.height;
                     self.refresh_monitors()?;
                 }
                 Event::ClientMessage(e) => {
@@ -252,11 +257,19 @@ impl Wm {
                         LayoutId::Fibonacci,
                         LayoutId::Floating,
                         LayoutId::CenteredFloat,
+                        LayoutId::Scroll,
                     ]
                     .get(d[1] as usize)
                     .copied()
                     .unwrap_or(LayoutId::Tile),
                 )),
+                11 => {
+                    if d[1] == 0 {
+                        Some(Action::ToggleScrollColumns)
+                    } else {
+                        crate::layout::ScrollColumns::from_count(d[1]).map(Action::SetScrollColumns)
+                    }
+                }
                 4 => {
                     // d[1] is the serial `niructl` is waiting for. A key
                     // binding sends zero and needs no acknowledgement.
@@ -338,8 +351,18 @@ impl Wm {
             if let Some(c) = self.clients.iter().find(|c| c.win == e.window) {
                 let (monitor, tag) = (c.monitor, c.tag);
                 self.focused_monitor = monitor;
-                self.view_tag(tag)?;
-                self.set_focus(e.window)?;
+                if let Some(m) = self.monitors.get_mut(monitor) {
+                    m.active = tag as usize;
+                }
+                // A Scroll column may be intentionally unmapped. Set the
+                // requested focus before arranging so the viewport reveals it,
+                // then focus the now-mapped window.
+                self.focus = Some(e.window);
+                self.publish_layout_readonly()?;
+                self.arrange()?;
+                if !self.hidden.contains(&e.window) {
+                    self.set_focus(e.window)?;
+                }
             }
         } else if e.type_ == self.atom("_NET_WM_STATE") {
             self.handle_wm_state(e)?;

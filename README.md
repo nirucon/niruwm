@@ -9,13 +9,14 @@ which the author used for many years.
 It keeps what makes dwm pleasant: tags instead of virtual desktops, a single
 plain-text configuration, keybindings as the primary interface, and a
 codebase small enough to read. It adds what a daily machine needs: per-monitor
-workspaces, seven layouts, a bar, a launcher, notifications, a lock screen and
+workspaces, eight layouts, a bar, a launcher, notifications, a lock screen and
 the `niructl`/`niruidle` tools.
 
 ## Features
 
-- Seven layouts: tile, left, monocle, centered, centered-floating, fibonacci and
-  floating.
+- Eight layouts: tile, left, monocle, centered, centered-floating, fibonacci,
+  floating and Scroll. Scroll keeps one window per column and shows one or two
+  adjacent columns, sliding horizontally with focus.
 - Ten workspaces per monitor, selected with `Super+1`…`Super+0`.
 - A theme without a wallpaper paints its own background colour, so switching
   theme never leaves the previous picture on screen.
@@ -91,6 +92,8 @@ installations are maintained with `nirux update`.
 | Super+U | Centered floating master |
 | Super+F | Floating layout |
 | Super+Ctrl+E | Fibonacci |
+| Super+Ctrl+S | Scroll layout |
+| Super+Ctrl+Shift+S | Scroll: toggle one/two visible columns |
 | Super+Ctrl+, / Super+Ctrl+. | Previous / next layout |
 | Super+Shift+Space | Toggle floating |
 | Super+Shift+E | Toggle fullscreen |
@@ -266,11 +269,21 @@ niructl layout monocle       # this workspace only
 niructl layout save          # write the current ones to the file
 ```
 
-`Super+T/Y/M/C/U/F` set the focused workspace's layout and
-`Super+Ctrl+period` / `comma` cycle through them. The choice is written to
-`[monitors] layouts` at once, so it survives a crash as well as a logout, and
-it comes back after the next login. A screen can override the common list in
-its own `[[monitors.profiles]]` entry with `layouts = [...]`.
+`Super+T/Y/M/C/U/F` set the focused workspace's layout; `Super+Ctrl+S` selects
+Scroll and `Super+Ctrl+period` / `comma` cycle through all eight. The choice is
+written to `[monitors] layouts` at once, so it survives a crash as well as a
+logout, and it comes back after the next login. A screen can override the common
+list in its own `[[monitors.profiles]]` entry with `layouts = [...]`.
+
+Scroll keeps one window per column. Two adjacent columns are visible by default;
+focus reveals the minimum needed viewport, so `A B -> B C -> C D`. A single
+window fills the work area. Use `niructl layout columns 1|2|toggle` to change the
+mode; the layout name is persisted, the column mode is session state and returns
+to two columns after a restart. Off-viewport columns remain managed and appear
+in the window switcher, but are not treated as lost windows by rescue/display
+watch. If the work area is narrower than 480 px, two-column mode uses a
+one-column geometry fallback. Hidden columns stay in the window switcher and
+`_NET_CLIENT_LIST`; activating one reveals its column.
 
 ### More than one screen
 
