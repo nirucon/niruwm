@@ -54,7 +54,10 @@ powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
 audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
-explain [--launcher] | idle on|off|toggle|status [MINUTES]";
+explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
+storage review [--json]|clean cache --yes | \
+agent [--dry-run] TASK | task list [--json]|clear | \
+windows rescue [--dry-run]";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
 
@@ -2262,6 +2265,37 @@ fn display_preview_apply(profile: &DisplayProfile, seconds: u64) -> Result<()> {
     }
 }
 
+fn display_delete_profile(file: &mut DisplayFile, name: &str) -> Result<()> {
+    let before = file.profile.len();
+    file.profile.retain(|profile| profile.name != name);
+    if file.profile.len() == before {
+        return Err(format!("unknown display profile: {name}").into());
+    }
+    if file.startup_profile.as_deref() == Some(name) {
+        file.startup_profile = None;
+    }
+    Ok(())
+}
+
+fn display_rename_profile(file: &mut DisplayFile, old: &str, new: &str) -> Result<()> {
+    if new.is_empty() || new.chars().any(|c| c.is_control()) {
+        return Err("invalid display profile name".into());
+    }
+    if old != new && file.profile.iter().any(|profile| profile.name == new) {
+        return Err(format!("display profile already exists: {new}").into());
+    }
+    let profile = file
+        .profile
+        .iter_mut()
+        .find(|profile| profile.name == old)
+        .ok_or_else(|| format!("unknown display profile: {old}"))?;
+    profile.name = new.to_string();
+    if file.startup_profile.as_deref() == Some(old) {
+        file.startup_profile = Some(new.to_string());
+    }
+    Ok(())
+}
+
 fn display_save_profile(profile: &DisplayProfile, name: &str) -> Result<()> {
     if name.is_empty() || name.chars().any(|c| c.is_control()) {
         return Err("invalid display profile name".into());
@@ -2329,30 +2363,15 @@ fn display(args: &[String]) -> Result<()> {
         "delete" => {
             let name = args.get(1).ok_or("display delete needs a profile name")?;
             let mut file = display_read_file()?;
-            let before = file.profile.len();
-            file.profile.retain(|profile| profile.name != *name);
-            if file.profile.len() == before {
-                return Err(format!("unknown display profile: {name}").into());
-            }
+            display_delete_profile(&mut file, name)?;
             display_write_file(&file)?;
             println!("deleted display profile {name}");
         }
         "rename" => {
             let old = args.get(1).ok_or("display rename needs an old name")?;
             let new = args.get(2).ok_or("display rename needs a new name")?;
-            if new.is_empty() || new.chars().any(|c| c.is_control()) {
-                return Err("invalid display profile name".into());
-            }
             let mut file = display_read_file()?;
-            if file.profile.iter().any(|profile| profile.name == *new) {
-                return Err(format!("display profile already exists: {new}").into());
-            }
-            let profile = file
-                .profile
-                .iter_mut()
-                .find(|profile| profile.name == *old)
-                .ok_or_else(|| format!("unknown display profile: {old}"))?;
-            profile.name = new.to_string();
+            display_rename_profile(&mut file, old, new)?;
             display_write_file(&file)?;
             println!("renamed display profile {old} to {new}");
         }
@@ -4441,6 +4460,573 @@ fn mode(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TaskEntry {
+    id: String,
+    label: String,
+    state: String,
+    updated: u64,
+    detail: String,
+}
+
+fn state_dir() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
+        })
+        .join("niruwm")
+}
+
+fn tasks_path() -> PathBuf {
+    state_dir().join("tasks.json")
+}
+
+fn read_tasks() -> Vec<TaskEntry> {
+    fs::read_to_string(tasks_path())
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_tasks(tasks: &[TaskEntry]) -> Result<()> {
+    let path = tasks_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    fs::write(&temp, serde_json::to_vec_pretty(tasks)?)?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn update_task(id: &str, state: &str, detail: &str) -> Result<()> {
+    let mut tasks = read_tasks();
+    if let Some(task) = tasks.iter_mut().find(|task| task.id == id) {
+        task.state = state.into();
+        task.updated = now_secs();
+        if !detail.is_empty() {
+            task.detail = detail.into();
+        }
+    }
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.updated));
+    tasks.truncate(20);
+    write_tasks(&tasks)
+}
+
+fn add_task(label: &str) -> Result<String> {
+    let id = format!("{}-{}", now_secs(), std::process::id());
+    let mut tasks = read_tasks();
+    tasks.push(TaskEntry {
+        id: id.clone(),
+        label: label.chars().take(72).collect(),
+        state: "running".into(),
+        updated: now_secs(),
+        detail: String::new(),
+    });
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.updated));
+    tasks.truncate(20);
+    write_tasks(&tasks)?;
+    Ok(id)
+}
+
+fn task(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str).unwrap_or("list") {
+        "list" => {
+            let tasks = read_tasks();
+            if args.iter().any(|arg| arg == "--json") {
+                println!("{}", serde_json::to_string_pretty(&tasks)?);
+                return Ok(());
+            }
+            if tasks.is_empty() {
+                println!("No NIRU tasks recorded.");
+                return Ok(());
+            }
+            for task in tasks {
+                let age = now_secs().saturating_sub(task.updated);
+                println!(
+                    "{}\t{}\t{}s ago\t{}",
+                    task.state, task.label, age, task.detail
+                );
+            }
+        }
+        "clear" => {
+            let mut tasks = read_tasks();
+            tasks.retain(|task| task.state == "running" || task.state == "waiting");
+            write_tasks(&tasks)?;
+            println!("Cleared finished tasks.");
+        }
+        other => return Err(format!("task needs list or clear, not {other}").into()),
+    }
+    Ok(())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < units.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{} {}", bytes, units[unit])
+    } else {
+        format!("{value:.1} {}", units[unit])
+    }
+}
+
+fn scan_size(path: &Path) -> (u64, u64) {
+    let mut bytes = 0u64;
+    let mut files = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    let mut visited = 0usize;
+    while let Some(next) = stack.pop() {
+        if visited > 250_000 {
+            break;
+        }
+        let Ok(meta) = fs::symlink_metadata(&next) else {
+            continue;
+        };
+        visited += 1;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if let Ok(entries) = fs::read_dir(&next) {
+                for entry in entries.flatten() {
+                    stack.push(entry.path());
+                }
+            }
+        } else if meta.is_file() {
+            bytes = bytes.saturating_add(meta.len());
+            files = files.saturating_add(1);
+        }
+    }
+    (bytes, files)
+}
+
+fn old_downloads(path: &Path, days: u64) -> (u64, u64) {
+    let now = now_secs();
+    let mut bytes = 0u64;
+    let mut count = 0u64;
+    let Ok(entries) = fs::read_dir(path) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs())
+            .unwrap_or(now);
+        if now.saturating_sub(modified) >= days * 86_400 {
+            bytes = bytes.saturating_add(meta.len());
+            count += 1;
+        }
+    }
+    (bytes, count)
+}
+
+fn storage(args: &[String]) -> Result<()> {
+    match args.first().map(String::as_str).unwrap_or("review") {
+        "review" => storage_review(args.iter().any(|arg| arg == "--json")),
+        "clean" => {
+            let what = args.get(1).map(String::as_str).unwrap_or("");
+            if what != "cache" || !args.iter().any(|arg| arg == "--yes") {
+                return Err("storage clean needs: cache --yes".into());
+            }
+            let base = std::env::var_os("XDG_CACHE_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache")
+                })
+                .join("nirubar");
+            let (before, _) = scan_size(&base);
+            if base.is_dir() {
+                for entry in fs::read_dir(&base)?.flatten() {
+                    let path = entry.path();
+                    if entry
+                        .file_type()
+                        .map(|kind| kind.is_symlink())
+                        .unwrap_or(true)
+                    {
+                        let _ = fs::remove_file(&path);
+                    } else if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                        fs::remove_dir_all(&path)?;
+                    } else {
+                        fs::remove_file(&path)?;
+                    }
+                }
+            }
+            let (after, _) = scan_size(&base);
+            println!(
+                "Removed NIRUBAR cache: {} (was {}).",
+                human_bytes(after),
+                human_bytes(before)
+            );
+            Ok(())
+        }
+        other => Err(format!("storage needs review or clean, not {other}").into()),
+    }
+}
+
+fn storage_review(json: bool) -> Result<()> {
+    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".cache"));
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    let (cache_bytes, cache_files) = scan_size(&cache);
+    let (bar_bytes, _) = scan_size(&cache.join("nirubar"));
+    let (trash_bytes, trash_files) = scan_size(&data.join("Trash"));
+    let (download_bytes, download_count) = old_downloads(&home.join("Downloads"), 90);
+    let generation_root = data.join("nirux/generations");
+    let mut generation_count = 0usize;
+    let mut old_generations = 0usize;
+    if let Ok(entries) = fs::read_dir(&generation_root) {
+        let current = fs::read_link(data.join("nirux/current")).ok();
+        let previous = fs::read_link(data.join("nirux/previous")).ok();
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            generation_count += 1;
+            let path = entry.path();
+            if current.as_ref() != Some(&path) && previous.as_ref() != Some(&path) {
+                old_generations += 1;
+            }
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "cache_bytes": cache_bytes,
+                "cache_files": cache_files,
+                "nirubar_cache_bytes": bar_bytes,
+                "trash_bytes": trash_bytes,
+                "trash_files": trash_files,
+                "old_download_bytes": download_bytes,
+                "old_download_count": download_count,
+                "generation_count": generation_count,
+                "old_generations": old_generations,
+            })
+        );
+        return Ok(());
+    }
+    println!("NIRU storage review (nothing has been removed)");
+    println!(
+        "  Cache:                    {} in {} files",
+        human_bytes(cache_bytes),
+        cache_files
+    );
+    println!("    NIRUBAR cache:          {}", human_bytes(bar_bytes));
+    println!(
+        "  Trash:                    {} in {} files",
+        human_bytes(trash_bytes),
+        trash_files
+    );
+    println!(
+        "  Downloads older than 90d: {} in {} files",
+        human_bytes(download_bytes),
+        download_count
+    );
+    println!(
+        "  NIRUX generations:        {} total, {} older than current/previous",
+        generation_count, old_generations
+    );
+    println!("Review Downloads and generations before deleting anything personal.");
+    Ok(())
+}
+
+fn agent(args: &[String]) -> Result<()> {
+    if !which("opencode") {
+        return Err(
+            "OpenCode is not installed; enable it with NIRUX or install it separately".into(),
+        );
+    }
+    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let task = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--dry-run")
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let interactive = task.trim().is_empty();
+    let dir = state_dir().join("agent");
+    fs::create_dir_all(&dir)?;
+    let context_path = dir.join("context.md");
+    let version = std::process::Command::new("nirux")
+        .arg("--version")
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_else(|| "NIRUX version unavailable".into());
+    let context = format!(
+        "# NIRU desktop assistance context\n\n\
+         Component: {}\n\
+         Desktop: NIRUWM / X11\n\
+         Task scope: user described a desktop task.\n\n\
+         Start by inspecting current state with `nirux status`, `nirux doctor`, `niructl explain`, and the relevant `niructl` command.\n\
+         Do not print credentials or private file contents. Do not make destructive changes without explicit confirmation. Prefer reversible changes and report what changed.\n",
+        version
+    );
+    fs::write(&context_path, context)?;
+    let prompt = if interactive {
+        format!(
+            "You are helping on the NIRUX minimal X11 desktop. Read {} and ask me what I want to do. Use the existing NIRUX tools and ask before destructive changes. Do not expose credentials, private messages, or personal files.",
+            context_path.display()
+        )
+    } else {
+        format!(
+            "You are helping on the NIRUX minimal X11 desktop. Read {}. Task: {}. Use the existing NIRUX tools and ask before destructive changes. Do not expose credentials, private messages, or personal files.",
+            context_path.display(),
+            task.trim()
+        )
+    };
+    if dry_run {
+        println!("context: {}", context_path.display());
+        println!("prompt: {prompt}");
+        println!("command: opencode --prompt <prompt>");
+        return Ok(());
+    }
+    let id = add_task("OpenCode desktop task")?;
+    if interactive {
+        println!("Starting OpenCode in interactive handoff mode.");
+    } else {
+        println!("Starting OpenCode for: {}", task.trim());
+    }
+    println!("Context: {}", context_path.display());
+    let status = std::process::Command::new("opencode")
+        .arg("--prompt")
+        .arg(&prompt)
+        .status();
+    match status {
+        Ok(status) if status.success() => {
+            update_task(&id, "completed", "OpenCode exited successfully")?
+        }
+        Ok(status) => update_task(&id, "failed", &format!("OpenCode exited with {status}"))?,
+        Err(error) => {
+            update_task(&id, "failed", &format!("cannot start OpenCode: {error}"))?;
+            return Err(format!("cannot start OpenCode: {error}").into());
+        }
+    }
+    Ok(())
+}
+
+fn windows_rescue(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    args: &[String],
+) -> Result<()> {
+    let dry_run = args.iter().any(|arg| arg == "--dry-run");
+    let atom =
+        |name: &str| -> Result<Atom> { Ok(c.intern_atom(false, name.as_bytes())?.reply()?.atom) };
+    let client_list = atom("_NET_CLIENT_LIST")?;
+    let Some(property) = c
+        .get_property(false, root, client_list, AtomEnum::WINDOW, 0, 4096)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    else {
+        return Err("cannot read the window list".into());
+    };
+    let windows = property
+        .value32()
+        .map(|values| values.collect::<Vec<Window>>())
+        .unwrap_or_default();
+    let pointer = c
+        .query_pointer(root)?
+        .reply()
+        .map(|reply| (reply.root_x, reply.root_y))
+        .unwrap_or((0, 0));
+    let target = monitor_rect(c, root, pointer.0, pointer.1)?;
+    let mut moved = 0usize;
+    for window in windows {
+        let Ok(attributes) = c.get_window_attributes(window) else {
+            continue;
+        };
+        let Ok(attributes) = attributes.reply() else {
+            continue;
+        };
+        if attributes.override_redirect || attributes.map_state == MapState::UNMAPPED {
+            continue;
+        }
+        let Ok(geometry) = c.get_geometry(window) else {
+            continue;
+        };
+        let Ok(geometry) = geometry.reply() else {
+            continue;
+        };
+        let frame = c
+            .get_property(
+                false,
+                window,
+                atom("_NET_FRAME_EXTENTS")?,
+                AtomEnum::CARDINAL,
+                0,
+                4,
+            )
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .and_then(|reply| reply.value32().map(|values| values.collect::<Vec<u32>>()))
+            .unwrap_or_else(|| vec![0, 0, 0, 0]);
+        let left = i32::try_from(*frame.first().unwrap_or(&0)).unwrap_or(0);
+        let right = i32::try_from(*frame.get(1).unwrap_or(&0)).unwrap_or(0);
+        let top = i32::try_from(*frame.get(2).unwrap_or(&0)).unwrap_or(0);
+        let bottom = i32::try_from(*frame.get(3).unwrap_or(&0)).unwrap_or(0);
+        let x = i32::from(geometry.x) - left;
+        let y = i32::from(geometry.y) - top;
+        let width = i32::from(geometry.width) + left + right;
+        let height = i32::from(geometry.height) + top + bottom;
+        if monitors_intersect(c, root, x, y, width, height) {
+            continue;
+        }
+        let name = c
+            .get_property(false, window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 128)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| String::from_utf8_lossy(&reply.value).to_string())
+            .unwrap_or_else(|| format!("0x{window:x}"));
+        println!(
+            "{}: {} at {},{}x{},{}",
+            if dry_run { "would move" } else { "moving" },
+            name.trim(),
+            x,
+            y,
+            width,
+            height
+        );
+        if !dry_run {
+            let x = target.x.saturating_add(40);
+            let y = target.y.saturating_add(40);
+            let data = [
+                u32::try_from(10).unwrap_or(10),
+                x.max(0) as u32,
+                y.max(0) as u32,
+                geometry.width as u32,
+                geometry.height as u32,
+            ];
+            let event = ClientMessageEvent::new(32, window, atom("_NET_MOVERESIZE_WINDOW")?, data);
+            c.send_event(
+                false,
+                root,
+                EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+                event,
+            )?;
+        }
+        moved += 1;
+    }
+    c.flush()?;
+    if moved == 0 {
+        println!("All managed windows are on a connected display.");
+    }
+    Ok(())
+}
+
+fn monitor_rect(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    x: i16,
+    y: i16,
+) -> Result<Rectangle> {
+    let resources = c.randr_get_screen_resources_current(root)?.reply()?;
+    let mut fallback = Rectangle {
+        x: 0,
+        y: 0,
+        width: c
+            .setup()
+            .roots
+            .last()
+            .map(|screen| screen.width_in_pixels)
+            .unwrap_or(1920),
+        height: c
+            .setup()
+            .roots
+            .last()
+            .map(|screen| screen.height_in_pixels)
+            .unwrap_or(1080),
+    };
+    for output in resources.outputs {
+        let Ok(info) = c.randr_get_output_info(output, resources.config_timestamp) else {
+            continue;
+        };
+        let Ok(info) = info.reply() else { continue };
+        if info.connection != x11rb::protocol::randr::Connection::CONNECTED || info.crtc == 0 {
+            continue;
+        }
+        let Ok(crtc) = c.randr_get_crtc_info(info.crtc, resources.config_timestamp) else {
+            continue;
+        };
+        let Ok(crtc) = crtc.reply() else { continue };
+        if crtc.width == 0 || crtc.height == 0 {
+            continue;
+        }
+        let rect = Rectangle {
+            x: crtc.x,
+            y: crtc.y,
+            width: crtc.width,
+            height: crtc.height,
+        };
+        fallback = rect;
+        if i32::from(x) >= i32::from(rect.x)
+            && i32::from(x) < i32::from(rect.x) + i32::from(rect.width)
+            && i32::from(y) >= i32::from(rect.y)
+            && i32::from(y) < i32::from(rect.y) + i32::from(rect.height)
+        {
+            return Ok(rect);
+        }
+    }
+    Ok(fallback)
+}
+
+fn monitors_intersect(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> bool {
+    let Ok(resources) = c.randr_get_screen_resources_current(root) else {
+        return true;
+    };
+    let Ok(resources) = resources.reply() else {
+        return true;
+    };
+    for output in resources.outputs {
+        let Ok(info) = c.randr_get_output_info(output, resources.config_timestamp) else {
+            continue;
+        };
+        let Ok(info) = info.reply() else { continue };
+        if info.connection != x11rb::protocol::randr::Connection::CONNECTED || info.crtc == 0 {
+            continue;
+        }
+        let Ok(crtc) = c.randr_get_crtc_info(info.crtc, resources.config_timestamp) else {
+            continue;
+        };
+        let Ok(crtc) = crtc.reply() else { continue };
+        let right = i32::from(crtc.x) + i32::from(crtc.width);
+        let bottom = i32::from(crtc.y) + i32::from(crtc.height);
+        if x < right
+            && i32::from(crtc.x) < x.saturating_add(width)
+            && y < bottom
+            && i32::from(crtc.y) < y.saturating_add(height)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn expand_user_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         return PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(rest);
@@ -4492,6 +5078,15 @@ fn offline(cmd: &str) -> Result<()> {
     }
     if cmd == "timing" {
         return timing(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "storage" {
+        return storage(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "agent" {
+        return agent(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
+    if cmd == "task" {
+        return task(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if matches!(
         cmd,
@@ -4765,6 +5360,9 @@ fn run() -> Result<()> {
             | "idle"
             | "timing"
             | "monitors"
+            | "storage"
+            | "agent"
+            | "task"
     ) {
         return offline(cmd);
     }
@@ -4792,6 +5390,10 @@ fn run() -> Result<()> {
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
     let atom = |n: &str| -> Result<Atom> { Ok(c.intern_atom(false, n.as_bytes())?.reply()?.atom) };
+
+    if cmd == "windows" {
+        return windows_rescue(&c, root, &std::env::args().skip(2).collect::<Vec<_>>());
+    }
 
     if cmd == "restart-bar" {
         let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
@@ -5448,7 +6050,10 @@ fn main() {
 
 #[cfg(test)]
 mod display_parse_tests {
-    use super::{display_outputs_from, display_resolve, DisplayOutput};
+    use super::{
+        display_delete_profile, display_outputs_from, display_rename_profile, display_resolve,
+        DisplayFile, DisplayOutput, DisplayProfile,
+    };
 
     const SAMPLE: &str = "Screen 0: minimum 320 x 200, current 5120 x 1440, maximum 16384 x 16384
 DisplayPort-3 disconnected primary (normal left inverted right x axis y axis)
@@ -5460,6 +6065,37 @@ DisplayPort-5 connected 2560x1440+2560+0 inverted (normal left inverted right x 
 DisplayPort-6 connected (normal left inverted right x axis y axis)
    1920x1200     59.88+
 ";
+
+    fn display_file_with_startup() -> DisplayFile {
+        DisplayFile {
+            profile: vec![
+                DisplayProfile {
+                    name: "Desk".into(),
+                    outputs: Vec::new(),
+                },
+                DisplayProfile {
+                    name: "Other".into(),
+                    outputs: Vec::new(),
+                },
+            ],
+            startup_profile: Some("Desk".into()),
+        }
+    }
+
+    #[test]
+    fn renaming_a_startup_profile_moves_the_reference() {
+        let mut file = display_file_with_startup();
+        display_rename_profile(&mut file, "Desk", "Office").unwrap();
+        assert_eq!(file.startup_profile.as_deref(), Some("Office"));
+    }
+
+    #[test]
+    fn deleting_a_startup_profile_clears_the_reference() {
+        let mut file = display_file_with_startup();
+        display_delete_profile(&mut file, "Desk").unwrap();
+        assert_eq!(file.startup_profile, None);
+        assert_eq!(file.profile.len(), 1);
+    }
 
     #[test]
     fn the_current_rotation_is_read_not_the_supported_list() {
@@ -5847,5 +6483,33 @@ screensaver_timeout = 15
         assert!(super::lock_still_held(Some(42), 42));
         assert!(!super::lock_still_held(Some(43), 42));
         assert!(!super::lock_still_held(None, 42));
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::{human_bytes, scan_size};
+    use std::fs;
+
+    #[test]
+    fn storage_scan_counts_files_without_following_symlinks() {
+        let dir = std::env::temp_dir().join(format!("niructl-storage-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::write(dir.join("a"), b"1234").unwrap();
+        fs::write(dir.join("nested/b"), b"12").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("a"), dir.join("link")).unwrap();
+        let (bytes, files) = scan_size(&dir);
+        assert_eq!(bytes, 6);
+        assert_eq!(files, 2);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn byte_units_are_human_readable() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(1024), "1.0 KiB");
+        assert_eq!(human_bytes(1024 * 1024), "1.0 MiB");
     }
 }

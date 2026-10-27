@@ -143,6 +143,14 @@ impl Wm {
                     self.start(&cmd);
                 }
             }
+            Action::LauncherActions => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--system-actions".into()]);
+                } else {
+                    let cmd = self.cfg.launcher.clone();
+                    self.start(&cmd);
+                }
+            }
             Action::Lock => self.lock_screen(),
             Action::Suspend => {
                 // The helper waits for NIRULOCK's readiness and the three

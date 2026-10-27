@@ -16,6 +16,8 @@ pub enum Action {
     Browser,
     Launcher,
     LauncherUnified,
+    /// The focused NIRU system-action catalogue.
+    LauncherActions,
     /// Type a phrase and open it in a web search engine.
     LauncherSearch,
     /// Lock the screen with the first available locker.
@@ -237,6 +239,9 @@ impl Action {
         // Prefer the native launcher; the configured app launcher is fallback.
         add("super+p", "launcher");
         add("super+shift+p", "launcher_unified");
+        // Practical system actions: maintenance, diagnostics, contexts and
+        // the optional OpenCode handoff. Super+A is free by default.
+        add("super+a", "launcher_actions");
         // Type a phrase, Enter opens it in the instant-search engine.
         add("super+s", "launcher_search");
         add("super+shift+b", "launcher_unified");
@@ -395,6 +400,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "browser" => Action::Browser,
         "launcher" => Action::Launcher,
         "launcher_unified" => Action::LauncherUnified,
+        "launcher_actions" => Action::LauncherActions,
         "launcher_search" => Action::LauncherSearch,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,

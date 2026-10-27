@@ -27,7 +27,10 @@ the `niructl`/`niruidle` tools.
 - Native notification, DND, audio, microphone, Bluetooth, display-profile, power-
   profile, brightness, night-light and screenshot integration.
 - Shared NIRU themes, font metrics and appearance contract.
-- `niructl`: provider-neutral controls, diagnostics, work modes and recipes.
+- `niructl`: provider-neutral controls, diagnostics, work modes, recipes, storage
+  review, task status, off-screen window recovery and the optional OpenCode handoff.
+- NIRU Actions: `Super+A` opens the focused action catalogue; the same entries are
+  available in the larger `Super+Shift+P` launcher view.
 - `niruidle`: idle, lock and DPMS timing without a separate idle daemon. The
   whole ladder is one sequence with one timer per step: active ->
   `screensaver_timeout` -> screensaver -> `lock_after_screensaver` -> locked,
@@ -58,6 +61,7 @@ installations are maintained with `nirux update`.
 | Super+Shift+Enter | Alternative terminal |
 | Super+B | Browser |
 | Super+P | Application launcher |
+| Super+A | NIRU Actions: maintenance, diagnostics, contexts and optional OpenCode |
 | Super+Shift+P | Applications, windows and actions |
 | Super+S | Web search: type a phrase, Enter opens the engine |
 | Super+Shift+M | Unified launcher |
@@ -163,6 +167,9 @@ niruwm --check-config
 niruwm --reset-config   # restore the full example; keeps .niruwm-backup
 niructl reload
 niructl restart-bar
+niructl storage review
+niructl task list
+niructl agent --dry-run "explain why the microphone is silent"
 niructl theme niru-nord
 niructl themes                         # catalogue, origin and active marker
 niructl theme-catalog                  # the same catalogue as JSON for GUIs
