@@ -861,7 +861,7 @@ mod tests {
         );
         let mut cfg = config(&dir);
         cfg.theme_dir = dir.display().to_string();
-        w = Wallpaper::new(&cfg, "niru-noir");
+        w = Wallpaper::new(&cfg, "niru-test-missing-wallpaper");
         assert_eq!(w.theme_image(), None);
         fs::remove_dir_all(&dir).ok();
     }
@@ -886,7 +886,7 @@ mod tests {
         );
         // A full apply must keep following the theme instead of picking a
         // session picture; the colour is then what the screen shows.
-        let _ = w.set_theme("niru-satie");
+        let _ = w.set_theme("niru-test-missing-wallpaper");
         assert_eq!(w.common_image(), None, "apply picked a picture again");
         assert_eq!(
             w.common_image(),
@@ -1027,7 +1027,7 @@ mod tests {
             }],
             ..WallpaperConfig::default()
         };
-        let mut w = Wallpaper::new(&cfg, "niru-nord");
+        let mut w = Wallpaper::new(&cfg, "niru-test-missing-wallpaper");
         w.set_outputs(vec![
             Output {
                 name: "eDP-1".into(),

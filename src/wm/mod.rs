@@ -133,6 +133,8 @@ pub(crate) struct Wm {
     children: Vec<Child>,
     helpers: HelperPool,
     pub(crate) hidden: HashSet<Window>,
+    /// Parents that unmapped themselves rather than being hidden by the WM.
+    pub(crate) withdrawn: HashSet<Window>,
     /// A close selected a neighbour: arrange must also move the X input focus.
     pub(crate) focus_dirty: bool,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
@@ -278,6 +280,7 @@ impl Wm {
             children: Vec::new(),
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
+            withdrawn: HashSet::new(),
             focus_dirty: false,
             bindings: Vec::new(),
             wallpaper,

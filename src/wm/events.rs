@@ -66,6 +66,7 @@ impl Wm {
             match event {
                 Event::MapRequest(e) => self.manage(e.window)?,
                 Event::DestroyNotify(e) => {
+                    self.withdrawn.remove(&e.window);
                     self.unmanage(e.window);
                     self.arrange()?;
                 }
@@ -91,8 +92,19 @@ impl Wm {
                     if self.hidden.contains(&e.window) {
                         // expected: we unmapped it
                     } else if self.clients.iter().any(|c| c.win == e.window) {
-                        // Visible managed client: this notification belongs to
-                        // an earlier hide whose map already happened.
+                        // A visible managed client that is now unmapped withdrew
+                        // itself (a tray hide or a minimized main window). Record
+                        // that fact; a stale notification from our own hide has
+                        // already been remapped and is still VIEWABLE.
+                        if self
+                            .c
+                            .get_window_attributes(e.window)?
+                            .reply()
+                            .map(|attrs| attrs.map_state == MapState::UNMAPPED)
+                            .unwrap_or(false)
+                        {
+                            self.withdrawn.insert(e.window);
+                        }
                     } else {
                         self.unmanage(e.window);
                         self.arrange()?;

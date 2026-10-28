@@ -1,5 +1,9 @@
 use super::*;
 
+fn suppress_transient(withdrawn: &HashSet<Window>, parent: Option<Window>) -> bool {
+    parent.is_some_and(|parent| withdrawn.contains(&parent))
+}
+
 impl Wm {
     pub(crate) fn values(&self, w: Window, n: &str) -> Vec<u32> {
         self.c
@@ -51,21 +55,15 @@ impl Wm {
             .and_then(|mut v| v.next())
             .filter(|w| *w != 0);
 
-        // A transient must not become visible while its parent is not
-        // viewable. Some tray applications re-map a hidden dialog on workspace
-        // changes; unmapping it here prevents a closed dialog from reappearing.
-        if let Some(parent) = transient {
-            let state = self
-                .c
-                .get_window_attributes(parent)?
-                .reply()
-                .map(|attrs| attrs.map_state)
-                .unwrap_or(MapState::UNMAPPED);
-            if state != MapState::VIEWABLE {
-                let _ = self.c.unmap_window(w);
-                self.c.flush()?;
-                return Ok(());
-            }
+        self.withdrawn.remove(&w);
+        // A dialog belongs to its parent's workspace. Suppress it only when the
+        // parent withdrew itself (a tray hide or a closed main window). A parent
+        // that is merely hidden by the WM on another workspace still allows a
+        // new dialog, which is placed with that parent below.
+        if suppress_transient(&self.withdrawn, transient) {
+            let _ = self.c.unmap_window(w);
+            self.c.flush()?;
+            return Ok(());
         }
 
         // Dialogs, utilities, splash screens and transients float above the
@@ -281,6 +279,8 @@ impl Wm {
     }
 
     pub(crate) fn unmanage(&mut self, w: Window) {
+        self.withdrawn.remove(&w);
+        self.hidden.remove(&w);
         if self.scratchpad == Some(w) {
             self.scratchpad = None;
             self.scratchpad_shown = false;
@@ -1213,6 +1213,15 @@ mod tests {
     fn a_visible_window_that_unmaps_itself_is_unmanaged() {
         let hidden = HashSet::new();
         assert!(!stays_managed(&hidden, 42));
+    }
+
+    #[test]
+    fn a_dialog_is_suppressed_only_for_a_withdrawn_parent() {
+        let mut withdrawn = HashSet::new();
+        withdrawn.insert(42u32);
+        assert!(suppress_transient(&withdrawn, Some(42)));
+        assert!(!suppress_transient(&withdrawn, Some(43)));
+        assert!(!suppress_transient(&withdrawn, None));
     }
 
     #[test]
