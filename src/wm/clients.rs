@@ -152,21 +152,35 @@ impl Wm {
         });
         let (monitor, tag) = match &restored {
             Some(r) => (r.monitor.min(self.monitors.len().saturating_sub(1)), r.tag),
-            None => match requested {
-                Some((monitor, tag)) => (monitor, tag as u32),
-                None if parent_place.is_some() => parent_place.unwrap(),
-                None => {
-                    // Suite settings belong to the screen the user is working on.
-                    // The pointer is the active screen even when the desktop has no
-                    // focused client, and the window must use that screen's tag.
+            None => match parent_place {
+                Some((monitor, tag)) => (monitor, tag),
+                None if transient.is_some() => {
+                    // A tray dialog is often transient for an unmanaged 1x1
+                    // helper that asks for desktop 0. Keep it on the workspace
+                    // the user is actually looking at instead of hiding it.
                     let monitor = pointer_monitor;
-                    let tag = rule
-                        .as_ref()
-                        .and_then(|r| r.workspace)
-                        .or_else(|| self.monitors.get(monitor).map(|m| m.active as u32))
+                    let tag = self
+                        .monitors
+                        .get(monitor)
+                        .map(|m| m.active as u32)
                         .unwrap_or_else(|| self.active_tag());
                     (monitor, tag)
                 }
+                None => match requested {
+                    Some((monitor, tag)) => (monitor, tag as u32),
+                    None => {
+                        // Suite settings belong to the screen the user is working on.
+                        // The pointer is the active screen even when the desktop has no
+                        // focused client, and the window must use that screen's tag.
+                        let monitor = pointer_monitor;
+                        let tag = rule
+                            .as_ref()
+                            .and_then(|r| r.workspace)
+                            .or_else(|| self.monitors.get(monitor).map(|m| m.active as u32))
+                            .unwrap_or_else(|| self.active_tag());
+                        (monitor, tag)
+                    }
+                },
             },
         };
         let monitor_name = self
