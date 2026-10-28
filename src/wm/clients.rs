@@ -51,6 +51,23 @@ impl Wm {
             .and_then(|mut v| v.next())
             .filter(|w| *w != 0);
 
+        // A transient must not become visible while its parent is not
+        // viewable. Some tray applications re-map a hidden dialog on workspace
+        // changes; unmapping it here prevents a closed dialog from reappearing.
+        if let Some(parent) = transient {
+            let state = self
+                .c
+                .get_window_attributes(parent)?
+                .reply()
+                .map(|attrs| attrs.map_state)
+                .unwrap_or(MapState::UNMAPPED);
+            if state != MapState::VIEWABLE {
+                let _ = self.c.unmap_window(w);
+                self.c.flush()?;
+                return Ok(());
+            }
+        }
+
         // Dialogs, utilities, splash screens and transients float above the
         // tile layout, like dwm's `isfloating` rules.
         let dialog_floating = transient.is_some()
