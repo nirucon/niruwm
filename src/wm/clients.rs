@@ -23,9 +23,36 @@ impl Wm {
         self.values(w, "_NET_WM_WINDOW_TYPE")
     }
 
+    fn tray_activation_recent(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0);
+        self.values(self.root, "_NIRU_TRAY_ACTIVATE")
+            .first()
+            .copied()
+            .map(|stamp| u64::from(stamp) != 0 && now.saturating_sub(u64::from(stamp)) <= 5)
+            .unwrap_or(false)
+    }
+
+    fn orphan_transient(&self, parent: Option<Window>) -> bool {
+        let Some(parent) = parent else { return false };
+        if self.clients.iter().any(|client| client.win == parent) {
+            return false;
+        }
+        self.c
+            .get_window_attributes(parent)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|attrs| attrs.map_state != MapState::VIEWABLE)
+            .unwrap_or(true)
+    }
+
     pub(crate) fn manage(&mut self, w: Window) -> Result<()> {
         if let Some(client) = self.clients.iter().find(|c| c.win == w) {
-            if suppress_transient(&self.withdrawn, client.parent) {
+            if suppress_transient(&self.withdrawn, client.parent)
+                || (self.orphan_transient(client.parent) && !self.tray_activation_recent())
+            {
                 let _ = self.c.unmap_window(w);
                 self.c.flush()?;
                 return Ok(());
@@ -69,7 +96,9 @@ impl Wm {
         // parent withdrew itself (a tray hide or a closed main window). A parent
         // that is merely hidden by the WM on another workspace still allows a
         // new dialog, which is placed with that parent below.
-        if suppress_transient(&self.withdrawn, transient) {
+        if suppress_transient(&self.withdrawn, transient)
+            || (self.orphan_transient(transient) && !self.tray_activation_recent())
+        {
             let _ = self.c.unmap_window(w);
             self.c.flush()?;
             return Ok(());

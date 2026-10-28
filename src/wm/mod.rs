@@ -247,6 +247,7 @@ impl Wm {
             "WM_STATE",
             "WM_TAKE_FOCUS",
             "_NIRUWM_COMMAND",
+            "_NIRU_TRAY_ACTIVATE",
             "_NIRUWM_CONFIG_ACK",
             "_NIRUWM_ACK_CONTROL",
             "_NIRUWM_THEME",
