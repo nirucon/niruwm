@@ -1400,7 +1400,23 @@ fn microphone_test(args: &[String]) -> Result<()> {
             .map(|value| value.as_nanos())
             .unwrap_or_default()
     ));
-    let (program_name, arguments) = if let Some(arecord) = program("arecord") {
+    // Prefer PipeWire's recorder: arecord talks to the raw ALSA device and
+    // bypasses the calibrated WirePlumber source volume, producing a
+    // misleading clipping verdict. pw-record measures the effective route.
+    let (program_name, arguments) = if let Some(pw_record) = program("pw-record") {
+        (
+            pw_record,
+            vec![
+                "--rate".into(),
+                "48000".into(),
+                "--channels".into(),
+                "1".into(),
+                "--format".into(),
+                "s16".into(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    } else if let Some(arecord) = program("arecord") {
         (
             arecord,
             vec![
@@ -1416,21 +1432,8 @@ fn microphone_test(args: &[String]) -> Result<()> {
                 path.to_string_lossy().into_owned(),
             ],
         )
-    } else if let Some(pw_record) = program("pw-record") {
-        (
-            pw_record,
-            vec![
-                "--rate".into(),
-                "48000".into(),
-                "--channels".into(),
-                "1".into(),
-                "--format".into(),
-                "s16".into(),
-                path.to_string_lossy().into_owned(),
-            ],
-        )
     } else {
-        return Err("microphone test needs arecord or pw-record".into());
+        return Err("microphone test needs pw-record or arecord".into());
     };
     let mut child = std::process::Command::new(program_name)
         .args(arguments)
@@ -1440,6 +1443,12 @@ fn microphone_test(args: &[String]) -> Result<()> {
         .spawn()?;
     if child.try_wait()?.is_none() {
         std::thread::sleep(Duration::from_secs(seconds));
+        if child.try_wait()?.is_none() {
+            unsafe {
+                libc::kill(child.id() as i32, libc::SIGTERM);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
         if child.try_wait()?.is_none() {
             let _ = child.kill();
         }
@@ -4720,6 +4729,14 @@ fn launch_sequence(
     Ok(())
 }
 
+fn autostart_suppressed(restore_session: bool, saved_session: bool) -> bool {
+    // A saved session is only a reason to skip the deterministic autostart
+    // sequence when restoration is actually enabled. With restore_session=false
+    // the saved layout is not replayed, so the user's declared startup app list
+    // must still run.
+    restore_session && saved_session
+}
+
 fn autostart(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
@@ -4729,7 +4746,7 @@ fn autostart(
     if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() {
         return Ok(());
     }
-    if cfg.restore_session || !session_state::load().is_empty() {
+    if autostart_suppressed(cfg.restore_session, !session_state::load().is_empty()) {
         return Ok(());
     }
     launch_sequence(
@@ -7731,6 +7748,14 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn autostart_decision_respects_restore_session() {
+        assert!(!autostart_suppressed(false, true));
+        assert!(!autostart_suppressed(false, false));
+        assert!(autostart_suppressed(true, true));
+        assert!(!autostart_suppressed(true, false));
+    }
+
     #[test]
     fn tenth_workspace_is_accepted_for_autostart() {
         assert!(valid_workspace(1));
