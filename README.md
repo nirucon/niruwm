@@ -352,8 +352,12 @@ display profiles, power profiles, DND, diagnostics, work modes and workspace
 recipes:
 
 ```sh
-niructl audio outputs
-niructl audio mic-status
+niructl audio status --json
+niructl audio outputs --json
+niructl audio sources --json
+niructl audio mic-status --json
+niructl audio mic-level set 30
+niructl audio mic-test 5 --json
 niructl bluetooth status
 niructl display preview Desk 15
 niructl powerprofile set balanced

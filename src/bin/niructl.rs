@@ -54,7 +54,7 @@ action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD N
 layout show|save | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
-audio outputs|sources|output ID|next|source ID|next|mute|mic-status|mic-mute [on|off|toggle]|mic-level up|down|set N|volume up|down | \
+audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
 storage review [--json]|clean cache --yes | \
@@ -1024,6 +1024,50 @@ fn audio_nodes_from(text: &str, wanted: &str) -> Vec<AudioNode> {
     nodes
 }
 
+/// Parse the Streams section of `wpctl status`. Stream names identify active
+/// applications; IDs remain the authority for any future per-stream action.
+fn audio_streams_from(text: &str) -> Vec<AudioNode> {
+    let mut domain = "";
+    let mut section = "";
+    let mut nodes = Vec::new();
+    for line in text.lines() {
+        let clean = line.trim_matches(|c: char| c.is_whitespace() || "│├└─".contains(c));
+        if clean == "Audio" || clean == "Video" {
+            domain = clean;
+            section = "";
+            continue;
+        }
+        if clean == "Streams:" {
+            section = "streams";
+            continue;
+        }
+        if clean == "Sinks:" || clean == "Sources:" || clean == "Filters:" || clean.ends_with(':') {
+            section = "";
+            continue;
+        }
+        if domain != "Audio" || section != "streams" {
+            continue;
+        }
+        let default = clean.starts_with('*');
+        let clean = clean.trim_start_matches('*').trim();
+        let Some((id, rest)) = clean.split_once(". ") else {
+            continue;
+        };
+        let Ok(id) = id.trim().parse::<u32>() else {
+            continue;
+        };
+        let name = rest.split(" [").next().unwrap_or(rest).trim();
+        if !name.is_empty() {
+            nodes.push(AudioNode {
+                id,
+                name: name.to_string(),
+                default,
+            });
+        }
+    }
+    nodes
+}
+
 /// Audio queries must not hold the launcher or a status worker indefinitely.
 fn provider_query(program: &str, args: &[String]) -> Result<String> {
     use std::io::Read;
@@ -1088,23 +1132,23 @@ fn audio_nodes(kind: &str) -> Result<Vec<AudioNode>> {
     Ok(audio_nodes_from(&text, kind))
 }
 
-#[derive(Debug)]
-struct MicrophoneReading {
+#[derive(Clone, Debug)]
+struct AudioReading {
     id: u32,
     name: String,
     percent: u32,
     muted: bool,
 }
 
-fn microphone_reading() -> Result<Option<MicrophoneReading>> {
-    let sources = audio_nodes("sources")?;
-    if sources.is_empty() {
+fn node_reading(kind: &str) -> Result<Option<AudioReading>> {
+    let nodes = audio_nodes(kind)?;
+    if nodes.is_empty() {
         return Ok(None);
     }
-    let node = sources
+    let node = nodes
         .into_iter()
         .find(|node| node.default)
-        .ok_or("no default audio input is selected")?;
+        .ok_or("no default audio device is selected")?;
     let wpctl = program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?;
     let text = provider_query(&wpctl, &["get-volume".into(), node.id.to_string()])?;
     let value = text
@@ -1112,8 +1156,8 @@ fn microphone_reading() -> Result<Option<MicrophoneReading>> {
         .and_then(|value| value.split_whitespace().next())
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0 && *value <= 10_000.0)
-        .ok_or("audio input level is invalid")?;
-    Ok(Some(MicrophoneReading {
+        .ok_or("audio level is invalid")?;
+    Ok(Some(AudioReading {
         id: node.id,
         name: node.name.replace(['\t', '\r', '\n'], " "),
         percent: (value * 100.0).round() as u32,
@@ -1121,21 +1165,54 @@ fn microphone_reading() -> Result<Option<MicrophoneReading>> {
     }))
 }
 
-fn print_microphone(reading: &MicrophoneReading) {
-    println!(
-        "state=ready\nid={}\nname={}\npercent={}\nmuted={}",
-        reading.id, reading.name, reading.percent, reading.muted
-    );
+fn microphone_reading() -> Result<Option<AudioReading>> {
+    node_reading("sources")
 }
 
-fn microphone_status() {
+fn print_microphone(reading: &AudioReading, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema": 1,
+                "state": "ready",
+                "id": reading.id,
+                "name": reading.name,
+                "percent": reading.percent,
+                "muted": reading.muted
+            })
+        );
+    } else {
+        println!(
+            "state=ready\nid={}\nname={}\npercent={}\nmuted={}",
+            reading.id, reading.name, reading.percent, reading.muted
+        );
+    }
+}
+
+fn microphone_status(json: bool) {
     if program("wpctl").is_none() {
-        println!("state=provider-unavailable\nreason=wpctl (WirePlumber) is not installed");
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({"schema": 1, "state": "provider-unavailable", "reason": "wpctl (WirePlumber) is not installed"})
+            );
+        } else {
+            println!("state=provider-unavailable\nreason=wpctl (WirePlumber) is not installed");
+        }
         return;
     }
     match microphone_reading() {
-        Ok(Some(reading)) => print_microphone(&reading),
+        Ok(Some(reading)) => print_microphone(&reading, json),
+        Ok(None) if json => println!(
+            "{}",
+            serde_json::json!({"schema": 1, "state": "no-input", "reason": "no audio input is available"})
+        ),
         Ok(None) => println!("state=no-input\nreason=no audio input is available"),
+        Err(error) if json => println!(
+            "{}",
+            serde_json::json!({"schema": 1, "state": "unavailable", "reason": error.to_string()})
+        ),
         Err(error) => println!("state=unavailable\nreason={error}"),
     }
 }
@@ -1189,10 +1266,243 @@ fn audio_next(kind: &str) -> Result<()> {
     Err(format!("no other audio {label} could become the default").into())
 }
 
+fn audio_json_nodes(nodes: &[AudioNode]) -> Vec<serde_json::Value> {
+    nodes
+        .iter()
+        .map(|node| {
+            serde_json::json!({
+                "id": node.id,
+                "name": node.name,
+                "default": node.default
+            })
+        })
+        .collect()
+}
+
+fn audio_reading_json(reading: &AudioReading) -> serde_json::Value {
+    serde_json::json!({
+        "id": reading.id,
+        "name": reading.name,
+        "percent": reading.percent,
+        "muted": reading.muted
+    })
+}
+
+fn audio_status_json() -> Result<()> {
+    if program("wpctl").is_none() {
+        println!(
+            "{}",
+            serde_json::json!({"schema": 1, "available": false, "reason": "wpctl (WirePlumber) is not installed"})
+        );
+        return Ok(());
+    }
+    let outputs = audio_nodes("outputs")?;
+    let sources = audio_nodes("sources")?;
+    let streams = audio_streams_from(&provider_query(
+        &program("wpctl").ok_or("audio control needs wpctl (WirePlumber)")?,
+        &["status".into()],
+    )?);
+    let output = node_reading("outputs")?;
+    let input = node_reading("sources")?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": 1,
+            "available": true,
+            "outputs": audio_json_nodes(&outputs),
+            "sources": audio_json_nodes(&sources),
+            "streams": audio_json_nodes(&streams),
+            "output": output.as_ref().map(audio_reading_json),
+            "input": input.as_ref().map(audio_reading_json)
+        }))?
+    );
+    Ok(())
+}
+
+fn audio_json_nodes_command(kind: &str) -> Result<()> {
+    let nodes = audio_nodes(kind)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&audio_json_nodes(&nodes))?
+    );
+    Ok(())
+}
+
+fn wav_analysis(bytes: &[u8]) -> Result<(f64, f64, bool, &'static str)> {
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return Err("recording did not produce a WAV file".into());
+    }
+    let mut offset = 12usize;
+    let mut data: Option<&[u8]> = None;
+    while offset + 8 <= bytes.len() {
+        let id = &bytes[offset..offset + 4];
+        let size = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let start = offset + 8;
+        let end = start.saturating_add(size).min(bytes.len());
+        if id == b"data" {
+            data = Some(&bytes[start..end]);
+            break;
+        }
+        offset = start.saturating_add(size + (size & 1));
+    }
+    let data = data.ok_or("recording WAV has no data chunk")?;
+    if data.len() < 2 {
+        return Err("recording is empty".into());
+    }
+    let mut peak = 0i32;
+    let mut sum = 0f64;
+    let mut count = 0u64;
+    for chunk in data.chunks_exact(2) {
+        let sample = i16::from_le_bytes([chunk[0], chunk[1]]) as i32;
+        peak = peak.max(sample.abs());
+        sum += (sample as f64) * (sample as f64);
+        count += 1;
+    }
+    if count == 0 {
+        return Err("recording is empty".into());
+    }
+    let peak_ratio = peak as f64 / 32768.0;
+    let rms_ratio = (sum / count as f64).sqrt() / 32768.0;
+    let dbfs = |ratio: f64| {
+        if ratio > 0.0 {
+            20.0 * ratio.log10()
+        } else {
+            -120.0
+        }
+    };
+    let peak_db = dbfs(peak_ratio).max(-120.0);
+    let rms_db = dbfs(rms_ratio).max(-120.0);
+    let clipping = peak_ratio >= 0.999;
+    let verdict = if clipping || peak_db > -1.0 {
+        "too hot"
+    } else if peak_db < -40.0 {
+        "too quiet"
+    } else {
+        "good"
+    };
+    Ok((peak_db, rms_db, clipping, verdict))
+}
+
+fn microphone_test(args: &[String]) -> Result<()> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let keep = args.iter().any(|arg| arg == "--keep");
+    let seconds = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .and_then(|arg| arg.parse::<u64>().ok())
+        .unwrap_or(5)
+        .clamp(1, 15);
+    let path = std::env::temp_dir().join(format!(
+        "niructl-mic-test-{}-{}.wav",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or_default()
+    ));
+    let (program_name, arguments) = if let Some(arecord) = program("arecord") {
+        (
+            arecord,
+            vec![
+                "-q".into(),
+                "-f".into(),
+                "S16_LE".into(),
+                "-r".into(),
+                "48000".into(),
+                "-c".into(),
+                "1".into(),
+                "-d".into(),
+                seconds.to_string(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    } else if let Some(pw_record) = program("pw-record") {
+        (
+            pw_record,
+            vec![
+                "--rate".into(),
+                "48000".into(),
+                "--channels".into(),
+                "1".into(),
+                "--format".into(),
+                "s16".into(),
+                path.to_string_lossy().into_owned(),
+            ],
+        )
+    } else {
+        return Err("microphone test needs arecord or pw-record".into());
+    };
+    let mut child = std::process::Command::new(program_name)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    if child.try_wait()?.is_none() {
+        std::thread::sleep(Duration::from_secs(seconds));
+        if child.try_wait()?.is_none() {
+            let _ = child.kill();
+        }
+    }
+    let _ = child.wait();
+    let bytes = fs::read(&path)?;
+    let (peak, rms, clipping, verdict) = wav_analysis(&bytes)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "schema": 1,
+                "seconds": seconds,
+                "peak_dbfs": (peak * 10.0).round() / 10.0,
+                "rms_dbfs": (rms * 10.0).round() / 10.0,
+                "clipping": clipping,
+                "verdict": verdict,
+                "file": if keep { Some(path.to_string_lossy().into_owned()) } else { None }
+            })
+        );
+    } else {
+        println!(
+            "Peak: {peak:.1} dBFS · RMS: {rms:.1} dBFS · {} · {verdict}",
+            if clipping { "CLIPPING" } else { "no clipping" }
+        );
+    }
+    if !keep {
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
 fn audio(args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("outputs");
     let wpctl = || program("wpctl").ok_or("audio control needs wpctl (WirePlumber)");
+    let json = args.iter().any(|arg| arg == "--json");
     match action {
+        "status" if json => audio_status_json()?,
+        "status" => {
+            for node in audio_nodes("outputs")? {
+                println!(
+                    "output {}\t{}{}",
+                    node.id,
+                    node.name,
+                    if node.default { " · default" } else { "" }
+                );
+            }
+            for node in audio_nodes("sources")? {
+                println!(
+                    "input {}\t{}{}",
+                    node.id,
+                    node.name,
+                    if node.default { " · default" } else { "" }
+                );
+            }
+            match microphone_reading() {
+                Ok(Some(reading)) => print_microphone(&reading, false),
+                Ok(None) => println!("state=no-input"),
+                Err(error) => println!("state=unavailable\nreason={error}"),
+            }
+        }
+        "mic-test" => microphone_test(&args[1..])?,
+        "outputs" | "sources" if json => audio_json_nodes_command(action)?,
         "outputs" | "sources" => {
             let kind = action;
             for node in audio_nodes(kind)? {
@@ -1204,7 +1514,7 @@ fn audio(args: &[String]) -> Result<()> {
                 );
             }
         }
-        "mic-status" => microphone_status(),
+        "mic-status" => microphone_status(json),
         "mic-level" => {
             // Adjust input gain only: changing gain must never unmute a mic.
             let direction = args.get(1).map(String::as_str).ok_or(USAGE)?;
@@ -1236,7 +1546,7 @@ fn audio(args: &[String]) -> Result<()> {
                 ],
             )?;
         }
-        "output" | "source" => {
+        "output" | "source" | "input" => {
             let kind = if action == "output" {
                 "outputs"
             } else {
@@ -7564,6 +7874,52 @@ screensaver_timeout = 15
                 default: true
             }]
         );
+    }
+
+    #[test]
+    fn parses_audio_streams() {
+        let text = "Audio\n ├─ Streams:\n │      91. Firefox [vol: 0.50]\n │      92. Discord [vol: 1.00]\nVideo\n";
+        assert_eq!(
+            audio_streams_from(text),
+            vec![
+                AudioNode {
+                    id: 91,
+                    name: "Firefox".into(),
+                    default: false
+                },
+                AudioNode {
+                    id: 92,
+                    name: "Discord".into(),
+                    default: false
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn analyzes_recorded_wav_levels() {
+        let samples = [0i16, 1000, -2000, 32767];
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&48000u32.to_le_bytes());
+        wav.extend_from_slice(&96000u32.to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        let (peak, rms, clipping, verdict) = wav_analysis(&wav).unwrap();
+        assert!(peak > -1.0 && rms > -20.0);
+        assert!(clipping);
+        assert_eq!(verdict, "too hot");
     }
 
     #[test]
