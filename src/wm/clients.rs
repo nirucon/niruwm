@@ -24,8 +24,17 @@ impl Wm {
     }
 
     pub(crate) fn manage(&mut self, w: Window) -> Result<()> {
-        if self.clients.iter().any(|c| c.win == w) {
-            return Ok(());
+        if let Some(client) = self.clients.iter().find(|c| c.win == w) {
+            if suppress_transient(&self.withdrawn, client.parent) {
+                let _ = self.c.unmap_window(w);
+                self.c.flush()?;
+                return Ok(());
+            }
+            self.withdrawn.remove(&w);
+            self.hidden.remove(&w);
+            self.c.map_window(w)?;
+            self.c.flush()?;
+            return self.arrange();
         }
         let a = self.c.get_window_attributes(w)?.reply()?;
         // Override-redirect (menus, tooltips, splash screens) stay unmanaged.
