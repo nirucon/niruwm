@@ -12,7 +12,7 @@
 # or removed by this standalone installer.
 set -eu
 
-VERSION="0.16.126"
+VERSION="0.16.127"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"

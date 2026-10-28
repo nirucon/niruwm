@@ -121,7 +121,7 @@ impl Wm {
         let suite_settings = class.split('\0').any(|part| {
             matches!(
                 part.to_ascii_lowercase().as_str(),
-                "niruthemeselector" | "niruwallpaper"
+                "niruthemeselector" | "niruwallpaper" | "nirupres"
             )
         });
         let is_scratchpad = self.cfg.scratchpad.matches_class(&class);
