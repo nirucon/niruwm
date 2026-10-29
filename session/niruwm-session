@@ -194,8 +194,12 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
 cleanup() {
+  # A deliberate session exit gets the shutdown cue. Playback is async and
+  # never delays the actual logout; a crash path still reaches this only if
+  # the WM exits normally.
+  command -v nirux >/dev/null 2>&1 && nirux sounds play shutdown >/dev/null 2>&1 || :
   # Work modes are session-scoped. Clear them before helpers disappear, so a
   # timer from this session cannot change the next login.
   command -v niructl >/dev/null 2>&1 && niructl mode stop --quiet >/dev/null 2>&1 || :
@@ -206,7 +210,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -434,6 +438,9 @@ if command -v niructl >/dev/null 2>&1; then
       [ "$WELCOME_NOTIFICATION" != once ] || : > "$LOG_DIR/welcome-shown"
     fi
   ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
+fi
+if command -v nirux >/dev/null 2>&1; then
+  nirux sounds play startup >/dev/null 2>&1 & STARTUP_SOUND_PID=$!
 fi
 STATUS=0
 "$WM" "$@" || STATUS=$?
