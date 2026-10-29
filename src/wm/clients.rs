@@ -344,6 +344,18 @@ impl Wm {
         Ok(())
     }
 
+    /// Toggle a focused floating window between one workspace and all
+    /// workspaces on its monitor. Sticky always implies floating.
+    pub(crate) fn toggle_sticky(&mut self, w: Window) -> Result<()> {
+        if let Some(client) = self.clients.iter_mut().find(|c| c.win == w) {
+            client.sticky = !client.sticky;
+            if client.sticky {
+                client.floating = true;
+            }
+        }
+        self.arrange()
+    }
+
     pub(crate) fn unmanage(&mut self, w: Window) {
         self.withdrawn.remove(&w);
         self.hidden.remove(&w);

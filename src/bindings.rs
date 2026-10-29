@@ -50,6 +50,7 @@ pub enum Action {
     DecMasterRatio,
     ToggleFloat,
     ToggleFullscreen,
+    ToggleSticky,
     Close,
     Quit,
     Reload,
@@ -304,6 +305,7 @@ impl Action {
         add("super+ctrl+period", "layout_next");
         add("super+shift+space", "toggle_float");
         add("super+shift+e", "toggle_fullscreen");
+        add("super+alt+s", "toggle_sticky");
         add("super+shift+s", "scratchpad");
         add("super+h", "dec_master_ratio");
         add("super+l", "inc_master_ratio");
@@ -464,6 +466,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "dec_master_ratio" => Action::DecMasterRatio,
         "toggle_float" => Action::ToggleFloat,
         "toggle_fullscreen" => Action::ToggleFullscreen,
+        "toggle_sticky" => Action::ToggleSticky,
         "close" => Action::Close,
         "quit" => Action::Quit,
         "reload" => Action::Reload,

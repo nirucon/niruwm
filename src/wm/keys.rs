@@ -257,6 +257,11 @@ impl Wm {
                     c.floating = !c.floating;
                 }
             }
+            Action::ToggleSticky => {
+                if let Some(focused) = self.focus {
+                    self.toggle_sticky(focused)?;
+                }
+            }
             Action::ToggleFullscreen => {
                 if let Some(w) = focused {
                     return self.toggle_fullscreen(w).map(|_| true);
