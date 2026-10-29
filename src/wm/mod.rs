@@ -53,6 +53,9 @@ pub(crate) struct Client {
     /// The transient parent, when the client supplied one. Scroll uses it to
     /// reveal the parent column behind a dialog.
     parent: Option<Window>,
+    /// True when the parent was not a managed, viewable window. Such tray
+    /// popups are one-shot: they must not reappear when a workspace is revisited.
+    orphan: bool,
 }
 
 /// One restored command and the windows it still has to map.

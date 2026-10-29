@@ -92,12 +92,13 @@ impl Wm {
             .filter(|w| *w != 0);
 
         self.withdrawn.remove(&w);
+        let orphan = self.orphan_transient(transient);
         // A dialog belongs to its parent's workspace. Suppress it only when the
         // parent withdrew itself (a tray hide or a closed main window). A parent
         // that is merely hidden by the WM on another workspace still allows a
         // new dialog, which is placed with that parent below.
         if suppress_transient(&self.withdrawn, transient)
-            || (self.orphan_transient(transient) && !self.tray_activation_recent())
+            || (orphan && !self.tray_activation_recent())
         {
             let _ = self.c.unmap_window(w);
             self.c.flush()?;
@@ -242,6 +243,7 @@ impl Wm {
             take_focus,
             pid,
             parent: transient,
+            orphan,
         };
         let scroll = self
             .monitors
@@ -732,13 +734,23 @@ impl Wm {
         }
 
         // Hide everything that is not on an active workspace of its screen.
+        // Orphan tray popups are one-shot: once the user leaves their
+        // workspace they must not be remapped on a later visit.
+        let recent_tray = self.tray_activation_recent();
+        let mut dismiss_orphans = Vec::new();
         for c in &self.clients {
             let shown = visible.contains(&c.win);
+            if !shown && c.orphan && !recent_tray {
+                dismiss_orphans.push(c.win);
+            }
             if !shown && self.hidden.insert(c.win) {
                 self.c.unmap_window(c.win)?;
             } else if shown && self.hidden.remove(&c.win) {
                 self.c.map_window(c.win)?;
             }
+        }
+        for w in dismiss_orphans {
+            self.unmanage(w);
         }
 
         for (win, r, b, fullscreen) in geometry {
