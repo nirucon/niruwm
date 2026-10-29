@@ -82,6 +82,7 @@ jobs:
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+          python3 -m py_compile session/niruclipboard
 
       - name: Build NIRUWM
         working-directory: niruwm
@@ -137,8 +138,9 @@ jobs:
           cp niruwm/target/x86_64-unknown-linux-musl/release/{niruwm,niructl,niruidle} dist/
           cp nirubar/target/x86_64-unknown-linux-musl/release/nirubar dist/
           cp niruwm/session/niruwm-session dist/
+          cp niruwm/session/niruclipboard dist/
           cp niruwm/nirubar-version dist/
-          cd dist && sha256sum niruwm nirubar niructl niruidle niruwm-session nirubar-version > SHA256SUMS && cat SHA256SUMS
+          cd dist && sha256sum niruwm nirubar niructl niruidle niruwm-session niruclipboard nirubar-version > SHA256SUMS && cat SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -154,6 +156,7 @@ jobs:
             dist/niructl
             dist/niruidle
             dist/niruwm-session
+            dist/niruclipboard
             dist/nirubar-version
             dist/SHA256SUMS
           generate_release_notes: true

@@ -25,6 +25,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Clipboard daemon syntax
+        run: python3 -m py_compile session/niruclipboard
+
       - name: Key overrides, helper reaping and fullscreen regressions
         run: |
           sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm xfonts-base x11-xserver-utils
