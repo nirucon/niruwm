@@ -759,6 +759,15 @@ impl Wm {
             }
         }
 
+        for c in &self.clients {
+            if c.floating && visible.contains(&c.win) {
+                self.c.configure_window(
+                    c.win,
+                    &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+                )?;
+            }
+        }
+
         // Focus stays on a visible window of the focused screen.
         let focus_ok = self.focus.map(|w| visible.contains(&w)).unwrap_or(false);
         if !focus_ok {

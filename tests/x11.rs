@@ -4,7 +4,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use x11rb::{connection::Connection, protocol::xproto::*, rust_connection::RustConnection};
+use x11rb::{
+    connection::Connection,
+    protocol::xproto::*,
+    rust_connection::RustConnection,
+    wrapper::ConnectionExt as _,
+};
 struct Process(Child);
 impl Drop for Process {
     fn drop(&mut self) {
@@ -130,6 +135,47 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     let g = c.get_geometry(windows[0]).unwrap().reply().unwrap();
     assert_eq!(g.y, 0);
     assert_eq!(g.width, c.setup().roots[s].width_in_pixels);
+    let dialog = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        dialog,
+        root,
+        100,
+        100,
+        400,
+        300,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    let transient = atom(&c, "WM_TRANSIENT_FOR");
+    c.change_property32(
+        PropMode::REPLACE,
+        dialog,
+        transient,
+        AtomEnum::WINDOW,
+        &[windows[0]],
+    )
+    .unwrap();
+    c.map_window(dialog).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 4);
+    let tree = c.query_tree(root).unwrap().reply().unwrap();
+    let dialog_at = tree.children.iter().position(|w| *w == dialog).unwrap();
+    let parent_at = tree
+        .children
+        .iter()
+        .position(|w| *w == windows[0])
+        .unwrap();
+    assert!(
+        dialog_at > parent_at,
+        "transient dialog was stacked below its fullscreen parent"
+    );
+    c.destroy_window(dialog).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 3);
     message(&c, root, windows[0], "_NET_WM_STATE", [0, full, 0, 0, 0]);
     wait(|| !values(&c, windows[0], "_NET_WM_STATE").contains(&full));
     c.destroy_window(windows[1]).unwrap();
