@@ -5,9 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 use x11rb::{
-    connection::Connection,
-    protocol::xproto::*,
-    rust_connection::RustConnection,
+    connection::Connection, protocol::xproto::*, rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
 struct Process(Child);
@@ -164,11 +162,7 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 4);
     let tree = c.query_tree(root).unwrap().reply().unwrap();
     let dialog_at = tree.children.iter().position(|w| *w == dialog).unwrap();
-    let parent_at = tree
-        .children
-        .iter()
-        .position(|w| *w == windows[0])
-        .unwrap();
+    let parent_at = tree.children.iter().position(|w| *w == windows[0]).unwrap();
     assert!(
         dialog_at > parent_at,
         "transient dialog was stacked below its fullscreen parent"
