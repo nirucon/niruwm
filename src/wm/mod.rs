@@ -56,6 +56,8 @@ pub(crate) struct Client {
     /// True when the parent was not a managed, viewable window. Such tray
     /// popups are one-shot: they must not reappear when a workspace is revisited.
     orphan: bool,
+    /// A rule may pin a floating window to every workspace on its monitor.
+    sticky: bool,
 }
 
 /// One restored command and the windows it still has to map.

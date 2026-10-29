@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""NIRU clipboard history: bounded, local-only and explicit."""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+VERSION = "0.16.135"
+MAX_ENTRIES = 200
+MAX_BYTES = 64 * 1024
+POLL_SECONDS = 0.75
+SENSITIVE = re.compile(
+    r"(?i)(password|passwd|secret|api[_-]?key|token|BEGIN [A-Z ]*PRIVATE KEY|"
+    r"authorization:|bearer\s+[A-Za-z0-9._~-]+)"
+)
+
+
+def state_path():
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    return base / "niru" / "clipboard.json"
+
+
+def read_entries():
+    try:
+        data = json.loads(state_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [entry for entry in data if isinstance(entry, dict) and "text" in entry][:MAX_ENTRIES]
+
+
+def write_entries(entries):
+    path = state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{os.getpid()}")
+    with temp.open("w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(entries[:MAX_ENTRIES], stream, ensure_ascii=False)
+    os.replace(temp, path)
+
+
+def accepted(text):
+    if not text or "\x00" in text:
+        return False
+    if len(text.encode("utf-8", "replace")) > MAX_BYTES:
+        return False
+    if SENSITIVE.search(text):
+        return False
+    return True
+
+
+def read_clipboard():
+    try:
+        out = subprocess.run(
+            ["xclip", "-selection", "clipboard", "-o"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.decode("utf-8", "replace")
+
+
+def set_clipboard(text):
+    try:
+        subprocess.run(
+            ["xclip", "-selection", "clipboard", "-i"],
+            input=text.encode("utf-8"),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def add_text(entries, text):
+    if not accepted(text):
+        return entries
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    entries = [entry for entry in entries if entry.get("text") != text]
+    entries.insert(0, {"id": time.time_ns(), "text": text, "time": int(time.time())})
+    return entries[:MAX_ENTRIES]
+
+
+def preview(text, width=80):
+    line = " ".join(text.split())
+    return line[:width] + ("…" if len(line) > width else "")
+
+
+def daemon():
+    running = True
+
+    def stop(_signum, _frame):
+        nonlocal running
+        running = False
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    entries = read_entries()
+    last = read_clipboard()
+    while running:
+        time.sleep(POLL_SECONDS)
+        current = read_clipboard()
+        if current is None or current == last:
+            continue
+        last = current
+        entries = add_text(entries, current)
+        write_entries(entries)
+
+
+def usage():
+    print("Usage: niruclipboard [daemon|list|copy ID|clear|--version]")
+    print("History is local-only, filtered for obvious secrets, and capped at 200 entries.")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] == "daemon":
+        daemon()
+        return 0
+    if args[0] in ("--version", "version"):
+        print(f"NIRUCLIPBOARD {VERSION}")
+        return 0
+    if args[0] == "list":
+        for entry in read_entries():
+            stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.get("time", 0)))
+            print(f'{entry.get("id")}\t{stamp}\t{preview(entry.get("text", ""))}')
+        return 0
+    if args[0] == "copy" and len(args) == 2:
+        try:
+            wanted = int(args[1])
+        except ValueError:
+            print("niruclipboard: ID must be an integer", file=sys.stderr)
+            return 2
+        entry = next((entry for entry in read_entries() if entry.get("id") == wanted), None)
+        if entry is None:
+            print("niruclipboard: no such history entry", file=sys.stderr)
+            return 1
+        return 0 if set_clipboard(entry["text"]) else 1
+    if args[0] == "clear":
+        write_entries([])
+        print("Clipboard history cleared")
+        return 0
+    usage()
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

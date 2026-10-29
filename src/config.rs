@@ -131,6 +131,12 @@ pub struct Rule {
     /// Center a floating window on its monitor when it first maps.
     #[allow(dead_code)]
     pub center: Option<bool>,
+    /// Keep this floating window visible on every workspace of its monitor.
+    #[allow(dead_code)]
+    pub sticky: Option<bool>,
+    /// Optional compositor opacity, 1-100 percent.
+    #[allow(dead_code)]
+    pub opacity: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

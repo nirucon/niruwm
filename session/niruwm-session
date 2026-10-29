@@ -194,7 +194,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
 cleanup() {
   # Work modes are session-scoped. Clear them before helpers disappear, so a
   # timer from this session cannot change the next login.
@@ -206,7 +206,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -262,6 +262,12 @@ start_nirunotify() {
   done
   return 0
 }
+# Clipboard history is a small foreground daemon that owns no policy beyond
+# the bounded local file in ~/.local/state/niru. It is optional and silent.
+if command -v niruclipboard >/dev/null 2>&1; then
+  niruclipboard daemon >>"$WM_LOG" 2>&1 & CLIPBOARD_PID=$!
+fi
+
 case "$NOTIFICATION_PROVIDER" in
   auto)
     if command -v nirunotify >/dev/null 2>&1; then

@@ -164,9 +164,11 @@ impl Wm {
         // the scratchpad never consumes a normal session record.
         let pid = self.values(w, "_NET_WM_PID").first().copied();
         let restored = self.take_restored(pid, is_scratchpad);
+        let sticky = rule.as_ref().and_then(|r| r.sticky).unwrap_or(false);
         let floating = dialog_floating
             || suite_settings
             || is_scratchpad
+            || sticky
             || rule.as_ref().and_then(|r| r.floating).unwrap_or(false)
             || restored.as_ref().is_some_and(|r| r.floating);
         // `_NET_WM_DESKTOP` is a global EWMH desktop number. Resolve it to
@@ -244,7 +246,17 @@ impl Wm {
             pid,
             parent: transient,
             orphan,
+            sticky,
         };
+        if let Some(opacity) = rule.as_ref().and_then(|r| r.opacity) {
+            let value = (u64::from(opacity.clamp(1, 100)) * u64::from(u32::MAX) / 100) as u32;
+            self.prop(
+                w,
+                "_NET_WM_WINDOW_OPACITY",
+                AtomEnum::CARDINAL.into(),
+                &[value],
+            )?;
+        }
         let scroll = self
             .monitors
             .get(monitor)
@@ -625,7 +637,9 @@ impl Wm {
             let tiled: Vec<Window> = self
                 .clients
                 .iter()
-                .filter(|c| c.monitor == mi && c.tag == active && !c.floating && !c.fullscreen)
+                .filter(|c| {
+                    c.monitor == mi && (c.tag == active || c.sticky) && !c.floating && !c.fullscreen
+                })
                 .map(|c| c.win)
                 .collect();
             let n = tiled.len();
@@ -686,11 +700,13 @@ impl Wm {
                 if c.monitor != mi {
                     continue;
                 }
-                if c.tag != active {
+                if c.tag != active && !c.sticky {
                     continue;
                 }
                 let shown = if self.scratchpad == Some(c.win) && !self.scratchpad_shown {
                     false
+                } else if c.sticky {
+                    true
                 } else if layout == Layout::Scroll {
                     if fullscreen_active {
                         c.fullscreen

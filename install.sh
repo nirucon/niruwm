@@ -12,7 +12,7 @@
 # or removed by this standalone installer.
 set -eu
 
-VERSION="0.16.134"
+VERSION="0.16.135"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -104,11 +104,11 @@ install_release() {
   dl_dir="$(mktemp -d)"
   trap 'rm -rf "$dl_dir"' EXIT HUP INT TERM
   say "Downloading NIRUWM $tag for x86_64 ..."
-  for b in niruwm nirubar niructl niruidle niruwm-session; do
+  for b in niruwm nirubar niructl niruidle niruwm-session niruclipboard; do
     fetch "$base/$b" "$dl_dir/$b" || die "cannot download $base/$b"
   done
   fetch "$base/SHA256SUMS" "$dl_dir/SHA256SUMS" || die "cannot download checksums"
-  for b in niruwm nirubar niructl niruidle niruwm-session; do
+  for b in niruwm nirubar niructl niruidle niruwm-session niruclipboard; do
     # Single quotes: $2 belongs to awk, not to the shell.
     expected="$(awk -v n="$b" '$2 == n {print $1}' "$dl_dir/SHA256SUMS")"
     [ -n "$expected" ] || die "no checksum for $b"
@@ -133,8 +133,8 @@ install_release() {
   bar_version="$(cat "$dl_dir/nirubar-version")"
   [ -n "$bar_version" ] || die "empty nirubar-version metadata for v$tag"
   verify_versions "$dl_dir" "$tag" "$bar_version"
-  for b in niruwm nirubar niructl niruidle niruwm-session; do guard_owned "$BINDIR/$b"; done
-  for b in niruwm nirubar niructl niruidle niruwm-session; do
+  for b in niruwm nirubar niructl niruidle niruwm-session niruclipboard; do guard_owned "$BINDIR/$b"; done
+  for b in niruwm nirubar niructl niruidle niruwm-session niruclipboard; do
     put "$dl_dir/$b" "$BINDIR/$b"
   done
   install_config
@@ -159,7 +159,7 @@ build_local() {
   say "Building from source ..."
   ( cd "$(dirname "$0")" && cargo build --release --locked )
   verify_versions "$(dirname "$0")/target/release" "$VERSION" ''
-  for b in niruwm niructl niruidle niruwm-session; do guard_owned "$BINDIR/$b"; done
+  for b in niruwm niructl niruidle niruwm-session niruclipboard; do guard_owned "$BINDIR/$b"; done
   for b in niruwm niructl niruidle; do
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
@@ -319,7 +319,7 @@ uninstall() {
 
 check() {
   ok=0
-  for b in niruwm niructl niruidle niruwm-session; do
+  for b in niruwm niructl niruidle niruwm-session niruclipboard; do
     if [ -x "$BINDIR/$b" ]; then say "OK   $BINDIR/$b"; else say "FAIL missing $BINDIR/$b"; ok=1; fi
   done
   if [ -e "$SESSION_FILE" ]; then say "OK   $SESSION_FILE"; else say "INFO no SDDM entry (run --register-session)"; fi

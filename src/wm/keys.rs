@@ -135,6 +135,11 @@ impl Wm {
                     self.start(&cmd);
                 }
             }
+            Action::LauncherClipboard => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--clipboard".into()]);
+                }
+            }
             Action::LauncherUnified => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--actions".into()]);

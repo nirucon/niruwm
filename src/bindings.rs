@@ -20,6 +20,8 @@ pub enum Action {
     LauncherActions,
     /// Type a phrase and open it in a web search engine.
     LauncherSearch,
+    /// Open the local clipboard history.
+    LauncherClipboard,
     /// Lock the screen with the first available locker.
     Lock,
     /// Lock, wait for verified readiness, then suspend the machine.
@@ -251,10 +253,13 @@ impl Action {
         add("super+a", "launcher_actions");
         // Type a phrase, Enter opens it in the instant-search engine.
         add("super+s", "launcher_search");
+        add("super+v", "launcher_clipboard");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
         add("super+w", "window_switcher");
+        add("alt+Tab", "window_switcher");
+        add("super+grave", "window_switcher");
         add("super+shift+f", "start pcmanfm");
         add("super+Escape", "lock");
         // Lock, wait for verified readiness, then suspend. The shared
@@ -411,6 +416,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher_unified" => Action::LauncherUnified,
         "launcher_actions" => Action::LauncherActions,
         "launcher_search" => Action::LauncherSearch,
+        "launcher_clipboard" => Action::LauncherClipboard,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,
         "window_switcher" => Action::WindowSwitcher,
