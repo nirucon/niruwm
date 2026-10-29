@@ -194,7 +194,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""
 cleanup() {
   # Work modes are session-scoped. Clear them before helpers disappear, so a
   # timer from this session cannot change the next login.
@@ -206,7 +206,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -266,6 +266,13 @@ start_nirunotify() {
 # the bounded local file in ~/.local/state/niru. It is optional and silent.
 if command -v niruclipboard >/dev/null 2>&1; then
   niruclipboard daemon >>"$WM_LOG" 2>&1 & CLIPBOARD_PID=$!
+fi
+
+# Gestures are opt-in at the OS level: libinput must be installed and the user
+# must be allowed to read input devices. The bridge exits harmlessly otherwise.
+if [ "${START_GESTURES:-1}" = 1 ] && command -v nirugestured >/dev/null 2>&1 &&
+   command -v libinput >/dev/null 2>&1; then
+  nirugestured daemon >>"$WM_LOG" 2>&1 & GESTURES_PID=$!
 fi
 
 case "$NOTIFICATION_PROVIDER" in

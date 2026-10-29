@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Small libinput gesture bridge for NIRUX. Requires input-device access."""
+import re
+import subprocess
+import sys
+
+VERSION = "0.16.136"
+FINGERS = re.compile(r"\b([3-4])\s*$")
+DELTAS = re.compile(r"(-?\d+\.\d+)\s*/\s*(-?\d+\.\d+)")
+
+
+def desktop():
+    try:
+        return int(subprocess.check_output(["xdotool", "get_desktop"], text=True).strip())
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+
+
+def set_desktop(value):
+    try:
+        subprocess.run(["xdotool", "set_desktop", str(value)], timeout=2, check=False)
+    except OSError:
+        pass
+
+
+def overview():
+    try:
+        subprocess.Popen(["nirulauncher", "--overview"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
+def run():
+    try:
+        process = subprocess.Popen(
+            ["libinput", "debug-events"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+    except OSError:
+        return 1
+    fingers = 0
+    dx = dy = 0.0
+    for line in process.stdout:
+        if "GESTURE_SWIPE_BEGIN" in line:
+            match = FINGERS.search(line)
+            fingers = int(match.group(1)) if match else 0
+            dx = dy = 0.0
+        elif "GESTURE_SWIPE_UPDATE" in line:
+            match = DELTAS.search(line)
+            if match:
+                dx, dy = float(match.group(1)), float(match.group(2))
+        elif "GESTURE_SWIPE_END" in line:
+            current = desktop()
+            if fingers == 4 and dy < -0.45:
+                overview()
+            elif fingers == 3 and abs(dx) > max(0.45, abs(dy)) and current is not None:
+                set_desktop((current + (1 if dx > 0 else -1)) % 10)
+            fingers = 0
+    return process.returncode or 0
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "version"):
+        print(f"NIRUGESTURED {VERSION}")
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] not in ("daemon",):
+        print("Usage: nirugestured [daemon|--version]", file=sys.stderr)
+        return 2
+    return run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
