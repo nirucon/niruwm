@@ -167,6 +167,13 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
         dialog_at > parent_at,
         "transient dialog was stacked below its fullscreen parent"
     );
+    let stacking = values(&c, root, "_NET_CLIENT_LIST_STACKING");
+    let dialog_at = stacking.iter().position(|w| *w == dialog).unwrap();
+    let parent_at = stacking.iter().position(|w| *w == windows[0]).unwrap();
+    assert!(
+        dialog_at > parent_at,
+        "_NET_CLIENT_LIST_STACKING did not match the X stacking order"
+    );
     c.destroy_window(dialog).unwrap();
     c.flush().unwrap();
     wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 3);

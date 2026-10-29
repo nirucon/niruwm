@@ -851,11 +851,19 @@ impl Wm {
             AtomEnum::WINDOW.into(),
             &list,
         )?;
+        let stacking: Vec<Window> = self
+            .c
+            .query_tree(self.root)?
+            .reply()?
+            .children
+            .into_iter()
+            .filter(|w| list.contains(w))
+            .collect();
         self.prop(
             self.root,
             "_NET_CLIENT_LIST_STACKING",
             AtomEnum::WINDOW.into(),
-            &list,
+            &stacking,
         )?;
         // Publish workspace names so a bar or pager can label them.
         let mut names = String::new();
