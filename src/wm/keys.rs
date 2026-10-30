@@ -242,16 +242,12 @@ impl Wm {
                 self.set_layout(prev);
                 self.publish_layout()?;
             }
-            // Master count is per screen: changing it on one monitor must not
-            // rearrange the other.
+            // Master count and ratio belong to the focused workspace: changing
+            // one workspace must not rearrange any other workspace or screen.
             Action::IncMaster => return self.change_master(1).map(|_| true),
             Action::DecMaster => return self.change_master(-1).map(|_| true),
-            Action::IncMasterRatio => {
-                self.cfg.master_ratio = (self.cfg.master_ratio + 0.05).min(0.9)
-            }
-            Action::DecMasterRatio => {
-                self.cfg.master_ratio = (self.cfg.master_ratio - 0.05).max(0.1)
-            }
+            Action::IncMasterRatio => self.change_master_ratio(0.05)?,
+            Action::DecMasterRatio => self.change_master_ratio(-0.05)?,
             Action::ToggleFloat => {
                 if let Some(c) = self.clients.iter_mut().find(|c| Some(c.win) == focused) {
                     c.floating = !c.floating;

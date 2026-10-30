@@ -518,21 +518,13 @@ impl Wm {
         let Ok(original) = std::fs::read_to_string(&path) else {
             return Ok(());
         };
-        let common: Vec<String> = common_layouts(&self.monitors)
-            .iter()
-            .map(|l| l.name().to_string())
-            .collect();
-        let per_screen: Vec<(String, Vec<String>)> = self
+        let common: Vec<crate::monitor::WorkspaceState> = common_workspace_states(&self.monitors);
+        let per_screen: Vec<(String, Vec<crate::monitor::WorkspaceState>)> = self
             .monitors
             .iter()
-            .map(|m| {
-                (
-                    m.name.clone(),
-                    m.layouts.iter().map(|l| l.name().to_string()).collect(),
-                )
-            })
+            .map(|m| (m.name.clone(), m.states.clone()))
             .collect();
-        let Some(updated) = rewrite_layouts(&original, &common, &per_screen) else {
+        let Some(updated) = rewrite_workspace_states(&original, &common, &per_screen) else {
             eprintln!(
                 "niruwm: workspace layouts were not written: the config could not be edited safely"
             );
@@ -617,16 +609,17 @@ impl Wm {
                 }
             }
         }
-        // Master counts are a per-output preference, not an index preference.
+        // Tiling state belongs to the workspace, not to the monitor index:
+        // re-home it by output name so a hotplug keeps each workspace's ratio,
+        // master count, layout and Scroll viewport.
         for m in monitors.iter_mut() {
             if let Some(old) = previous.iter().find(|p| p.name == m.name) {
-                m.nmaster = old.nmaster;
-                m.scroll_modes = old.scroll_modes.clone();
-                m.scroll_starts = old.scroll_starts.clone();
+                m.states = old.states.clone();
                 let count = m.workspaces.len().max(1);
-                m.scroll_modes
-                    .resize(count, crate::layout::ScrollColumns::Two);
-                m.scroll_starts.resize(count, 0);
+                let default = m.default_ratio();
+                m.states.resize_with(count, || {
+                    crate::monitor::WorkspaceState::default_for(default)
+                });
             }
         }
         if self.focused_monitor >= count {
@@ -1043,6 +1036,21 @@ fn monitor_config(cfg: &Config) -> MonitorConfig {
                 )
             })
             .collect(),
+        master_ratio: cfg.master_ratio,
+        master_ratios: cfg.monitors.master_ratios.clone(),
+        nmasters: cfg.monitors.nmasters.clone(),
+        screen_master_ratios: cfg
+            .monitors
+            .profiles
+            .iter()
+            .map(|p| (p.name.clone(), p.master_ratios.clone()))
+            .collect(),
+        screen_nmasters: cfg
+            .monitors
+            .profiles
+            .iter()
+            .map(|p| (p.name.clone(), p.nmasters.clone()))
+            .collect(),
     }
 }
 
@@ -1054,15 +1062,15 @@ fn layout_by_name(name: &str) -> Layout {
         .unwrap_or(Layout::Tile)
 }
 
-/// The layouts every screen starts with.
+/// The workspace state every screen starts with.
 ///
 /// The first screen is a sensible default only when no screen has an explicit
 /// common list; the file keeps the common list exactly as configured, so this
 /// must not invent one from whichever output happened to sort first.
-fn common_layouts(monitors: &[Monitor]) -> Vec<Layout> {
+fn common_workspace_states(monitors: &[Monitor]) -> Vec<crate::monitor::WorkspaceState> {
     monitors
         .first()
-        .map(|m| m.layouts.clone())
+        .map(|m| m.states.clone())
         .unwrap_or_default()
 }
 
@@ -1078,31 +1086,48 @@ fn rewrite_bar_settings(text: &str, bar: &crate::config::Bar) -> Option<String> 
     Some(doc.to_string())
 }
 
-/// Replace the layout lists in a configuration file with `toml_edit`, keeping
-/// comments, ordering and unrelated tables, or `None` when it cannot be done
-/// safely.
+/// Replace per-workspace state in a configuration file with `toml_edit`,
+/// keeping comments, ordering and unrelated tables, or `None` when it cannot
+/// be done safely.
 ///
-/// `common` becomes `[monitors] layouts`. Every screen in `per_screen` gets its
-/// own `layouts` in its `[[monitors.profiles]]` entry; a screen without an entry
-/// gets one appended, so two screens can keep independent layouts across a
-/// restart. Nothing is written for a monitor table the file does not have:
-/// adding one is a bigger change than a workspace layout, and the loader
-/// defaults every workspace to tiling without it.
-fn rewrite_layouts(
+/// The common lists become `[monitors] layouts`, `master_ratios` and `nmasters`.
+/// Every screen in `per_screen` gets its own three lists in its
+/// `[[monitors.profiles]]` entry; a screen without an entry gets one appended.
+/// Nothing is written for a monitor table the file does not have.
+fn rewrite_workspace_states(
     text: &str,
-    common: &[String],
-    per_screen: &[(String, Vec<String>)],
+    common: &[crate::monitor::WorkspaceState],
+    per_screen: &[(String, Vec<crate::monitor::WorkspaceState>)],
 ) -> Option<String> {
     let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
-    let to_array = |list: &[String]| -> toml_edit::Array {
+    let layout_array = |states: &[crate::monitor::WorkspaceState]| -> toml_edit::Array {
         let mut array = toml_edit::Array::new();
-        for name in list {
-            array.push(name.as_str());
+        for state in states {
+            array.push(state.layout.name());
         }
         array
     };
+    let ratio_array = |states: &[crate::monitor::WorkspaceState]| -> toml_edit::Array {
+        let mut array = toml_edit::Array::new();
+        for state in states {
+            array.push(f64::from(state.master_ratio));
+        }
+        array
+    };
+    let count_array = |states: &[crate::monitor::WorkspaceState]| -> toml_edit::Array {
+        let mut array = toml_edit::Array::new();
+        for state in states {
+            array.push(i64::try_from(state.nmaster).unwrap_or(i64::MAX));
+        }
+        array
+    };
+    let write_state = |table: &mut toml_edit::Table, states: &[crate::monitor::WorkspaceState]| {
+        table["layouts"] = toml_edit::value(layout_array(states));
+        table["master_ratios"] = toml_edit::value(ratio_array(states));
+        table["nmasters"] = toml_edit::value(count_array(states));
+    };
     if let Some(monitors) = doc.get_mut("monitors").and_then(|v| v.as_table_mut()) {
-        monitors["layouts"] = toml_edit::value(to_array(common));
+        write_state(monitors, common);
         if let Some(profiles) = monitors
             .get_mut("profiles")
             .and_then(|v| v.as_array_of_tables_mut())
@@ -1111,12 +1136,12 @@ fn rewrite_layouts(
                 let Some(name) = entry.get("name").and_then(|v| v.as_str()) else {
                     continue;
                 };
-                let Some((_, list)) = per_screen.iter().find(|(n, _)| n == name) else {
+                let Some((_, states)) = per_screen.iter().find(|(n, _)| n == name) else {
                     continue;
                 };
-                entry["layouts"] = toml_edit::value(to_array(list));
+                write_state(entry, states);
             }
-            // A screen with no entry of its own keeps its list in a new entry.
+            // A screen with no entry of its own keeps its state in a new entry.
             let present: Vec<String> = profiles
                 .iter()
                 .filter_map(|entry| {
@@ -1126,15 +1151,15 @@ fn rewrite_layouts(
                         .map(str::to_string)
                 })
                 .collect();
-            for (name, list) in per_screen {
+            for (name, states) in per_screen {
                 if present.contains(name) {
                     continue;
                 }
                 let mut entry = toml_edit::Table::new();
                 entry["name"] = toml_edit::value(name.as_str());
-                entry["workspaces"] = toml_edit::value(per_screen_workspace_count(list));
+                entry["workspaces"] = toml_edit::value(per_screen_workspace_count(states));
                 entry["primary"] = toml_edit::value(false);
-                entry["layouts"] = toml_edit::value(to_array(list));
+                write_state(&mut entry, states);
                 profiles.push(entry);
             }
         }
@@ -1144,8 +1169,8 @@ fn rewrite_layouts(
 
 /// A screen's workspace labels are its own decision, so a generated profile
 /// names an empty list, which NIRUX reads as "the common count".
-fn per_screen_workspace_count(list: &[String]) -> toml_edit::Array {
-    let _ = list;
+fn per_screen_workspace_count(states: &[crate::monitor::WorkspaceState]) -> toml_edit::Array {
+    let _ = states;
     toml_edit::Array::new()
 }
 
@@ -1157,7 +1182,8 @@ impl Drop for Wm {
 
 #[cfg(test)]
 mod layout_file_tests {
-    use super::rewrite_layouts;
+    use super::rewrite_workspace_states;
+    use crate::monitor::WorkspaceState;
 
     #[test]
     fn bar_position_is_written_without_losing_comments() {
@@ -1173,11 +1199,22 @@ mod layout_file_tests {
         assert!(parsed.bar.enabled);
     }
 
-    fn list(items: &[&str]) -> Vec<String> {
-        items.iter().map(|s| s.to_string()).collect()
+    fn list(items: &[&str]) -> Vec<WorkspaceState> {
+        items
+            .iter()
+            .map(|name| WorkspaceState {
+                layout: crate::bindings::LayoutId::from_name(name)
+                    .map(crate::bindings::LayoutId::layout)
+                    .unwrap(),
+                master_ratio: 0.55,
+                nmaster: 1,
+                scroll_columns: crate::layout::ScrollColumns::Two,
+                scroll_start: 0,
+            })
+            .collect()
     }
 
-    fn screen(name: &str, items: &[&str]) -> (String, Vec<String>) {
+    fn screen(name: &str, items: &[&str]) -> (String, Vec<WorkspaceState>) {
         (name.to_string(), list(items))
     }
 
@@ -1190,7 +1227,7 @@ mod layout_file_tests {
         // The earlier line parser added a second [monitors] here, and the
         // result refused to load.
         let text = "[monitors] # the screens\nworkspaces = 2\n[wallpaper]\nenabled = false\n";
-        let out = rewrite_layouts(text, &list(&["monocle"]), &[]).expect("editable");
+        let out = rewrite_workspace_states(text, &list(&["monocle"]), &[]).expect("editable");
         assert_eq!(
             parses(&out)["monitors"]["layouts"][0].as_str(),
             Some("monocle")
@@ -1206,7 +1243,8 @@ mod layout_file_tests {
     #[test]
     fn a_multiline_layout_array_is_replaced_whole() {
         let text = "[monitors]\nworkspaces = 2\nlayouts = [\n  \"tile\",\n  \"tile\"\n]\n";
-        let out = rewrite_layouts(text, &list(&["tile", "fibonacci"]), &[]).expect("editable");
+        let out =
+            rewrite_workspace_states(text, &list(&["tile", "fibonacci"]), &[]).expect("editable");
         let value = parses(&out);
         let layouts = value["monitors"]["layouts"].as_array().expect("array");
         assert_eq!(layouts.len(), 2, "old entries survived: {out}");
@@ -1220,8 +1258,8 @@ mod layout_file_tests {
             screen("DP-1", &["tile", "monocle", "tile"]),
             screen("DP-2", &["fibonacci", "tile", "tile"]),
         ];
-        let out =
-            rewrite_layouts(text, &list(&["tile", "tile", "tile"]), &screens).expect("editable");
+        let out = rewrite_workspace_states(text, &list(&["tile", "tile", "tile"]), &screens)
+            .expect("editable");
         let value = parses(&out);
         let profiles = value["monitors"]["profiles"].as_array().expect("profiles");
         assert_eq!(profiles.len(), 2, "the missing screen got no entry: {out}");
@@ -1237,22 +1275,37 @@ mod layout_file_tests {
         assert_eq!(find("DP-1")["workspaces"].as_array().unwrap().len(), 2);
         assert_eq!(find("DP-1")["primary"].as_bool(), Some(true));
         // Written again from its own output, the file is unchanged.
-        let again = rewrite_layouts(&out, &list(&["tile", "tile", "tile"]), &screens)
+        let again = rewrite_workspace_states(&out, &list(&["tile", "tile", "tile"]), &screens)
             .expect("still editable");
         assert_eq!(again, out, "a second save changed the file");
     }
 
     #[test]
+    fn ratios_and_master_counts_are_persisted_per_workspace() {
+        let text = "[monitors]\nworkspaces = 2\n";
+        let mut states = list(&["tile", "tile"]);
+        states[0].master_ratio = 0.7;
+        states[1].master_ratio = 0.4;
+        states[1].nmaster = 2;
+        let out = rewrite_workspace_states(text, &states, &[]).expect("editable");
+        let value = parses(&out);
+        assert!((value["monitors"]["master_ratios"][0].as_float().unwrap() - 0.7).abs() < 1e-6);
+        assert!((value["monitors"]["master_ratios"][1].as_float().unwrap() - 0.4).abs() < 1e-6);
+        assert_eq!(value["monitors"]["nmasters"][0].as_integer(), Some(1));
+        assert_eq!(value["monitors"]["nmasters"][1].as_integer(), Some(2));
+    }
+
+    #[test]
     fn a_file_without_monitor_settings_is_left_alone() {
         let text = "theme = \"niru-noir\"\n";
-        let out = rewrite_layouts(text, &list(&["monocle"]), &[]).expect("editable");
+        let out = rewrite_workspace_states(text, &list(&["monocle"]), &[]).expect("editable");
         assert_eq!(out, text, "an unrelated file was rewritten: {out}");
     }
 
     #[test]
     fn an_invalid_file_is_refused_rather_than_repaired() {
         let text = "[monitors\nworkspaces = 2\n";
-        assert!(rewrite_layouts(text, &list(&["tile"]), &[]).is_none());
+        assert!(rewrite_workspace_states(text, &list(&["tile"]), &[]).is_none());
     }
 }
 

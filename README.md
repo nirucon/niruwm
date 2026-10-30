@@ -282,6 +282,11 @@ written to `[monitors] layouts` at once, so it survives a crash as well as a
 logout, and it comes back after the next login. A screen can override the common
 list in its own `[[monitors.profiles]]` entry with `layouts = [...]`.
 
+Master ratio (`Super+H/L`) and master count (`Super+I/D`) are also per
+workspace. They are stored beside the layout as `master_ratios` and `nmasters`,
+so changing one workspace never resizes another. The top-level `master_ratio`
+is the default for new workspaces, not a live global override.
+
 Scroll keeps one window per column. Two adjacent columns are visible by default;
 focus reveals the minimum needed viewport, so `A B -> B C -> C D`. A single
 window fills the work area. Use `niructl layout columns 1|2|toggle` to change the

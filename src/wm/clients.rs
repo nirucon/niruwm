@@ -260,8 +260,8 @@ impl Wm {
         let scroll = self
             .monitors
             .get(monitor)
-            .and_then(|m| m.layouts.get(tag as usize))
-            .is_some_and(|layout| *layout == Layout::Scroll);
+            .and_then(|m| m.states.get(tag as usize))
+            .is_some_and(|state| state.layout == Layout::Scroll);
         let insert_at = if scroll && !floating {
             self.focus
                 .and_then(|focused| {
@@ -375,8 +375,8 @@ impl Wm {
                         || self
                             .monitors
                             .get(monitor)
-                            .and_then(|m| m.layouts.get(tag as usize))
-                            .map_or(true, |layout| *layout != Layout::Scroll)
+                            .and_then(|m| m.states.get(tag as usize))
+                            .map_or(true, |state| state.layout != Layout::Scroll)
                     {
                         return None;
                     }
@@ -715,8 +715,11 @@ impl Wm {
                 layout.arrange_master(
                     screen,
                     n,
-                    self.monitors.get(mi).map(|m| m.nmaster).unwrap_or(1),
-                    self.cfg.master_ratio,
+                    self.monitors.get(mi).map(|m| m.nmaster()).unwrap_or(1),
+                    self.monitors
+                        .get(mi)
+                        .map(|m| m.master_ratio())
+                        .unwrap_or(self.cfg.master_ratio),
                     self.cfg.gap,
                 )
             };
@@ -1000,14 +1003,24 @@ impl Wm {
         }
     }
 
-    /// Change the master count on the focused screen only.
+    /// Change the master ratio on the focused workspace only.
+    pub(crate) fn change_master_ratio(&mut self, delta: f32) -> Result<()> {
+        if let Some(m) = self.monitors.get_mut(self.focused_monitor) {
+            m.set_master_ratio(m.master_ratio() + delta);
+        }
+        self.publish_layout()?;
+        self.arrange()?;
+        Ok(())
+    }
+
+    /// Change the master count on the focused workspace only.
     pub(crate) fn change_master(&mut self, delta: i32) -> Result<()> {
         if let Some(m) = self.monitors.get_mut(self.focused_monitor) {
-            let next = m.nmaster as i32 + delta;
-            // At least one master and never more than the screen is tiled for;
-            // the layout code handles the upper bound.
-            m.nmaster = next.max(1) as usize;
+            // At least one master and never more than the workspace is tiled
+            // for; the layout code handles the upper bound.
+            m.change_master(delta);
         }
+        self.publish_layout()?;
         self.arrange()
     }
 

@@ -11,8 +11,31 @@
 use crate::layout::Rect;
 use std::collections::HashMap;
 
+/// Tiling state for one workspace. Ratios and master counts are deliberately
+/// not global: changing one workspace must leave every other workspace alone.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorkspaceState {
+    pub layout: crate::layout::Layout,
+    pub master_ratio: f32,
+    pub nmaster: usize,
+    pub scroll_columns: crate::layout::ScrollColumns,
+    pub scroll_start: usize,
+}
+
+impl WorkspaceState {
+    pub fn default_for(master_ratio: f32) -> Self {
+        Self {
+            layout: crate::layout::Layout::Tile,
+            master_ratio,
+            nmaster: 1,
+            scroll_columns: crate::layout::ScrollColumns::Two,
+            scroll_start: 0,
+        }
+    }
+}
+
 /// One physical screen.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Monitor {
     /// The RandR output name, e.g. `eDP-1` or `HDMI-1`.
     pub name: String,
@@ -22,71 +45,84 @@ pub struct Monitor {
     pub workspaces: Vec<String>,
     /// Which of `workspaces` is shown.
     pub active: usize,
-    /// Windows in the master column on this screen (dwm's `nmaster`).
-    /// Per screen, so raising it on one monitor does not change the other.
-    pub nmaster: usize,
-    /// The layout of every workspace on this screen, in `workspaces` order.
-    /// Each workspace keeps its own layout; the first one is used until a
-    /// workspace is given another.
-    pub layouts: Vec<crate::layout::Layout>,
-    /// Scroll column mode per workspace. Session state: the layout name is
-    /// persisted, the mode returns to two columns after a restart.
-    pub scroll_modes: Vec<crate::layout::ScrollColumns>,
-    /// First visible Scroll column per workspace.
-    pub scroll_starts: Vec<usize>,
+    /// Tiling state for every workspace on this screen, in `workspaces` order.
+    /// Each workspace owns its layout, master ratio, master count and Scroll
+    /// viewport.
+    pub states: Vec<WorkspaceState>,
+    /// Default ratio for workspaces added later.
+    default_master_ratio: f32,
 }
 
 impl Monitor {
-    fn new(name: String, rect: Rect, count: usize) -> Self {
+    fn new(name: String, rect: Rect, count: usize, default_master_ratio: f32) -> Self {
         let workspaces: Vec<String> = (1..=count).map(|n| n.to_string()).collect();
         Self {
             name,
             rect,
             workspaces: workspaces.clone(),
             active: 0,
-            nmaster: 1,
-            layouts: vec![crate::layout::Layout::Tile; workspaces.len()],
-            scroll_modes: vec![crate::layout::ScrollColumns::Two; workspaces.len()],
-            scroll_starts: vec![0; workspaces.len()],
+            states: vec![WorkspaceState::default_for(default_master_ratio); workspaces.len()],
+            default_master_ratio,
         }
+    }
+
+    fn state(&self) -> WorkspaceState {
+        self.states
+            .get(self.active)
+            .copied()
+            .unwrap_or_else(|| WorkspaceState::default_for(self.default_master_ratio))
+    }
+
+    fn state_mut(&mut self) -> &mut WorkspaceState {
+        self.ensure_state();
+        let active = self.active.min(self.states.len().saturating_sub(1));
+        &mut self.states[active]
     }
 
     /// The layout this screen's active workspace uses.
     pub fn layout(&self) -> crate::layout::Layout {
-        self.layouts
-            .get(self.active)
-            .copied()
-            .unwrap_or(crate::layout::Layout::Tile)
+        self.state().layout
     }
 
     /// Give the active workspace another layout, leaving the others alone.
     pub fn set_layout(&mut self, layout: crate::layout::Layout) {
-        self.ensure_state();
-        if self.active < self.layouts.len() {
-            self.layouts[self.active] = layout;
-        }
+        self.state_mut().layout = layout;
+    }
+
+    pub fn default_ratio(&self) -> f32 {
+        self.default_master_ratio
+    }
+
+    pub fn master_ratio(&self) -> f32 {
+        self.state().master_ratio
+    }
+
+    pub fn nmaster(&self) -> usize {
+        self.state().nmaster
+    }
+
+    pub fn set_master_ratio(&mut self, ratio: f32) {
+        self.state_mut().master_ratio = ratio.clamp(0.1, 0.9);
+    }
+
+    pub fn change_master(&mut self, delta: i32) {
+        let state = self.state_mut();
+        state.nmaster = (state.nmaster as i32 + delta).max(1) as usize;
     }
 
     fn ensure_state(&mut self) {
         let count = self.workspaces.len().max(1);
-        self.layouts.resize(count, crate::layout::Layout::Tile);
-        self.scroll_modes
-            .resize(count, crate::layout::ScrollColumns::Two);
-        self.scroll_starts.resize(count, 0);
+        let default = self.default_master_ratio;
+        self.states
+            .resize_with(count, || WorkspaceState::default_for(default));
     }
 
     pub fn scroll_columns(&self) -> crate::layout::ScrollColumns {
-        self.scroll_modes
-            .get(self.active)
-            .copied()
-            .unwrap_or(crate::layout::ScrollColumns::Two)
+        self.state().scroll_columns
     }
 
     pub fn set_scroll_columns(&mut self, mode: crate::layout::ScrollColumns) {
-        self.ensure_state();
-        if self.active < self.scroll_modes.len() {
-            self.scroll_modes[self.active] = mode;
-        }
+        self.state_mut().scroll_columns = mode;
     }
 
     /// Keep the focused column visible while moving the viewport as little as
@@ -98,15 +134,11 @@ impl Monitor {
         effective_columns: usize,
     ) -> (usize, crate::layout::ScrollColumns) {
         self.ensure_state();
-        let mode = self.scroll_columns();
+        let state = self.state_mut();
+        let mode = state.scroll_columns;
         let columns = effective_columns.clamp(1, 2).min(n.max(1));
         let max_start = n.saturating_sub(columns);
-        let mut start = self
-            .scroll_starts
-            .get(self.active)
-            .copied()
-            .unwrap_or(0)
-            .min(max_start);
+        let mut start = state.scroll_start.min(max_start);
         if let Some(focus) = focus {
             if focus < start {
                 start = focus;
@@ -115,9 +147,7 @@ impl Monitor {
             }
         }
         start = start.min(max_start);
-        if self.active < self.scroll_starts.len() {
-            self.scroll_starts[self.active] = start;
-        }
+        state.scroll_start = start;
         (start, mode)
     }
 
@@ -167,6 +197,16 @@ pub struct MonitorConfig {
     pub layouts: Vec<crate::layout::Layout>,
     /// Per-screen workspace layouts, keyed by output name.
     pub screen_layouts: HashMap<String, Vec<crate::layout::Layout>>,
+    /// Default master ratio for new workspaces.
+    pub master_ratio: f32,
+    /// Common master ratios, in workspace order.
+    pub master_ratios: Vec<f32>,
+    /// Common master counts, in workspace order.
+    pub nmasters: Vec<usize>,
+    /// Per-screen master ratios, keyed by output name.
+    pub screen_master_ratios: HashMap<String, Vec<f32>>,
+    /// Per-screen master counts, keyed by output name.
+    pub screen_nmasters: HashMap<String, Vec<usize>>,
 }
 
 impl Default for MonitorConfig {
@@ -179,6 +219,11 @@ impl Default for MonitorConfig {
             primary: None,
             layouts: Vec::new(),
             screen_layouts: HashMap::new(),
+            master_ratio: 0.55,
+            master_ratios: Vec::new(),
+            nmasters: Vec::new(),
+            screen_master_ratios: HashMap::new(),
+            screen_nmasters: HashMap::new(),
         }
     }
 }
@@ -210,24 +255,49 @@ pub fn build(mut outputs: Vec<(String, Rect, bool)>, cfg: &MonitorConfig) -> (Ve
             // The screen's own workspace list, or the common count.
             let mut monitor = match cfg.workspaces_for(&name) {
                 Some(list) if !list.is_empty() => {
-                    let mut monitor = Monitor::new(name.clone(), rect, list.len());
+                    let mut monitor =
+                        Monitor::new(name.clone(), rect, list.len(), cfg.master_ratio);
                     monitor.workspaces = list.clone();
                     monitor
                 }
-                _ => Monitor::new(name.clone(), rect, count),
+                _ => Monitor::new(name.clone(), rect, count, cfg.master_ratio),
             };
             // The common list is a default, not a snapshot of one screen: a
             // screen with its own list keeps it, and an absent common list
             // leaves every workspace tiled.
             for (i, layout) in cfg.layouts.iter().enumerate() {
-                if i < monitor.layouts.len() {
-                    monitor.layouts[i] = *layout;
+                if i < monitor.states.len() {
+                    monitor.states[i].layout = *layout;
+                }
+            }
+            for (i, ratio) in cfg.master_ratios.iter().enumerate() {
+                if i < monitor.states.len() {
+                    monitor.states[i].master_ratio = ratio.clamp(0.1, 0.9);
+                }
+            }
+            for (i, count) in cfg.nmasters.iter().enumerate() {
+                if i < monitor.states.len() {
+                    monitor.states[i].nmaster = (*count).max(1);
                 }
             }
             if let Some(list) = cfg.screen_layouts.get(&name) {
                 for (i, layout) in list.iter().enumerate() {
-                    if i < monitor.layouts.len() {
-                        monitor.layouts[i] = *layout;
+                    if i < monitor.states.len() {
+                        monitor.states[i].layout = *layout;
+                    }
+                }
+            }
+            if let Some(list) = cfg.screen_master_ratios.get(&name) {
+                for (i, ratio) in list.iter().enumerate() {
+                    if i < monitor.states.len() {
+                        monitor.states[i].master_ratio = ratio.clamp(0.1, 0.9);
+                    }
+                }
+            }
+            if let Some(list) = cfg.screen_nmasters.get(&name) {
+                for (i, count) in list.iter().enumerate() {
+                    if i < monitor.states.len() {
+                        monitor.states[i].nmaster = (*count).max(1);
                     }
                 }
             }
@@ -482,11 +552,17 @@ mod layout_tests {
     }
 
     #[test]
-    fn master_count_is_independent_per_screen() {
+    fn master_count_is_independent_per_workspace_and_screen() {
         let mut m = two();
-        m[0].nmaster = 3;
-        assert_eq!(m[0].nmaster, 3);
-        assert_eq!(m[1].nmaster, 1, "the other screen keeps its own count");
+        m[0].change_master(2);
+        assert_eq!(m[0].nmaster(), 3);
+        assert_eq!(m[1].nmaster(), 1, "the other screen keeps its own count");
+        m[0].active = 1;
+        assert_eq!(m[0].nmaster(), 1, "the other workspace keeps its own count");
+        m[0].set_master_ratio(0.7);
+        assert_eq!(m[0].master_ratio(), 0.7);
+        m[0].active = 0;
+        assert_eq!(m[0].master_ratio(), 0.55);
     }
 
     #[test]

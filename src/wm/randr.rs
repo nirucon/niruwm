@@ -169,11 +169,11 @@ pub fn refresh(
             if old.active < m.workspaces.len() {
                 m.active = old.active;
             }
-            // Keep every workspace's layout: a hotplug or rotation must not
-            // replace what the user chose with the config's older values.
-            for (i, layout) in old.layouts.iter().enumerate() {
-                if i < m.layouts.len() {
-                    m.layouts[i] = *layout;
+            // Keep every workspace's tiling state: a hotplug or rotation must
+            // not replace what the user chose with the config's older values.
+            for (i, state) in old.states.iter().enumerate() {
+                if i < m.states.len() {
+                    m.states[i] = *state;
                 }
             }
         }

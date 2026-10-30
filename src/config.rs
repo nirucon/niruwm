@@ -306,6 +306,12 @@ pub struct MonitorsConfig {
     /// workspace count; those workspaces stay tiled.
     #[serde(default)]
     pub layouts: Vec<String>,
+    /// Master ratios per workspace, written by NIRUWM.
+    #[serde(default)]
+    pub master_ratios: Vec<f32>,
+    /// Master counts per workspace, written by NIRUWM.
+    #[serde(default)]
+    pub nmasters: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -323,6 +329,12 @@ pub struct MonitorProfile {
     /// common `monitors.layouts` for the workspaces it lists.
     #[serde(default)]
     pub layouts: Vec<String>,
+    /// Master ratios per workspace, written by NIRUWM.
+    #[serde(default)]
+    pub master_ratios: Vec<f32>,
+    /// Master counts per workspace, written by NIRUWM.
+    #[serde(default)]
+    pub nmasters: Vec<usize>,
 }
 
 impl Default for MonitorsConfig {
@@ -331,6 +343,8 @@ impl Default for MonitorsConfig {
             workspaces: 10,
             profiles: Vec::new(),
             layouts: Vec::new(),
+            master_ratios: Vec::new(),
+            nmasters: Vec::new(),
         }
     }
 }
@@ -844,6 +858,33 @@ impl Config {
                 .find(|l| !VALID_LAYOUTS.contains(&l.as_str()))
             {
                 return Err(format!("monitors.profiles {}: unknown layout {bad}", p.name).into());
+            }
+        }
+        if self
+            .monitors
+            .master_ratios
+            .iter()
+            .any(|r| !(0.1..=0.9).contains(r))
+        {
+            return Err("monitors.master_ratios entries must be between 0.1 and 0.9".into());
+        }
+        if self.monitors.nmasters.iter().any(|n| !(1..=32).contains(n)) {
+            return Err("monitors.nmasters entries must be between 1 and 32".into());
+        }
+        for p in &self.monitors.profiles {
+            if p.master_ratios.iter().any(|r| !(0.1..=0.9).contains(r)) {
+                return Err(format!(
+                    "monitors.profiles {}: master_ratios entries must be between 0.1 and 0.9",
+                    p.name
+                )
+                .into());
+            }
+            if p.nmasters.iter().any(|n| !(1..=32).contains(n)) {
+                return Err(format!(
+                    "monitors.profiles {}: nmasters entries must be between 1 and 32",
+                    p.name
+                )
+                .into());
             }
         }
         if !(-90.0..=90.0).contains(&self.nightlight.latitude)
@@ -2031,6 +2072,19 @@ icons = true
         assert_eq!(d.bar.position, "top");
         let b: Config = toml::from_str("[bar]\nposition = \"bottom\"\n").unwrap();
         assert_eq!(b.bar.position, "bottom");
+    }
+
+    #[test]
+    fn per_workspace_ratios_and_master_counts_validate() {
+        let c: Config =
+            toml::from_str("[monitors]\nmaster_ratios = [0.55, 0.7]\nnmasters = [1, 2]\n").unwrap();
+        assert!(c.validate().is_ok());
+        assert_eq!(c.monitors.master_ratios[1], 0.7);
+        assert_eq!(c.monitors.nmasters[1], 2);
+        let bad: Config = toml::from_str("[monitors]\nmaster_ratios = [0.95]\n").unwrap();
+        assert!(bad.validate().is_err());
+        let bad: Config = toml::from_str("[monitors]\nnmasters = [0]\n").unwrap();
+        assert!(bad.validate().is_err());
     }
 
     #[test]
