@@ -4,7 +4,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "0.16.141"
+VERSION = "0.16.142"
 FINGERS = re.compile(r"\b([3-4])\s*$")
 DELTAS = re.compile(r"(-?\d+\.\d+)\s*/\s*(-?\d+\.\d+)")
 

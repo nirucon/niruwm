@@ -1110,7 +1110,9 @@ fn rewrite_workspace_states(
     let ratio_array = |states: &[crate::monitor::WorkspaceState]| -> toml_edit::Array {
         let mut array = toml_edit::Array::new();
         for state in states {
-            array.push(f64::from(state.master_ratio));
+            // Ratios move in 0.05 steps. Write them as ordinary decimals
+            // instead of the f32 approximation (0.700000047...).
+            array.push((f64::from(state.master_ratio) * 100.0).round() / 100.0);
         }
         array
     };

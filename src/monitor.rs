@@ -102,7 +102,8 @@ impl Monitor {
     }
 
     pub fn set_master_ratio(&mut self, ratio: f32) {
-        self.state_mut().master_ratio = ratio.clamp(0.1, 0.9);
+        let ratio = (ratio.clamp(0.1, 0.9) * 100.0).round() / 100.0;
+        self.state_mut().master_ratio = ratio;
     }
 
     pub fn change_master(&mut self, delta: i32) {
