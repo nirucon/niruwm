@@ -174,6 +174,11 @@ impl Wm {
                 "niruthemeselector" | "niruwallpaper" | "nirupres"
             )
         });
+        // The launcher marks the agent terminal as a suite overlay so the TUI
+        // opens centred and floating even on a fresh configuration.
+        let agent_window = class
+            .split('\0')
+            .any(|part| part.eq_ignore_ascii_case("niru-agent"));
         let is_scratchpad = self.cfg.scratchpad.matches_class(&class);
         if is_scratchpad {
             self.scratchpad = Some(w);
@@ -187,6 +192,7 @@ impl Wm {
         let sticky = rule.as_ref().and_then(|r| r.sticky).unwrap_or(false);
         let floating = dialog_floating
             || suite_settings
+            || agent_window
             || is_scratchpad
             || sticky
             || rule.as_ref().and_then(|r| r.floating).unwrap_or(false)
@@ -307,7 +313,11 @@ impl Wm {
             self.restore_focus = Some((w, monitor, tag));
         }
 
-        if floating && (suite_settings || rule.as_ref().and_then(|r| r.center).unwrap_or(false)) {
+        if floating
+            && (suite_settings
+                || agent_window
+                || rule.as_ref().and_then(|r| r.center).unwrap_or(false))
+        {
             let screen = self.monitor_area(monitor, self.work_area());
             if let Some(c) = self.clients.last_mut() {
                 c.geom.w = c.geom.w.min(screen.w.saturating_sub(border * 2).max(1));

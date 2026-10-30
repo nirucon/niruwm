@@ -304,7 +304,7 @@ position = "top"
 # there is nothing newer. It never installs anything: click it for the command,
 # which you run when you can log out afterwards.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "layout", "media", "volume", "brightness", "display", "network", "mode", "battery", "niruxupdate", "clock"]
+modules = ["workspaces", "layout", "media", "volume", "brightness", "display", "network", "mode", "battery", "niruxupdate", "agent", "clock"]
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).
