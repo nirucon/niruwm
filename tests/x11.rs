@@ -453,9 +453,9 @@ fn session_restore_matches_windows_and_keeps_saved_focus() {
 #[ignore = "requires isolated X server"]
 fn bar_bottom_hides_and_returns_without_breaking_work_area() {
     let dir = std::env::temp_dir().join(format!("niruwm-bar-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
     std::fs::write(
-        dir.join("config.toml"),
+        dir.join("niruwm/config.toml"),
         "[bar]\nenabled = true\nposition = \"bottom\"\n",
     )
     .unwrap();
