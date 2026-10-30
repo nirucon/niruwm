@@ -16,8 +16,10 @@ test ! -e "$fixture/source/bin/nirubar"
 for binary in niruwm niructl niruidle; do cp "$SOURCE/target/release/$binary" "$fixture/release/$binary"; done
 cp "$BAR" "$fixture/release/nirubar"
 cp "$SOURCE/session/niruwm-session" "$fixture/release/niruwm-session"
+cp "$SOURCE/session/niruclipboard" "$fixture/release/niruclipboard"
+cp "$SOURCE/session/nirugestured" "$fixture/release/nirugestured"
 cp "$SOURCE/nirubar-version" "$fixture/release/nirubar-version"
-(cd "$fixture/release" && sha256sum niruwm niructl niruidle nirubar niruwm-session nirubar-version > SHA256SUMS)
+(cd "$fixture/release" && sha256sum niruwm niructl niruidle nirubar niruwm-session niruclipboard nirugestured nirubar-version > SHA256SUMS)
 NIRUWM_BASE_URL="file://$fixture/release" sh "$SOURCE/install.sh" --prefix "$fixture/prebuilt"
 sh "$SOURCE/install.sh" --check --prefix "$fixture/prebuilt"
 test "$("$fixture/prebuilt/bin/niruwm-session" --version)" = "$(sh "$SOURCE/session/niruwm-session" --version)"
@@ -28,6 +30,8 @@ test "$("$fixture/prebuilt/bin/nirubar" --version)" = "NIRUBAR $(cat "$SOURCE/ni
 mkdir -p "$fixture/oldrelease" "$fixture/oldmeta"
 for binary in niruwm niructl niruidle; do cp "$SOURCE/target/release/$binary" "$fixture/oldrelease/$binary"; done
 cp "$SOURCE/session/niruwm-session" "$fixture/oldrelease/niruwm-session"
+cp "$SOURCE/session/niruclipboard" "$fixture/oldrelease/niruclipboard"
+cp "$SOURCE/session/nirugestured" "$fixture/oldrelease/nirugestured"
 cat > "$fixture/oldrelease/nirubar" <<'EOF'
 #!/bin/sh
 [ "$1" = --version ] && printf 'NIRUBAR 0.18.6\n'
@@ -35,7 +39,7 @@ exit 0
 EOF
 chmod +x "$fixture/oldrelease/nirubar"
 printf '0.18.6\n' > "$fixture/oldmeta/nirubar-version"
-(cd "$fixture/oldrelease" && sha256sum niruwm niructl niruidle nirubar niruwm-session > SHA256SUMS)
+(cd "$fixture/oldrelease" && sha256sum niruwm niructl niruidle nirubar niruwm-session niruclipboard nirugestured > SHA256SUMS)
 version=$(awk -F '"' '/^version = / {print $2; exit}' "$SOURCE/Cargo.toml")
 NIRUWM_VERSION="$version" NIRUWM_BASE_URL="file://$fixture/oldrelease" \
   NIRUWM_METADATA_BASE_URL="file://$fixture/oldmeta" \
