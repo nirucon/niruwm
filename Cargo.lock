@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "niruwm"
-version = "0.16.139"
+version = "0.16.140"
 dependencies = [
  "chrono",
  "indexmap",

@@ -294,6 +294,14 @@ impl Wm {
                 5 => Some(Action::Quit),
                 6 => Some(Action::SaveSession),
                 7 => Some(Action::ClearSession),
+                12 => Some(match d[1] {
+                    1 => Action::BarTop,
+                    2 => Action::BarBottom,
+                    3 => Action::BarHide,
+                    4 => Action::BarShow,
+                    5 => Action::BarToggle,
+                    _ => Action::BarCycle,
+                }),
                 10 => {
                     // Write every workspace's layout to the config, then
                     // acknowledge so `niructl layout save` reports the truth.

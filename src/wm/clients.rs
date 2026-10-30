@@ -572,6 +572,7 @@ impl Wm {
 
     pub(crate) fn work_area(&self) -> Rect {
         let mut top = self.bar_reserved_height();
+        let mut bottom = self.bar_reserved_bottom();
         let children = match self
             .c
             .query_tree(self.root)
@@ -604,15 +605,19 @@ impl Wm {
             };
             if let Some(strut) = read(self.atom("_NET_WM_STRUT_PARTIAL"), 12) {
                 top = top.max(strut[2].min(u32::from(self.screen_h)) as u16);
+                bottom = bottom.max(strut[3].min(u32::from(self.screen_h)) as u16);
             } else if let Some(strut) = read(self.atom("_NET_WM_STRUT"), 4) {
                 top = top.max(strut[2].min(u32::from(self.screen_h)) as u16);
+                bottom = bottom.max(strut[3].min(u32::from(self.screen_h)) as u16);
             }
         }
+        let top = top.min(self.screen_h);
+        let bottom = bottom.min(self.screen_h.saturating_sub(top));
         Rect {
             x: 0,
             y: top as i16,
             w: self.screen_w,
-            h: self.screen_h.saturating_sub(top),
+            h: self.screen_h.saturating_sub(top).saturating_sub(bottom),
         }
     }
 
@@ -621,7 +626,15 @@ impl Wm {
     /// The configured height, or a little more with a title, so a window never
     /// appears behind the bar in the short time before it maps.
     fn bar_reserved_height(&self) -> u16 {
-        if self.cfg.bar.enabled {
+        if self.bar_active() && !self.bar_bottom() {
+            self.cfg.bar_height
+        } else {
+            0
+        }
+    }
+
+    fn bar_reserved_bottom(&self) -> u16 {
+        if self.bar_active() && self.bar_bottom() {
             self.cfg.bar_height
         } else {
             0
@@ -855,11 +868,17 @@ impl Wm {
                     .max(0)
                     .max(self.bar_reserved_height() as i16) as u16;
                 let top = top.min(m.rect.h.saturating_sub(1));
+                let bottom = (i32::from(m.rect.y) + i32::from(m.rect.h)
+                    - i32::from(work.y)
+                    - i32::from(work.h))
+                .max(0)
+                .max(i32::from(self.bar_reserved_bottom())) as u16;
+                let bottom = bottom.min(m.rect.h.saturating_sub(top).saturating_sub(1));
                 Rect {
                     x: m.rect.x,
                     y: m.rect.y + top as i16,
                     w: m.rect.w,
-                    h: m.rect.h - top,
+                    h: m.rect.h.saturating_sub(top).saturating_sub(bottom),
                 }
             }
             None => work,

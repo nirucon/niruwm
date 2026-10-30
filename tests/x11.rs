@@ -31,6 +31,18 @@ fn values(c: &RustConnection, w: Window, n: &str) -> Vec<u32> {
         .map(|v| v.collect())
         .unwrap_or_default()
 }
+fn text(c: &RustConnection, w: Window, n: &str) -> String {
+    c.get_property(false, w, atom(c, n), AtomEnum::ANY, 0, 1024)
+        .unwrap()
+        .reply()
+        .unwrap()
+        .value
+        .into_iter()
+        .map(char::from)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
 fn wait(mut f: impl FnMut() -> bool) {
     let end = Instant::now() + Duration::from_secs(5);
     while !f() {
@@ -435,4 +447,77 @@ fn session_restore_matches_windows_and_keeps_saved_focus() {
     message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn bar_bottom_hides_and_returns_without_breaking_work_area() {
+    let dir = std::env::temp_dir().join(format!("niruwm-bar-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("config.toml"),
+        "[bar]\nenabled = true\nposition = \"bottom\"\n",
+    )
+    .unwrap();
+    let _wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_h = c.setup().roots[s].height_in_pixels;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        20,
+        40,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(w).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![w]);
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let bottom = c.get_geometry(w).unwrap().reply().unwrap();
+    assert!(bottom.y < 20, "bottom bar window started at {}", bottom.y);
+    assert!(
+        bottom.y + i16::try_from(bottom.height).unwrap() < i16::try_from(screen_h).unwrap() - 20,
+        "bottom bar did not reserve space"
+    );
+    assert!(run(&["bar", "hide"]).status.success());
+    wait(|| text(&c, root, "_NIRUWM_BAR_STATE") == "hidden");
+    let hidden = c.get_geometry(w).unwrap().reply().unwrap();
+    assert!(
+        hidden.height > bottom.height,
+        "hidden bar did not free space"
+    );
+    assert!(run(&["bar", "show"]).status.success());
+    wait(|| text(&c, root, "_NIRUWM_BAR_STATE") == "bottom");
+    let shown = c.get_geometry(w).unwrap().reply().unwrap();
+    assert!(
+        shown.height < hidden.height,
+        "shown bar did not reserve space"
+    );
+    assert!(run(&["bar", "top"]).status.success());
+    wait(|| text(&c, root, "_NIRUWM_BAR_STATE") == "top");
+    let top = c.get_geometry(w).unwrap().reply().unwrap();
+    assert!(top.y > bottom.y, "top bar did not move the work area down");
 }

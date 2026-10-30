@@ -41,7 +41,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | \
-theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | quit | save | save-session | \
+theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
 layout NAME|columns 1|2|toggle | layouts | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
@@ -6775,6 +6775,10 @@ fn run() -> Result<()> {
         return windows_rescue(&c, root, &std::env::args().skip(2).collect::<Vec<_>>());
     }
 
+    if cmd == "bar" {
+        return bar_command(&c, root, &atom, &args[1..]);
+    }
+
     if cmd == "restart-bar" {
         let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
             .ok_or("no window manager is running")?;
@@ -6955,6 +6959,84 @@ fn run() -> Result<()> {
         wait_applied(&c, root, &atom, action, value)?;
     }
     Ok(())
+}
+
+fn bar_state_from(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+) -> Result<String> {
+    let reply = c
+        .get_property(
+            false,
+            root,
+            atom("_NIRUWM_BAR_STATE")?,
+            atom("UTF8_STRING")?,
+            0,
+            32,
+        )?
+        .reply()?;
+    let state = String::from_utf8_lossy(&reply.value).trim().to_string();
+    if state.is_empty() {
+        return Err("the running window manager does not expose bar state; log out/in to activate this NIRUWM".into());
+    }
+    Ok(state)
+}
+
+fn bar_command(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    args: &[String],
+) -> Result<()> {
+    let mode = args.first().map(String::as_str).unwrap_or("status");
+    if mode == "status" {
+        println!("{}", bar_state_from(c, root, atom)?);
+        return Ok(());
+    }
+    let before = bar_state_from(c, root, atom).unwrap_or_else(|_| "unknown".into());
+    let code = match mode {
+        "top" => 1,
+        "bottom" => 2,
+        "hide" => 3,
+        "show" => 4,
+        "toggle" => 5,
+        "cycle" => 6,
+        _ => {
+            return Err("bar needs top, bottom, hide, show, toggle, cycle or status".into());
+        }
+    };
+    let expected = match mode {
+        "top" => vec!["top"],
+        "bottom" => vec!["bottom"],
+        "hide" => vec!["hidden", "disabled"],
+        "show" => vec!["top", "bottom"],
+        "toggle" => {
+            if matches!(before.as_str(), "hidden" | "disabled") {
+                vec!["top", "bottom"]
+            } else {
+                vec!["hidden", "disabled"]
+            }
+        }
+        "cycle" => match before.as_str() {
+            "top" => vec!["bottom"],
+            "bottom" => vec!["hidden", "disabled"],
+            _ => vec!["top"],
+        },
+        _ => unreachable!(),
+    };
+    send(c, root, atom(CMD_ATOM)?, [12, code, 0, 0, 0])?;
+    c.flush()?;
+    for _ in 0..200 {
+        if let Ok(state) = bar_state_from(c, root, atom) {
+            if expected.contains(&state.as_str()) {
+                println!("{state}");
+                return Ok(());
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    Err("window manager did not apply the bar command".into())
 }
 
 /// A non-zero, 31-bit serial so the high bit stays free for "rejected".

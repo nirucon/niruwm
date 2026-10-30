@@ -98,6 +98,7 @@ installations are maintained with `nirux update`.
 | Super+Shift+Space | Toggle floating |
 | Super+Shift+E | Toggle fullscreen |
 | Super+Shift+S | Scratchpad |
+| Super+Alt+B | Cycle bar: top, bottom, hidden |
 | Super+H / Super+L | Decrease / increase master ratio |
 | Super+I / Super+D | Increase / decrease master count |
 | Super+Shift+J / Super+Shift+K | Swap with next / previous window |
@@ -171,6 +172,12 @@ niruwm --check-config
 niruwm --reset-config   # restore the full example; keeps .niruwm-backup
 niructl reload
 niructl restart-bar
+niructl bar top       # persistent edge, default
+niructl bar bottom
+niructl bar hide      # runtime only; returns at the next login
+niructl bar show
+niructl bar toggle
+niructl bar status
 niructl storage review
 niructl input status
 niructl input set-keyboard se

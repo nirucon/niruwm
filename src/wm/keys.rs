@@ -262,6 +262,18 @@ impl Wm {
                     self.toggle_sticky(focused)?;
                 }
             }
+            Action::BarTop => self.set_bar_position("top"),
+            Action::BarBottom => self.set_bar_position("bottom"),
+            Action::BarHide => self.set_bar_visible(false),
+            Action::BarShow => self.set_bar_visible(true),
+            Action::BarToggle => {
+                if self.bar_active() {
+                    self.set_bar_visible(false);
+                } else {
+                    self.set_bar_visible(true);
+                }
+            }
+            Action::BarCycle => self.cycle_bar(),
             Action::ToggleFullscreen => {
                 if let Some(w) = focused {
                     return self.toggle_fullscreen(w).map(|_| true);

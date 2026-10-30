@@ -271,6 +271,9 @@ dpms_off_after_lock = 15
 [bar]
 # The bar is a separate process; NIRUWM starts it from PATH.
 enabled = true
+# Screen edge: "top" (default) or "bottom". Runtime hide/show is available
+# with `niructl bar hide|show|toggle` and Super+Alt+B cycles top, bottom, hidden.
+position = "top"
 # Modules to show, in order. Remove one to hide it. A font without the glyphs
 # falls back to plain text.
 #

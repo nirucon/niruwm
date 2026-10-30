@@ -134,6 +134,9 @@ pub(crate) struct Wm {
     pub(crate) layout: Layout,
     /// One bar per monitor, in monitor order.
     pub(crate) bars: Vec<Child>,
+    /// Runtime visibility. `[bar] enabled` is the persistent master switch;
+    /// this lets a key or the launcher hide the bar without editing the file.
+    pub(crate) bar_visible: bool,
     /// Reaped from the event loop; application/helper launches create no threads.
     children: Vec<Child>,
     helpers: HelperPool,
@@ -259,6 +262,7 @@ impl Wm {
             "_NIRUWM_LAYOUT",
             "_NIRUWM_BAR_CONTROL",
             "_NIRUWM_BAR_RESTART_SERIAL",
+            "_NIRUWM_BAR_STATE",
             "_NIRUWM_QUIT",
             "_NIRUWM_LOCK",
             "_NIRUWM_MONITORS",
@@ -283,6 +287,7 @@ impl Wm {
             theme,
             layout: Layout::Tile,
             bars: Vec::new(),
+            bar_visible: true,
             children: Vec::new(),
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
@@ -694,26 +699,66 @@ impl Wm {
         Ok(())
     }
 
+    fn bar_bottom(&self) -> bool {
+        self.cfg.bar.position.eq_ignore_ascii_case("bottom")
+    }
+
+    fn bar_active(&self) -> bool {
+        self.cfg.bar.enabled && self.bar_visible
+    }
+
+    pub(crate) fn bar_state(&self) -> &'static str {
+        if !self.cfg.bar.enabled {
+            "disabled"
+        } else if !self.bar_visible {
+            "hidden"
+        } else if self.bar_bottom() {
+            "bottom"
+        } else {
+            "top"
+        }
+    }
+
+    fn publish_bar_state(&self) {
+        if let Err(e) = self.c.change_property8(
+            PropMode::REPLACE,
+            self.root,
+            self.atom("_NIRUWM_BAR_STATE"),
+            self.atom("UTF8_STRING"),
+            self.bar_state().as_bytes(),
+        ) {
+            eprintln!("niruwm: cannot publish bar state: {e}");
+        }
+    }
+
     /// The WM alone owns bars in session and standalone launches.
     fn start_bar(&mut self) {
         self.stop_bars();
         self.last_bar_start = std::time::Instant::now();
-        if !self.cfg.bar.enabled {
+        if !self.bar_active() {
+            self.publish_bar_state();
             return;
         }
-        // One bar per monitor. Each is told where it belongs, so it covers that
-        // screen only and its workspace cells describe that screen.
+        let edge = if self.bar_bottom() { "bottom" } else { "top" };
+        // One bar per monitor. Each is told where it belongs, and the edge,
+        // so it covers that screen only and its workspace cells describe it.
         for m in &self.monitors {
-            let geometry = format!("{},{},{},{}", m.rect.x, m.rect.y, m.rect.w, m.name);
+            let geometry = format!(
+                "{},{},{},{},{}",
+                m.rect.x, m.rect.y, m.rect.w, m.rect.h, m.name
+            );
             match Command::new("nirubar")
                 .arg("--monitor")
                 .arg(geometry)
+                .arg("--position")
+                .arg(edge)
                 .spawn()
             {
                 Ok(child) => self.bars.push(child),
                 Err(e) => eprintln!("niruwm: cannot start nirubar: {e}"),
             }
         }
+        self.publish_bar_state();
     }
 
     /// Stop every bar and wait for it, so none survives a reload or logout.
@@ -724,6 +769,77 @@ impl Wm {
         }
     }
 
+    pub(crate) fn set_bar_visible(&mut self, visible: bool) {
+        if visible {
+            self.bar_visible = true;
+            if !self.cfg.bar.enabled {
+                self.cfg.bar.enabled = true;
+                self.remember_bar_settings();
+            }
+            self.start_bar();
+        } else {
+            self.bar_visible = false;
+            self.stop_bars();
+            self.publish_bar_state();
+        }
+    }
+
+    pub(crate) fn set_bar_position(&mut self, position: &str) {
+        self.cfg.bar.position = if position.eq_ignore_ascii_case("bottom") {
+            "bottom".into()
+        } else {
+            "top".into()
+        };
+        self.cfg.bar.enabled = true;
+        self.bar_visible = true;
+        self.start_bar();
+        self.remember_bar_settings();
+    }
+
+    pub(crate) fn cycle_bar(&mut self) {
+        if !self.bar_active() {
+            self.set_bar_position("top");
+        } else if self.bar_bottom() {
+            self.set_bar_visible(false);
+        } else {
+            self.set_bar_position("bottom");
+        }
+    }
+
+    fn remember_bar_settings(&self) {
+        let path = crate::config::directory().join("config.toml");
+        let Ok(original) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Some(updated) = rewrite_bar_settings(&original, &self.cfg.bar) else {
+            eprintln!(
+                "niruwm: bar settings were not written: the config could not be edited safely"
+            );
+            return;
+        };
+        if updated == original {
+            return;
+        }
+        if updated.parse::<toml::Value>().is_err() {
+            eprintln!("niruwm: bar settings were not written: the edited config would be invalid");
+            return;
+        }
+        let real = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        let Some(parent) = real.parent() else {
+            return;
+        };
+        let temp = parent.join(format!(".config.toml.niruwm-{}", std::process::id()));
+        if std::fs::write(&temp, &updated).is_err() {
+            return;
+        }
+        if let Ok(meta) = std::fs::metadata(&real) {
+            let _ = std::fs::set_permissions(&temp, meta.permissions());
+        }
+        if std::fs::rename(&temp, &real).is_err() {
+            let _ = std::fs::remove_file(&temp);
+        }
+    }
+
     /// Start a bar again after it died on its own.
     ///
     /// A bar is not optional furniture: without it the workspaces are invisible
@@ -731,7 +847,7 @@ impl Wm {
     /// paced: at most one attempt every ten seconds, and the attempts are
     /// logged, so a bar that cannot start cannot turn into a loop.
     pub(crate) fn restart_bars(&mut self) {
-        if !self.cfg.bar.enabled {
+        if !self.bar_active() {
             return;
         }
         let now = std::time::Instant::now();
@@ -776,6 +892,7 @@ impl Wm {
         };
         let old_height = self.cfg.bar_height;
         let old_enabled = self.cfg.bar.enabled;
+        let old_position = self.cfg.bar.position.clone();
         let old_monitors = self.monitor_cfg.clone();
         let old_theme = self.cfg.theme.clone();
         self.cfg = cfg;
@@ -800,7 +917,10 @@ impl Wm {
         if self.monitor_cfg != old_monitors {
             // Workspace counts/names/primary changed: rebuild screens and bars.
             self.refresh_monitors()?;
-        } else if self.cfg.bar_height != old_height || self.cfg.bar.enabled != old_enabled {
+        } else if self.cfg.bar_height != old_height
+            || self.cfg.bar.enabled != old_enabled
+            || self.cfg.bar.position != old_position
+        {
             self.start_bar();
         }
         self.update_borders()?;
@@ -946,6 +1066,18 @@ fn common_layouts(monitors: &[Monitor]) -> Vec<Layout> {
         .unwrap_or_default()
 }
 
+/// Update only the persistent bar fields, keeping comments and layout intact.
+fn rewrite_bar_settings(text: &str, bar: &crate::config::Bar) -> Option<String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().ok()?;
+    let item = doc
+        .entry("bar")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let table = item.as_table_mut()?;
+    table["enabled"] = toml_edit::value(bar.enabled);
+    table["position"] = toml_edit::value(bar.position.as_str());
+    Some(doc.to_string())
+}
+
 /// Replace the layout lists in a configuration file with `toml_edit`, keeping
 /// comments, ordering and unrelated tables, or `None` when it cannot be done
 /// safely.
@@ -1026,6 +1158,20 @@ impl Drop for Wm {
 #[cfg(test)]
 mod layout_file_tests {
     use super::rewrite_layouts;
+
+    #[test]
+    fn bar_position_is_written_without_losing_comments() {
+        let text = "[bar]\n# keep this\nenabled = true\nposition = \"top\"\n";
+        let bar = crate::config::Bar {
+            position: "bottom".into(),
+            ..Default::default()
+        };
+        let updated = super::rewrite_bar_settings(text, &bar).expect("editable");
+        assert!(updated.contains("# keep this"));
+        let parsed: crate::config::Config = toml::from_str(&updated).unwrap();
+        assert_eq!(parsed.bar.position, "bottom");
+        assert!(parsed.bar.enabled);
+    }
 
     fn list(items: &[&str]) -> Vec<String> {
         items.iter().map(|s| s.to_string()).collect()

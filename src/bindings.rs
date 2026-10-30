@@ -51,6 +51,12 @@ pub enum Action {
     ToggleFloat,
     ToggleFullscreen,
     ToggleSticky,
+    BarTop,
+    BarBottom,
+    BarHide,
+    BarShow,
+    BarToggle,
+    BarCycle,
     Close,
     Quit,
     Reload,
@@ -306,6 +312,7 @@ impl Action {
         add("super+shift+space", "toggle_float");
         add("super+shift+e", "toggle_fullscreen");
         add("super+alt+s", "toggle_sticky");
+        add("super+alt+b", "bar_cycle");
         add("super+shift+s", "scratchpad");
         add("super+h", "dec_master_ratio");
         add("super+l", "inc_master_ratio");
@@ -467,6 +474,12 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "toggle_float" => Action::ToggleFloat,
         "toggle_fullscreen" => Action::ToggleFullscreen,
         "toggle_sticky" => Action::ToggleSticky,
+        "bar_top" => Action::BarTop,
+        "bar_bottom" => Action::BarBottom,
+        "bar_hide" => Action::BarHide,
+        "bar_show" => Action::BarShow,
+        "bar_toggle" => Action::BarToggle,
+        "bar_cycle" => Action::BarCycle,
         "close" => Action::Close,
         "quit" => Action::Quit,
         "reload" => Action::Reload,

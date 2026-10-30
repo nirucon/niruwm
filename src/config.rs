@@ -479,6 +479,9 @@ pub struct Bar {
     /// `true` renders the bar as a dock window (NIRUWM only). Ignored by
     /// standalone use.
     pub enabled: bool,
+    /// Screen edge: `top` (default) or `bottom`. NIRUWM tells NIRUBAR which
+    /// edge to use; an unknown value behaves as `top`.
+    pub position: String,
     /// Show a short hint of the focused window's title between the tags and
     /// the clock. `false` keeps the bar minimal: tags and clock only.
     /// Written as `title` in older configs; `show_title` is preferred.
@@ -632,6 +635,7 @@ impl Default for Bar {
     fn default() -> Self {
         Self {
             enabled: true,
+            position: "top".into(),
             show_title: false,
             title_max: 60,
             cell_width: 30,
@@ -2019,6 +2023,14 @@ icons = true
 "#;
         let c: Config = toml::from_str(shared).expect("every bar key must parse");
         assert!(c.bar.battery && c.bar.network && c.bar.icons);
+    }
+
+    #[test]
+    fn bar_position_defaults_top_and_accepts_bottom() {
+        let d: Config = toml::from_str("").unwrap();
+        assert_eq!(d.bar.position, "top");
+        let b: Config = toml::from_str("[bar]\nposition = \"bottom\"\n").unwrap();
+        assert_eq!(b.bar.position, "bottom");
     }
 
     #[test]
