@@ -159,12 +159,14 @@ build_local() {
   say "Building from source ..."
   ( cd "$(dirname "$0")" && cargo build --release --locked )
   verify_versions "$(dirname "$0")/target/release" "$VERSION" ''
-  for b in niruwm niructl niruidle niruwm-session niruclipboard; do guard_owned "$BINDIR/$b"; done
+  for b in niruwm niructl niruidle niruwm-session niruclipboard nirugestured; do guard_owned "$BINDIR/$b"; done
   for b in niruwm niructl niruidle; do
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
   done
   put "session/niruwm-session" "$BINDIR/niruwm-session" 0755
+  put "session/niruclipboard" "$BINDIR/niruclipboard" 0755
+  put "session/nirugestured" "$BINDIR/nirugestured" 0755
   install_config
   say "Installed from source in $BINDIR"
 }
@@ -319,7 +321,7 @@ uninstall() {
 
 check() {
   ok=0
-  for b in niruwm niructl niruidle niruwm-session niruclipboard; do
+  for b in niruwm niructl niruidle niruwm-session niruclipboard nirugestured; do
     if [ -x "$BINDIR/$b" ]; then say "OK   $BINDIR/$b"; else say "FAIL missing $BINDIR/$b"; ok=1; fi
   done
   if [ -e "$SESSION_FILE" ]; then say "OK   $SESSION_FILE"; else say "INFO no SDDM entry (run --register-session)"; fi
