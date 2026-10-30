@@ -14,6 +14,26 @@ impl Wm {
             .unwrap_or_default()
     }
 
+    fn size_hints(&self, w: Window) -> SizeHints {
+        let Ok(cookie) = self.c.get_property(
+            false,
+            w,
+            AtomEnum::WM_NORMAL_HINTS,
+            AtomEnum::WM_SIZE_HINTS,
+            0,
+            18,
+        ) else {
+            return SizeHints::default();
+        };
+        let Ok(reply) = cookie.reply() else {
+            return SizeHints::default();
+        };
+        match x11rb::properties::WmSizeHints::from_reply(&reply) {
+            Ok(Some(hints)) => SizeHints::from_wm(&hints),
+            _ => SizeHints::default(),
+        }
+    }
+
     fn has_protocol(&self, w: Window, protocol: &str) -> bool {
         self.values(w, "WM_PROTOCOLS")
             .contains(&self.atom(protocol))
@@ -229,6 +249,7 @@ impl Wm {
             .get(monitor)
             .map(|m| m.name.clone())
             .unwrap_or_default();
+        let size_hints = self.size_hints(w);
         let client = Client {
             win: w,
             monitor,
@@ -239,14 +260,15 @@ impl Wm {
             geom: Rect {
                 x: g.x,
                 y: g.y,
-                w: g.width,
-                h: g.height,
+                w: g.width.saturating_add(border * 2),
+                h: g.height.saturating_add(border * 2),
             },
             take_focus,
             pid,
             parent: transient,
             orphan,
             sticky,
+            size_hints,
         };
         if let Some(opacity) = rule.as_ref().and_then(|r| r.opacity) {
             let value = (u64::from(opacity.clamp(1, 100)) * u64::from(u32::MAX) / 100) as u32;
@@ -758,7 +780,7 @@ impl Wm {
                         .map(|m| m.rect)
                         .unwrap_or_else(|| self.screen_area())
                 } else if c.floating || layout == Layout::Floating {
-                    self.clamp(c.geom, screen)
+                    self.clamp(c.size_hints.clamp(c.geom), screen)
                 } else {
                     let r = boxes.get(idx).copied().unwrap_or(screen);
                     idx += 1;

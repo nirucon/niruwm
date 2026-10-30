@@ -77,6 +77,8 @@ impl Wm {
         }
 
         let mut floating = self.clients[index].floating;
+        let border = self.cfg.border_width;
+        let size_hints = self.clients[index].size_hints;
         let dragged: Result<()> = (|| {
             loop {
                 let event = self.c.wait_for_event()?;
@@ -96,7 +98,7 @@ impl Wm {
                             continue;
                         }
                         let current = if resize {
-                            resize_geometry(start, dx, dy, left, top, bounds)
+                            resize_geometry(start, dx, dy, left, top, bounds, size_hints)
                         } else {
                             move_geometry(start, dx, dy, bounds)
                         };
@@ -108,8 +110,8 @@ impl Wm {
                             &ConfigureWindowAux::new()
                                 .x(i32::from(current.x))
                                 .y(i32::from(current.y))
-                                .width(u32::from(current.w))
-                                .height(u32::from(current.h)),
+                                .width(u32::from(current.w.saturating_sub(border * 2)))
+                                .height(u32::from(current.h.saturating_sub(border * 2))),
                         )?;
                         self.c.flush()?;
                     }
@@ -146,7 +148,15 @@ fn move_geometry(start: Rect, dx: i32, dy: i32, bounds: Rect) -> Rect {
     }
 }
 
-fn resize_geometry(start: Rect, dx: i32, dy: i32, left: bool, top: bool, bounds: Rect) -> Rect {
+fn resize_geometry(
+    start: Rect,
+    dx: i32,
+    dy: i32,
+    left: bool,
+    top: bool,
+    bounds: Rect,
+    hints: SizeHints,
+) -> Rect {
     let mut x = i32::from(start.x);
     let mut y = i32::from(start.y);
     let mut w = i32::from(start.w);
@@ -180,17 +190,33 @@ fn resize_geometry(start: Rect, dx: i32, dy: i32, left: bool, top: bool, bounds:
     if y + h > bottom {
         h = bottom - y;
     }
-    if w < i32::from(MIN_WIDTH) {
+    let min_w = i32::from(
+        hints
+            .min
+            .map(|(w, _)| w.max(MIN_WIDTH))
+            .unwrap_or(MIN_WIDTH),
+    );
+    let min_h = i32::from(
+        hints
+            .min
+            .map(|(_, h)| h.max(MIN_HEIGHT))
+            .unwrap_or(MIN_HEIGHT),
+    );
+    if w < min_w {
         if left {
-            x -= i32::from(MIN_WIDTH) - w;
+            x -= min_w - w;
         }
-        w = i32::from(MIN_WIDTH);
+        w = min_w;
     }
-    if h < i32::from(MIN_HEIGHT) {
+    if h < min_h {
         if top {
-            y -= i32::from(MIN_HEIGHT) - h;
+            y -= min_h - h;
         }
-        h = i32::from(MIN_HEIGHT);
+        h = min_h;
+    }
+    if let Some((max_w, max_h)) = hints.max {
+        w = w.min(i32::from(max_w));
+        h = h.min(i32::from(max_h));
     }
     x = x.max(i32::from(bounds.x));
     y = y.max(i32::from(bounds.y));
@@ -236,11 +262,43 @@ mod tests {
             w: 300,
             h: 200,
         };
-        let resized = resize_geometry(start, -50, -40, true, true, BOUNDS);
+        let resized = resize_geometry(start, -50, -40, true, true, BOUNDS, SizeHints::default());
         assert_eq!(resized.x, 50);
         assert_eq!(resized.y, 60);
         assert_eq!(resized.w, 350);
         assert_eq!(resized.h, 240);
+    }
+
+    #[test]
+    fn client_minimum_size_wins_over_the_wm_default() {
+        let start = Rect {
+            x: 100,
+            y: 100,
+            w: 700,
+            h: 700,
+        };
+        let hints = SizeHints {
+            min: Some((543, 427)),
+            max: None,
+        };
+        let resized = resize_geometry(start, 600, 600, true, true, BOUNDS, hints);
+        assert_eq!((resized.w, resized.h), (543, 427));
+    }
+
+    #[test]
+    fn client_maximum_size_is_respected() {
+        let start = Rect {
+            x: 100,
+            y: 100,
+            w: 300,
+            h: 200,
+        };
+        let hints = SizeHints {
+            min: None,
+            max: Some((400, 300)),
+        };
+        let resized = resize_geometry(start, 500, 500, false, false, BOUNDS, hints);
+        assert_eq!((resized.w, resized.h), (400, 300));
     }
 
     #[test]
@@ -251,7 +309,7 @@ mod tests {
             w: 200,
             h: 200,
         };
-        let resized = resize_geometry(start, -500, -500, true, true, BOUNDS);
+        let resized = resize_geometry(start, -500, -500, true, true, BOUNDS, SizeHints::default());
         assert!(resized.w >= MIN_WIDTH);
         assert!(resized.h >= MIN_HEIGHT);
     }

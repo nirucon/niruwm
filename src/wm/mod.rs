@@ -58,6 +58,46 @@ pub(crate) struct Client {
     orphan: bool,
     /// A rule may pin a floating window to every workspace on its monitor.
     sticky: bool,
+    /// Client min/max size hints. `geom` is the outer rectangle, so these
+    /// limits are applied to the same rectangle that arrange() uses.
+    size_hints: SizeHints,
+}
+
+/// The size limits a client publishes in WM_NORMAL_HINTS.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SizeHints {
+    pub(crate) min: Option<(u16, u16)>,
+    pub(crate) max: Option<(u16, u16)>,
+}
+
+impl SizeHints {
+    fn from_wm(h: &x11rb::properties::WmSizeHints) -> Self {
+        let pair = |p: Option<(i32, i32)>| {
+            p.and_then(|(w, h)| {
+                let w = u16::try_from(w.max(0)).ok()?;
+                let h = u16::try_from(h.max(0)).ok()?;
+                (w > 0 && h > 0).then_some((w, h))
+            })
+        };
+        Self {
+            min: pair(h.min_size),
+            max: pair(h.max_size),
+        }
+    }
+
+    fn clamp(&self, r: Rect) -> Rect {
+        let mut w = r.w;
+        let mut h = r.h;
+        if let Some((min_w, min_h)) = self.min {
+            w = w.max(min_w);
+            h = h.max(min_h);
+        }
+        if let Some((max_w, max_h)) = self.max {
+            w = w.min(max_w);
+            h = h.min(max_h);
+        }
+        Rect { w, h, ..r }
+    }
 }
 
 /// One restored command and the windows it still has to map.

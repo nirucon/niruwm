@@ -181,15 +181,29 @@ impl Wm {
             return Ok(());
         };
         if c.floating {
+            let hints = c.size_hints;
+            let border = self.cfg.border_width;
             self.c
                 .configure_window(e.window, &ConfigureWindowAux::from_configure_request(&e))?;
             let g = self.c.get_geometry(e.window)?.reply()?;
-            let geom = Rect {
+            let geom = hints.clamp(Rect {
                 x: g.x,
                 y: g.y,
-                w: g.width,
-                h: g.height,
-            };
+                w: g.width.saturating_add(border * 2),
+                h: g.height.saturating_add(border * 2),
+            });
+            if geom.w != g.width.saturating_add(border * 2)
+                || geom.h != g.height.saturating_add(border * 2)
+            {
+                self.c.configure_window(
+                    e.window,
+                    &ConfigureWindowAux::new()
+                        .x(i32::from(geom.x))
+                        .y(i32::from(geom.y))
+                        .width(u32::from(geom.w.saturating_sub(border * 2)))
+                        .height(u32::from(geom.h.saturating_sub(border * 2))),
+                )?;
+            }
             if let Some(c) = self.clients.iter_mut().find(|c| c.win == e.window) {
                 c.geom = geom;
             }
