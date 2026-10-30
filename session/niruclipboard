@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-VERSION = "0.16.143"
+VERSION = "0.16.144"
 MAX_ENTRIES = 200
 MAX_BYTES = 64 * 1024
 POLL_SECONDS = 0.75
