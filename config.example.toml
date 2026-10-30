@@ -348,7 +348,7 @@ cell_width = 30
 # opacity = 94
 # Show the focused window title between the workspaces and the status.
 title = false
-title_max = 60
+title_max = 20
 # Seconds before the title appears. With 2, switching through windows shows no
 # titles at all and the one you settle on appears. 0 shows it at once. Only
 # useful with `title = true`.

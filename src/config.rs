@@ -651,7 +651,7 @@ impl Default for Bar {
             enabled: true,
             position: "top".into(),
             show_title: false,
-            title_max: 60,
+            title_max: 20,
             cell_width: 30,
             separator: "|".into(),
             modules: vec![
