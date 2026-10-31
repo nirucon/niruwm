@@ -151,6 +151,11 @@ theme_dir = "~/Pictures/Wallpapers/NIRU"
 # nothing starts. A saved-session restore suppresses this sequence so the same
 # programs are not opened twice.
 [autostart]
+
+# NIRUSHARE receiving service. The Share bar module remains opt-in.
+[[autostart.apps]]
+class = "nirushare"
+command = ["nirushare", "serve"]
 enabled = false
 # Seconds to wait after each workspace group before moving to the next one.
 settle_seconds = 2
