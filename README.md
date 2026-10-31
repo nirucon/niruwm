@@ -6,6 +6,7 @@
 NIRUX X11 desktop, built in the spirit of [suckless dwm](https://dwm.suckless.org/),
 which the author used for many years.
 
+NIRU Login provides the greetd-based graphical login that starts this session.
 It keeps what makes dwm pleasant: tags instead of virtual desktops, a single
 plain-text configuration, keybindings as the primary interface, and a
 codebase small enough to read. It adds what a daily machine needs: per-monitor
