@@ -81,7 +81,11 @@ impl Tool {
             if flags || self == Tool::Feh {
                 out.push("--no-fehbg".into());
             }
-            out.push(g.clone());
+            // feh has no per-output selector. Its geometry-like argument is
+            // interpreted as another image path, so pass only the image.
+            if self != Tool::Feh {
+                out.push(g.clone());
+            }
             out.push(p.clone());
             out
         };
@@ -988,10 +992,17 @@ mod tests {
         for tool in TOOLS {
             for scale in ["fill", "fit", "stretch", "center"] {
                 let args = tool.image_args(scale, &out.geometry(), path);
-                assert!(
-                    args.iter().any(|a| a == "1080x1920+1920+-40"),
-                    "{tool:?} {scale}"
-                );
+                if *tool == Tool::Feh {
+                    assert!(
+                        !args.iter().any(|a| a == "1080x1920+1920+-40"),
+                        "feh treats geometry as an image path"
+                    );
+                } else {
+                    assert!(
+                        args.iter().any(|a| a == "1080x1920+1920+-40"),
+                        "{tool:?} {scale}"
+                    );
+                }
                 assert!(args.iter().any(|a| a == "/w/a b.png"));
             }
         }
