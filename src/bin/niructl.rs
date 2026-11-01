@@ -53,7 +53,7 @@ display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-js
 action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD NEW|pin NAME|unpin NAME | \
 layout show|save | \
 powerprofile status|list|set NAME|next | \
-lock | screensaver | logout | suspend | reboot | shutdown | dnd on|off|toggle|status | \
+lock | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
@@ -502,6 +502,61 @@ fn spawn_action(program: &str, args: &[&str]) -> Result<()> {
         .map_err(|e| format!("cannot start {program}: {e}").into())
 }
 
+/// Open the system update action in a real terminal. Package managers need a
+/// TTY for sudo and for conffile prompts, so this intentionally does not run in
+/// the WM process or through a hidden pkexec helper.
+fn update_terminal(action: &str, extra: &[String]) -> Result<()> {
+    let nirux = program("nirux").ok_or("nirux is not installed")?;
+    let title = if action == "update-reboot" {
+        "NIRUX Update and Restart"
+    } else {
+        "NIRUX Update and Shut Down"
+    };
+    let mut args: Vec<String> = vec![action.to_string()];
+    args.extend(extra.iter().cloned());
+    let terminals: [(&str, &str, &str); 5] = [
+        ("kitty", "--title", "--hold"),
+        ("foot", "-T", "--hold"),
+        ("alacritty", "-t", "--hold"),
+        ("x-terminal-emulator", "-T", "-hold"),
+        ("xterm", "-T", "-hold"),
+    ];
+    for (name, title_flag, hold_flag) in terminals {
+        let Some(path) = program(name) else {
+            continue;
+        };
+        let mut process = std::process::Command::new(path);
+        if name == "kitty" {
+            process
+                .arg(title_flag)
+                .arg(title)
+                .arg(hold_flag)
+                .arg(&nirux)
+                .args(&args);
+        } else {
+            process
+                .arg(title_flag)
+                .arg(title)
+                .arg(hold_flag)
+                .arg("-e")
+                .arg(&nirux)
+                .args(&args);
+        }
+        process
+            .spawn()
+            .map_err(|e| format!("cannot start {name}: {e}"))?;
+        return Ok(());
+    }
+    Err("no terminal found for the update action (install kitty or xterm)".into())
+}
+
+fn update_power_action(action: &str, args: &[String]) -> Result<()> {
+    if !matches!(action, "update-shutdown" | "update-reboot") {
+        return Err("unknown update action".into());
+    }
+    update_terminal(action, args)
+}
+
 /// A login/power action with an explicit backend and no shell.
 fn login_action(action: &str) -> Result<()> {
     if action == "logout" && which("loginctl") {
@@ -610,6 +665,7 @@ fn desktop(action: &str, args: &[String]) -> Result<()> {
             spawn_action(&saver, &["--preview"])
         }
         "suspend" | "logout" | "reboot" | "shutdown" => power_action(action),
+        "update-shutdown" | "update-reboot" => update_power_action(action, args),
         "dnd" => dnd(args),
         _ => Err(USAGE.into()),
     }
@@ -6366,6 +6422,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "save-session" || cmd == "clear-session" {
         return session_from_file(cmd);
     }
+    if cmd == "update-shutdown" || cmd == "update-reboot" {
+        return update_power_action(cmd, &std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "brightness" {
         return brightness(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -6729,6 +6788,8 @@ fn run() -> Result<()> {
             | "suspend"
             | "reboot"
             | "shutdown"
+            | "update-shutdown"
+            | "update-reboot"
             | "dnd"
             | "audio"
             | "bluetooth"
