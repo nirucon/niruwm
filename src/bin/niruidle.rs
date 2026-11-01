@@ -22,6 +22,7 @@ use std::{
 use x11rb::{
     connection::{Connection, RequestConnection as _},
     protocol::{screensaver::ConnectionExt as _, xproto::*},
+    rust_connection::RustConnection,
 };
 
 #[allow(dead_code)]
@@ -190,6 +191,27 @@ fn reap(child: &mut Option<Child>) -> Option<std::process::ExitStatus> {
     Some(status)
 }
 
+/// The lock window named by `_NIRU_LOCK_READY`, if it is still alive.
+///
+/// NIRULOCK may be started by NIRUWM's shortcut or by another session helper,
+/// not only by this daemon. Treating only our own child as "locked" made the
+/// idle ladder try to cover an already locked screen every five seconds, which
+/// spawned short-lived helpers and, on some sessions, left visible zombies
+/// between reaps. The root property is the suite-wide readiness contract.
+fn lock_ready_window(c: &RustConnection, root: Window, atom: Atom) -> Option<Window> {
+    let reply = c
+        .get_property(false, root, atom, AtomEnum::WINDOW, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?;
+    let window = reply.value32()?.next()?;
+    if window == 0 {
+        return None;
+    }
+    c.get_window_attributes(window).ok()?.reply().ok()?;
+    Some(window)
+}
+
 fn xset_dpms(force: &str) {
     let _ = Command::new("xset")
         .args(["dpms", "force", force])
@@ -284,6 +306,12 @@ fn main() {
         .saturating_add(settings.dpms_after)
         .saturating_mul(60);
     let mut config_stamp = shared_config_stamp();
+    let lock_ready = conn
+        .intern_atom(false, b"_NIRU_LOCK_READY")
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .map(|reply| reply.atom)
+        .unwrap_or(0);
 
     eprintln!(
         "niruidle: screen after {} min, lock {} min later, display off {} min after that{}{}",
@@ -309,6 +337,7 @@ fn main() {
     let mut retry_lock_at = Instant::now();
     let inhibit = inhibit_path();
     let mut inhibited = false;
+    let mut external_locked = false;
 
     loop {
         // `niructl timing set` writes the shared file. Pick the new values up
@@ -368,7 +397,19 @@ fn main() {
         }
 
         let idle = idle_seconds(&conn, root).unwrap_or(0);
-        let locked = locker_child.is_some();
+        let external_lock = lock_ready_window(&conn, root, lock_ready);
+        if external_lock.is_some() != external_locked {
+            external_locked = external_lock.is_some();
+            if external_locked {
+                eprintln!("niruidle: external lock active; pausing the idle ladder");
+            } else {
+                eprintln!("niruidle: external lock cleared");
+            }
+        }
+        if external_locked {
+            stop_saver(&mut saver_child);
+        }
+        let locked = locker_child.is_some() || external_locked;
 
         // Any activity below the first step resets the whole ladder.
         if idle < screen_at.max(1) {
@@ -416,7 +457,7 @@ fn main() {
 
         // 3. Display off, only while locked: an unlocked machine going dark
         //    would be a surprise.
-        if !display_off && settings.dpms_after > 0 && locker_child.is_some() && idle >= dpms_at {
+        if !display_off && settings.dpms_after > 0 && locked && idle >= dpms_at {
             eprintln!("niruidle: idle {idle}s: display off");
             xset_dpms("off");
             display_off = true;
