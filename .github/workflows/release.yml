@@ -86,6 +86,9 @@ jobs:
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+          version=$(awk -F '"' '/^version = / {print $2; exit}' Cargo.toml)
+          test "$(python3 session/niruclipboard --version | awk '{print $2}')" = "$version"
+          test "$(python3 session/nirugestured --version | awk '{print $2}')" = "$version"
           python3 -m py_compile session/niruclipboard session/nirugestured
 
       - name: Build NIRUWM
