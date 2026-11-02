@@ -889,6 +889,10 @@ impl Wm {
 
     /// The usable area of one monitor, with the bar's height removed only on
     /// the monitor the bar sits on.
+    pub(crate) fn monitor_work_area(&self, index: usize) -> Rect {
+        self.monitor_area(index, self.work_area())
+    }
+
     fn monitor_area(&self, index: usize, work: Rect) -> Rect {
         match self.monitors.get(index) {
             Some(m) => {

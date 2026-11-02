@@ -61,7 +61,7 @@ impl Wm {
     }
 
     /// Handle one event. Returns `false` when the WM should exit.
-    fn handle(&mut self, event: Event) -> Result<bool> {
+    pub(crate) fn handle(&mut self, event: Event) -> Result<bool> {
         let outcome: Result<bool> = (|| {
             match event {
                 Event::MapRequest(e) => self.manage(e.window)?,

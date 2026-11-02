@@ -229,6 +229,13 @@ impl Default for MonitorConfig {
     }
 }
 
+#[cfg(test)]
+impl Monitor {
+    pub(crate) fn for_test(name: &str, rect: Rect) -> Self {
+        Self::new(name.to_string(), rect, 1, 0.5)
+    }
+}
+
 impl MonitorConfig {
     pub fn workspaces_for(&self, name: &str) -> Option<&Vec<String>> {
         self.named.get(name)
