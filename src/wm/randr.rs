@@ -23,6 +23,12 @@ pub fn read(
     screen_h: u16,
     cfg: &MonitorConfig,
 ) -> (Vec<Monitor>, bool) {
+    // The automated acceptance run supplies a layout so a plain Xvfb server
+    // can exercise real cross-monitor moves. An ordinary session never sets
+    // the variable and always reads RandR.
+    if let Some(outputs) = emulated_monitors() {
+        return monitor::build(outputs, cfg);
+    }
     let outputs = match read_randr(c, root) {
         Some(o) if !o.is_empty() => o,
         _ => Vec::new(),
@@ -109,6 +115,30 @@ pub fn outputs(c: &RustConnection, root: x11rb::protocol::xproto::Window) -> Vec
             height: u32::from(rect.h),
         })
         .collect()
+}
+
+/// Monitors from the same layout file used by the wallpaper acceptance run.
+///
+/// Returns `None` unless `NIRU_RANDR_EMU` names a file with at least one valid
+/// rectangle, so an ordinary session never bypasses RandR.
+fn emulated_monitors() -> Option<Vec<(String, Rect, bool)>> {
+    let outputs = emulated_outputs()?;
+    let mut monitors = Vec::new();
+    for output in outputs {
+        let (Ok(x), Ok(y), Ok(w), Ok(h)) = (
+            i16::try_from(output.x),
+            i16::try_from(output.y),
+            u16::try_from(output.width),
+            u16::try_from(output.height),
+        ) else {
+            continue;
+        };
+        if w == 0 || h == 0 {
+            continue;
+        }
+        monitors.push((output.name, Rect { x, y, w, h }, true));
+    }
+    (!monitors.is_empty()).then_some(monitors)
 }
 
 /// Screens from a layout file, for the automated acceptance run.

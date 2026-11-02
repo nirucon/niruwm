@@ -132,7 +132,11 @@ impl Wm {
                         }
                     }
                 }
-                Event::ButtonPress(e) => self.mouse_button(e)?,
+                Event::ButtonPress(e) => {
+                    if !self.mouse_button(e)? {
+                        return Ok(false);
+                    }
+                }
                 Event::KeyPress(e) => return self.key(e),
                 Event::MappingNotify(_) => {
                     self.resolve_bindings()?;
@@ -180,6 +184,12 @@ impl Wm {
                 .configure_window(e.window, &ConfigureWindowAux::from_configure_request(&e))?;
             return Ok(());
         };
+        if self.dragging == Some(e.window) {
+            // The WM owns the geometry for the duration of a Super+drag. A
+            // toolkit's own ConfigureRequest must not overwrite the rectangle
+            // the pointer is currently moving.
+            return Ok(());
+        }
         if c.floating {
             let hints = c.size_hints;
             let border = self.cfg.border_width;

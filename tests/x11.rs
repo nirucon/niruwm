@@ -521,3 +521,182 @@ fn bar_bottom_hides_and_returns_without_breaking_work_area() {
     let top = c.get_geometry(w).unwrap().reply().unwrap();
     assert!(top.y > bottom.y, "top bar did not move the work area down");
 }
+
+#[test]
+#[ignore = "requires isolated X server and xdotool"]
+fn super_drag_tiles_a_window_on_the_target_monitor() {
+    let dir = std::env::temp_dir().join(format!("niruwm-drag-test-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+
+    // Get the real root geometry first, then describe two monitors that cover
+    // it. Xvfb has one output, so the acceptance seam supplies RandR geometry.
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    let screen_h = c.setup().roots[s].height_in_pixels;
+    let left_w = screen_w / 2;
+    let right_w = screen_w.saturating_sub(left_w);
+    let layouts = dir.join("monitors.txt");
+    std::fs::write(
+        &layouts,
+        format!("LEFT {left_w}x{screen_h}+0+0\nRIGHT {right_w}x{screen_h}+{left_w}+0\n"),
+    )
+    .unwrap();
+
+    let mut _wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("NIRU_RANDR_EMU", &layouts)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        let monitors = text(&c, root, "_NIRUWM_MONITORS");
+        monitors.contains("LEFT") && monitors.contains("RIGHT")
+    });
+
+    let run = |args: &[&str]| {
+        assert!(
+            Command::new("xdotool")
+                .args(args)
+                .status()
+                .unwrap()
+                .success(),
+            "xdotool {args:?} failed"
+        );
+    };
+    let pause = || thread::sleep(Duration::from_millis(80));
+    let create = |name: u32| {
+        let w = c.generate_id().unwrap();
+        c.create_window(
+            0,
+            w,
+            root,
+            20,
+            40,
+            320,
+            240,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap();
+        c.map_window(w).unwrap();
+        c.flush().unwrap();
+        assert!(name > 0);
+        w
+    };
+
+    // A window opened under the pointer on the left screen.
+    run(&["mousemove", "--sync", "100", "100"]);
+    pause();
+    let left = create(1);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&left));
+    wait(|| {
+        let g = c.get_geometry(left).unwrap().reply().unwrap();
+        g.width > left_w / 2 && g.height > screen_h / 2
+    });
+
+    // A second window on the right screen, so the drop has an existing tile
+    // to join rather than an empty workspace.
+    run(&[
+        "mousemove",
+        "--sync",
+        &(left_w + right_w / 2).to_string(),
+        "100",
+    ]);
+    pause();
+    let right = create(2);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&right));
+    wait(|| values(&c, right, "_NET_WM_DESKTOP") == vec![10]);
+
+    let before = c.get_geometry(left).unwrap().reply().unwrap();
+    let start_x = before.x + i16::try_from(before.width / 2).unwrap();
+    let start_y = before.y + i16::try_from(before.height / 2).unwrap();
+    let target_x = left_w as i16 + i16::try_from(right_w / 4).unwrap();
+    run(&[
+        "mousemove",
+        "--sync",
+        &start_x.to_string(),
+        &start_y.to_string(),
+    ]);
+    pause();
+    run(&["keydown", "Super"]);
+    pause();
+    run(&["mousedown", "1"]);
+    pause();
+    // Cross the boundary with real motion events; xdotool emits ButtonPress,
+    // MotionNotify and ButtonRelease exactly like a physical mouse.
+    run(&[
+        "mousemove",
+        "--sync",
+        &(start_x + 80).to_string(),
+        &start_y.to_string(),
+    ]);
+    pause();
+    run(&[
+        "mousemove",
+        "--sync",
+        &target_x.to_string(),
+        &start_y.to_string(),
+    ]);
+    pause();
+    let during = c.get_geometry(left).unwrap().reply().unwrap();
+    assert!(
+        during.x > i16::try_from(left_w / 2).unwrap(),
+        "the window did not follow the pointer across the boundary"
+    );
+    // Mapping an unrelated window delivers a MapRequest to the manager while
+    // the pointer is still grabbed. arrange() must not clamp the dragged
+    // window back to the source monitor when that happens.
+    let extra = create(3);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&extra));
+    let after_map = c.get_geometry(left).unwrap().reply().unwrap();
+    assert_eq!(
+        (after_map.x, after_map.y, after_map.width, after_map.height),
+        (during.x, during.y, during.width, during.height),
+        "an unrelated MapRequest moved the window during the drag"
+    );
+    run(&["mouseup", "1"]);
+    run(&["keyup", "Super"]);
+
+    wait(|| values(&c, left, "_NET_WM_DESKTOP") == vec![10]);
+    wait(|| values(&c, extra, "_NET_WM_DESKTOP") == vec![10]);
+    let after = c.get_geometry(left).unwrap().reply().unwrap();
+    assert!(
+        after.x >= i16::try_from(left_w).unwrap(),
+        "dragged window stayed on the left screen: x={} left_width={left_w}",
+        after.x
+    );
+    assert!(
+        after.width < right_w / 2,
+        "dragged window did not join the target stack: width={} target_width={right_w}",
+        after.width
+    );
+    assert!(
+        after.height > screen_h / 4,
+        "dragged window was not tiled to the target height: height={}",
+        after.height
+    );
+    assert!(values(&c, right, "_NET_WM_DESKTOP") == vec![10]);
+
+    // Destroy this test's clients before stopping the manager so the next
+    // ignored test starts with an empty root window.
+    for window in [left, right, extra] {
+        c.destroy_window(window).unwrap();
+    }
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").is_empty());
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| _wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

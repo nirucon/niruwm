@@ -789,6 +789,12 @@ impl Wm {
                         .get(mi)
                         .map(|m| m.rect)
                         .unwrap_or_else(|| self.screen_area())
+                } else if Some(c.win) == self.dragging {
+                    // The drag loop already positioned this window from root
+                    // pointer coordinates. Clamping it to the source monitor
+                    // here would make it jump back whenever any unrelated
+                    // event triggers arrange() while the button is held.
+                    c.geom
                 } else if c.floating || layout == Layout::Floating {
                     self.clamp(c.size_hints.clamp(c.geom), screen)
                 } else {

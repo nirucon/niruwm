@@ -26,9 +26,9 @@ impl Wm {
         Ok(())
     }
 
-    pub(super) fn mouse_button(&mut self, e: ButtonPressEvent) -> Result<()> {
+    pub(super) fn mouse_button(&mut self, e: ButtonPressEvent) -> Result<bool> {
         if !e.state.contains(ModMask::M4) || (e.detail != 1 && e.detail != 3) {
-            return Ok(());
+            return Ok(true);
         }
         let win = if self.clients.iter().any(|c| c.win == e.event) {
             e.event
@@ -36,16 +36,23 @@ impl Wm {
             e.child
         };
         let Some(index) = self.clients.iter().position(|c| c.win == win) else {
-            return Ok(());
+            return Ok(true);
         };
         if self.clients[index].fullscreen {
-            return Ok(());
+            return Ok(true);
         }
         self.set_focus(win)?;
-        self.drag_mouse(index, e.root_x, e.root_y, e.detail == 3)
+        self.drag_mouse(index, e.root_x, e.root_y, e.detail == 3, e.detail)
     }
 
-    fn drag_mouse(&mut self, index: usize, start_x: i16, start_y: i16, resize: bool) -> Result<()> {
+    fn drag_mouse(
+        &mut self,
+        index: usize,
+        start_x: i16,
+        start_y: i16,
+        resize: bool,
+        button: u8,
+    ) -> Result<bool> {
         let win = self.clients[index].win;
         let start = self.clients[index].geom;
         let source_monitor = self.clients[index].monitor;
@@ -73,7 +80,7 @@ impl Wm {
             )?
             .reply()?;
         if grab.status != GrabStatus::SUCCESS {
-            return Ok(());
+            return Ok(true);
         }
 
         let started_floating = self.clients[index].floating;
@@ -82,6 +89,8 @@ impl Wm {
         let size_hints = self.clients[index].size_hints;
         let mut release_at = None;
         let mut cancelled = false;
+        let mut keep_going = true;
+        self.dragging = Some(win);
         let dragged: Result<()> = (|| {
             loop {
                 let event = self.c.wait_for_event()?;
@@ -132,13 +141,18 @@ impl Wm {
                         self.c.flush()?;
                     }
                     Event::ButtonRelease(e) => {
-                        release_at = Some((e.root_x, e.root_y));
-                        break;
+                        // Only the button that started the drag ends it. A
+                        // second button press/release must not drop the window
+                        // while the user is still holding the first one.
+                        if e.detail == button {
+                            release_at = Some((e.root_x, e.root_y));
+                            break;
+                        }
                     }
                     Event::RandrScreenChangeNotify(_) => {
                         // A hotplug can invalidate the cached monitor rectangles.
                         // End this drag cleanly instead of clamping with stale data.
-                        self.handle(Event::RandrScreenChangeNotify(match event {
+                        keep_going = self.handle(Event::RandrScreenChangeNotify(match event {
                             Event::RandrScreenChangeNotify(e) => e,
                             _ => unreachable!(),
                         }))?;
@@ -149,7 +163,7 @@ impl Wm {
                         // Lifecycle, focus, configure, map, RandR and key events
                         // must reach the normal dispatcher even while a drag owns
                         // the pointer. Dropping them here was the stale-client bug.
-                        let keep_going = self.handle(other)?;
+                        keep_going = self.handle(other)?;
                         if !keep_going {
                             cancelled = true;
                             break;
@@ -164,6 +178,9 @@ impl Wm {
             }
             Ok(())
         })();
+        // Clear the guard before arranging or dropping: from here on the
+        // window is an ordinary client again and may be tiled on its target.
+        self.dragging = None;
         let _ = self.c.ungrab_pointer(x11rb::CURRENT_TIME);
         if !cancelled {
             if let Some((x, y)) = release_at {
@@ -172,8 +189,14 @@ impl Wm {
                 }
             }
         }
-        self.arrange()?;
-        dragged
+        if keep_going {
+            self.arrange()?;
+            if self.clients.iter().any(|c| c.win == win) && !self.hidden.contains(&win) {
+                self.set_focus(win)?;
+            }
+        }
+        dragged?;
+        Ok(keep_going)
     }
 
     fn drop_to_monitor(
@@ -189,7 +212,15 @@ impl Wm {
         if !self.clients[index].floating {
             return Ok(());
         }
-        let Some(target) = target_monitor(&self.monitors, i32::from(x), i32::from(y)) else {
+        // Dwm picks the monitor from the window rectangle, not the pointer.
+        // That keeps a large window on the screen it visibly belongs to while
+        // the cursor happens to be near an edge.
+        let Some(target) = target_monitor_for_rect(
+            self.clients[index].geom,
+            &self.monitors,
+            i32::from(x),
+            i32::from(y),
+        ) else {
             return Ok(());
         };
         let target_rect = self.monitor_work_area(target);
@@ -199,26 +230,42 @@ impl Wm {
         let target_name = self.monitors[target].name.clone();
         let target_layout = self.monitors[target].layout();
         let tile_on_target = should_tile_drop(started_floating, source, target, target_layout);
-        if let Some(c) = self.clients.get_mut(index) {
+        {
+            let c = &mut self.clients[index];
             c.geom = geometry;
             if target != source {
                 c.monitor = target;
                 c.monitor_name = target_name;
                 c.tag = target_tag;
-                self.focused_monitor = target;
             }
-            if tile_on_target {
-                // A window that was tiled in its source workspace becomes part
-                // of the target workspace's tiling layout, not an arbitrary
-                // floating rectangle left where the pointer happened to stop.
-                c.floating = false;
-            } else {
-                c.floating = true;
-            }
+            // A window that was tiled in its source workspace becomes part of
+            // the target workspace's tiling layout, not an arbitrary floating
+            // rectangle left where the pointer happened to stop.
+            c.floating = !tile_on_target;
         }
         self.focused_monitor = target;
-        self.arrange()?;
-        self.set_focus(win)
+        if target != source {
+            // Client order determines master/stack position in Tile, Left,
+            // Centered, Fibonacci and Scroll. Join the target workspace where
+            // a newly opened window would, instead of keeping an order that
+            // only made sense on the old screen.
+            self.reposition_dropped_client(win, target, target_tag);
+        }
+        Ok(())
+    }
+
+    fn reposition_dropped_client(&mut self, win: Window, target: usize, target_tag: u32) {
+        let Some(index) = self.clients.iter().position(|c| c.win == win) else {
+            return;
+        };
+        let client = self.clients.remove(index);
+        let insert_at = self
+            .clients
+            .iter()
+            .rposition(|c| c.monitor == target && (c.tag == target_tag || c.sticky))
+            .map(|i| i + 1)
+            .unwrap_or(self.clients.len());
+        self.clients.insert(insert_at, client);
     }
 }
 
@@ -232,6 +279,54 @@ fn should_tile_drop(
     target_layout: crate::layout::Layout,
 ) -> bool {
     !started_floating && source != target && target_layout != crate::layout::Layout::Floating
+}
+
+/// Pick the target monitor by the largest overlap with the dragged window.
+///
+/// The pointer decides ties and is the fallback when the window is entirely
+/// outside every screen (for example while it is being dragged through a gap).
+/// This mirrors dwm's `recttomon`, which is why a large window changes screen
+/// when it actually crosses, not when the cursor grazes the edge.
+fn target_monitor_for_rect(rect: Rect, monitors: &[Monitor], x: i32, y: i32) -> Option<usize> {
+    if monitors.is_empty() {
+        return None;
+    }
+    let pointer = target_monitor(monitors, x, y);
+    let mut best: Option<(i64, usize)> = None;
+    for (index, monitor) in monitors.iter().enumerate() {
+        let area = intersection_area(rect, monitor.rect);
+        if area > 0 && best.map_or(true, |(best_area, _)| area > best_area) {
+            best = Some((area, index));
+        }
+    }
+    let Some((best_area, best_index)) = best else {
+        return pointer;
+    };
+    if let Some(pointer_index) = pointer {
+        if intersection_area(rect, monitors[pointer_index].rect) == best_area {
+            return Some(pointer_index);
+        }
+    }
+    Some(best_index)
+}
+
+/// Area shared by two rectangles, in square pixels.
+fn intersection_area(a: Rect, b: Rect) -> i64 {
+    let ax = i64::from(a.x);
+    let ay = i64::from(a.y);
+    let aw = i64::from(a.w);
+    let ah = i64::from(a.h);
+    let bx = i64::from(b.x);
+    let by = i64::from(b.y);
+    let bw = i64::from(b.w);
+    let bh = i64::from(b.h);
+    let width = (ax + aw).min(bx + bw) - ax.max(bx);
+    let height = (ay + ah).min(by + bh) - ay.max(by);
+    if width <= 0 || height <= 0 {
+        0
+    } else {
+        width * height
+    }
 }
 
 /// Pick the monitor under the pointer, then the nearest monitor for a gap.
@@ -516,6 +611,127 @@ mod tests {
         assert_eq!(target_monitor(&monitors, 100, 100), Some(1));
         // A gap between screens falls back to the nearest edge.
         assert_eq!(target_monitor(&monitors, 0, -1), Some(0));
+    }
+
+    fn two_monitors() -> Vec<Monitor> {
+        vec![
+            Monitor::for_test(
+                "left",
+                Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+            Monitor::for_test(
+                "right",
+                Rect {
+                    x: 1920,
+                    y: 0,
+                    w: 1920,
+                    h: 1080,
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn target_monitor_follows_the_window_not_the_pointer() {
+        let monitors = two_monitors();
+        // Most of the window is still on the left, even though the cursor has
+        // crossed the boundary. Dwm keeps it on the screen it visibly occupies.
+        let mostly_left = Rect {
+            x: 900,
+            y: 100,
+            w: 700,
+            h: 500,
+        };
+        assert_eq!(
+            target_monitor_for_rect(mostly_left, &monitors, 2000, 100),
+            Some(0)
+        );
+        // The same is true in the other direction: pointer back on the left,
+        // but most of the window already on the right.
+        let mostly_right = Rect {
+            x: 1600,
+            y: 100,
+            w: 700,
+            h: 500,
+        };
+        assert_eq!(
+            target_monitor_for_rect(mostly_right, &monitors, 100, 100),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn target_monitor_uses_the_pointer_to_break_an_even_split() {
+        let monitors = two_monitors();
+        // Exactly half on each screen. The screen under the cursor is the one
+        // the user is indicating, so it wins the tie.
+        let split = Rect {
+            x: 1000,
+            y: 100,
+            w: 1840,
+            h: 500,
+        };
+        assert_eq!(
+            target_monitor_for_rect(split, &monitors, 2000, 100),
+            Some(1)
+        );
+        assert_eq!(
+            target_monitor_for_rect(split, &monitors, 1000, 100),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn target_monitor_falls_back_to_the_pointer_outside_every_screen() {
+        let monitors = two_monitors();
+        let off_screen = Rect {
+            x: 5000,
+            y: 5000,
+            w: 200,
+            h: 100,
+        };
+        assert_eq!(
+            target_monitor_for_rect(off_screen, &monitors, 10, 10),
+            Some(0)
+        );
+        assert_eq!(
+            target_monitor_for_rect(off_screen, &monitors, 2000, 10),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn intersection_area_handles_negative_coordinates() {
+        let a = Rect {
+            x: -500,
+            y: -500,
+            w: 1000,
+            h: 1000,
+        };
+        let b = Rect {
+            x: -200,
+            y: -200,
+            w: 400,
+            h: 400,
+        };
+        assert_eq!(intersection_area(a, b), 160_000);
+        assert_eq!(
+            intersection_area(
+                a,
+                Rect {
+                    x: 600,
+                    y: 600,
+                    w: 100,
+                    h: 100,
+                }
+            ),
+            0
+        );
     }
 
     #[test]

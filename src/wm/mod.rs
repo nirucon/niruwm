@@ -183,6 +183,10 @@ pub(crate) struct Wm {
     pub(crate) hidden: HashSet<Window>,
     /// Parents that unmapped themselves rather than being hidden by the WM.
     pub(crate) withdrawn: HashSet<Window>,
+    /// The client an active Super+drag owns. While this is set, arrange must
+    /// leave that window's geometry alone: the pointer, not the source
+    /// monitor's tiling area, decides where it is.
+    pub(crate) dragging: Option<Window>,
     /// A close selected a neighbour: arrange must also move the X input focus.
     pub(crate) focus_dirty: bool,
     /// Resolved key bindings. Built once and rebuilt on MappingNotify or
@@ -332,6 +336,7 @@ impl Wm {
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
             withdrawn: HashSet::new(),
+            dragging: None,
             focus_dirty: false,
             bindings: Vec::new(),
             wallpaper,
