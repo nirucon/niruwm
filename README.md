@@ -153,7 +153,7 @@ installations are maintained with `nirux update`.
 
 | Input | Action |
 |---|---|
-| Super+left-drag | Move window; a tiled window becomes floating |
+| Super+left-drag | Move window; a tiled window becomes floating and can cross monitor boundaries |
 | Super+right-drag | Resize from the nearest corner |
 | Click title/bar module | Normal application interaction; no Super required |
 
