@@ -642,6 +642,15 @@ fn super_drag_tiles_a_window_on_the_target_monitor() {
         &start_y.to_string(),
     ]);
     pause();
+    let during_small = c.get_geometry(left).unwrap().reply().unwrap();
+    let outer = |g: &x11rb::protocol::xproto::GetGeometryReply| {
+        (g.width + g.border_width * 2, g.height + g.border_width * 2)
+    };
+    assert_eq!(
+        outer(&during_small),
+        outer(&before),
+        "starting a drag restored the window's pre-tiling size"
+    );
     run(&[
         "mousemove",
         "--sync",
@@ -661,8 +670,8 @@ fn super_drag_tiles_a_window_on_the_target_monitor() {
     wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&extra));
     let after_map = c.get_geometry(left).unwrap().reply().unwrap();
     assert_eq!(
-        (after_map.x, after_map.y, after_map.width, after_map.height),
-        (during.x, during.y, during.width, during.height),
+        (after_map.x, after_map.y, outer(&after_map)),
+        (during.x, during.y, outer(&during)),
         "an unrelated MapRequest moved the window during the drag"
     );
     run(&["mouseup", "1"]);
@@ -698,5 +707,191 @@ fn super_drag_tiles_a_window_on_the_target_monitor() {
 
     message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
     wait(|| _wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_client_that_withdrew_itself_stays_hidden() {
+    let dir = std::env::temp_dir().join(format!("niruwm-withdrawn-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        20,
+        40,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(w).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![w]);
+    wait(|| c.get_geometry(w).unwrap().reply().unwrap().width > 320);
+
+    // The client hides itself, as a tray application does.
+    c.unmap_window(w).unwrap();
+    c.flush().unwrap();
+    thread::sleep(Duration::from_millis(200));
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        c.get_window_attributes(w)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .map_state,
+        MapState::UNMAPPED,
+        "a withdrawn client was remapped by a workspace round trip"
+    );
+
+    c.destroy_window(w).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server and xdotool"]
+fn niructl_tag_and_root_pointer_motion_follow_the_focused_screen() {
+    let dir = std::env::temp_dir().join(format!("niruwm-local-tag-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    let screen_h = c.setup().roots[s].height_in_pixels;
+    let left_w = screen_w / 2;
+    let right_w = screen_w.saturating_sub(left_w);
+    let layouts = dir.join("monitors.txt");
+    std::fs::write(
+        &layouts,
+        format!("LEFT {left_w}x{screen_h}+0+0\nRIGHT {right_w}x{screen_h}+{left_w}+0\n"),
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("NIRU_RANDR_EMU", &layouts)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        let monitors = text(&c, root, "_NIRUWM_MONITORS");
+        monitors.contains("LEFT") && monitors.contains("RIGHT")
+    });
+    let run = |args: &[&str]| {
+        assert!(Command::new("xdotool")
+            .args(args)
+            .status()
+            .unwrap()
+            .success())
+    };
+
+    // Focus the right screen, then ask for local workspace 2.
+    run(&["key", "--clearmodifiers", "super+period"]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![10]);
+    let output = Command::new(env!("CARGO_BIN_EXE_niructl"))
+        .env("XDG_CONFIG_HOME", &dir)
+        .args(["tag", "2"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "niructl tag failed: {output:?}");
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![11]);
+    let monitors = text(&c, root, "_NIRUWM_MONITORS");
+    let active = |monitors: &str, name: &str| {
+        monitors
+            .lines()
+            .find(|line| line.starts_with(name))
+            .and_then(|line| line.split('\t').nth(6))
+            .map(str::to_string)
+    };
+    assert_eq!(active(&monitors, "LEFT"), Some("0".into()));
+    assert_eq!(active(&monitors, "RIGHT"), Some("1".into()));
+
+    // Focus the left screen, then move the pointer to the right screen while
+    // both desktops are empty. No EnterNotify crosses that boundary, so root
+    // motion must update the focused screen before Super+3.
+    run(&["key", "--clearmodifiers", "super+comma"]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    run(&["mousemove", "--sync", "100", "300"]);
+    thread::sleep(Duration::from_millis(100));
+    let right_x = (left_w + 100).to_string();
+    run(&["mousemove", "--sync", &right_x, "300"]);
+    thread::sleep(Duration::from_millis(200));
+    run(&["key", "--clearmodifiers", "super+3"]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![12]);
+    let monitors = text(&c, root, "_NIRUWM_MONITORS");
+    assert_eq!(active(&monitors, "LEFT"), Some("0".into()));
+    assert_eq!(active(&monitors, "RIGHT"), Some("2".into()));
+
+    // `movetotag` is the same local command: the focused window joins local
+    // workspace 4 on the focused (right) screen. Its global desktop is 13.
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        20,
+        40,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(w).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&w));
+    let output = Command::new(env!("CARGO_BIN_EXE_niructl"))
+        .env("XDG_CONFIG_HOME", &dir)
+        .args(["movetotag", "4"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "niructl movetotag failed: {output:?}"
+    );
+    wait(|| values(&c, w, "_NET_WM_DESKTOP") == vec![13]);
+    c.destroy_window(w).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").is_empty());
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }

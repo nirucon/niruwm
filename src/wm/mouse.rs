@@ -85,7 +85,16 @@ impl Wm {
 
         let started_floating = self.clients[index].floating;
         let mut floating = started_floating;
-        let border = self.cfg.border_width;
+        // Use the border the window actually has right now, not the configured
+        // floating border. A smart-tiled single window has border 0; using the
+        // default here shrank it by four pixels the instant a drag began.
+        let border = self
+            .c
+            .get_geometry(win)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|geometry| geometry.border_width)
+            .unwrap_or(self.cfg.border_width);
         let size_hints = self.clients[index].size_hints;
         let mut release_at = None;
         let mut cancelled = false;

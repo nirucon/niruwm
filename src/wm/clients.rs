@@ -679,7 +679,7 @@ impl Wm {
         // Tile each screen separately. A window is visible when its tag is the
         // active tag on its own screen, so two screens can show two different
         // workspaces at once.
-        let mut geometry: Vec<(Window, Rect, u16, bool)> = Vec::new();
+        let mut geometry: Vec<(usize, Window, Rect, u16, bool)> = Vec::new();
         let mut visible: Vec<Window> = Vec::new();
         for mi in 0..self.monitors.len().max(1) {
             let screen = self.monitor_area(mi, area);
@@ -695,15 +695,21 @@ impl Wm {
                 .clients
                 .iter()
                 .filter(|c| {
-                    c.monitor == mi && (c.tag == active || c.sticky) && !c.floating && !c.fullscreen
+                    c.monitor == mi
+                        && (c.tag == active || c.sticky)
+                        && !c.floating
+                        && !c.fullscreen
+                        && !self.withdrawn.contains(&c.win)
                 })
                 .map(|c| c.win)
                 .collect();
             let n = tiled.len();
-            let fullscreen_active = self
-                .clients
-                .iter()
-                .any(|c| c.monitor == mi && c.tag == active && c.fullscreen);
+            let fullscreen_active = self.clients.iter().any(|c| {
+                c.monitor == mi
+                    && c.tag == active
+                    && c.fullscreen
+                    && !self.withdrawn.contains(&c.win)
+            });
             let (scroll_start, scroll_columns) = if layout == Layout::Scroll {
                 let effective = if self
                     .monitors
@@ -756,11 +762,17 @@ impl Wm {
                 )
             };
             let mut idx = 0;
-            for c in &self.clients {
+            for (client_index, c) in self.clients.iter().enumerate() {
                 if c.monitor != mi {
                     continue;
                 }
                 if c.tag != active && !c.sticky {
+                    continue;
+                }
+                // A client that withdrew itself (for example to a tray) is
+                // not a member of this workspace until it maps again. Skip it
+                // entirely so it consumes neither a tile box nor visible state.
+                if self.withdrawn.contains(&c.win) {
                     continue;
                 }
                 let shown = if self.scratchpad == Some(c.win) && !self.scratchpad_shown {
@@ -811,7 +823,18 @@ impl Wm {
                 } else {
                     self.cfg.border_width
                 };
-                geometry.push((c.win, r, b, c.fullscreen));
+                geometry.push((client_index, c.win, r, b, c.fullscreen));
+            }
+        }
+
+        // Keep `Client.geom` in step with what arrange actually configured.
+        // Mouse move/resize starts from this rectangle; a stale pre-tiling
+        // size made the first drag jump back to the window's original size.
+        // Fullscreen geometry is deliberately not written back: toggling it
+        // off must restore the window's previous floating/tiled rectangle.
+        for (index, _, r, _, fullscreen) in &geometry {
+            if !fullscreen {
+                self.clients[*index].geom = *r;
             }
         }
 
@@ -825,6 +848,11 @@ impl Wm {
             if !shown && c.orphan && !recent_tray {
                 dismiss_orphans.push(c.win);
             }
+            if !shown && self.withdrawn.contains(&c.win) {
+                // Already unmapped by its client. Do not record it as hidden
+                // by the WM; a later MapRequest is what brings it back.
+                continue;
+            }
             if !shown && self.hidden.insert(c.win) {
                 self.c.unmap_window(c.win)?;
             } else if shown && self.hidden.remove(&c.win) {
@@ -835,7 +863,7 @@ impl Wm {
             self.unmanage(w);
         }
 
-        for (win, r, b, fullscreen) in geometry {
+        for (_, win, r, b, fullscreen) in geometry {
             self.c.configure_window(
                 win,
                 &ConfigureWindowAux::new()
@@ -891,6 +919,15 @@ impl Wm {
         self.publish_desktop_state()?;
         self.c.flush()?;
         Ok(())
+    }
+
+    /// RandR output name for a monitor index. Every path that moves a client
+    /// must keep this beside the numeric index so hotplug can re-home it.
+    pub(crate) fn monitor_name(&self, index: usize) -> String {
+        self.monitors
+            .get(index)
+            .map(|m| m.name.clone())
+            .unwrap_or_default()
     }
 
     /// The usable area of one monitor, with the bar's height removed only on
@@ -1318,8 +1355,10 @@ impl Wm {
             return Ok(());
         };
         let target = (self.focused_monitor as i32 + delta).rem_euclid(count as i32) as usize;
+        let monitor_name = self.monitor_name(target);
         if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
             c.monitor = target;
+            c.monitor_name = monitor_name;
             c.tag = self.monitors[target].active as u32;
         }
         self.focused_monitor = target;

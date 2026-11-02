@@ -111,6 +111,13 @@ impl Wm {
                     }
                 }
                 Event::ConfigureRequest(e) => self.configure_request(e)?,
+                // Moving between two empty desktops stays inside the root
+                // window, so no EnterNotify arrives at the boundary. Follow
+                // root-level motion as well, otherwise keys keep going to the
+                // screen the pointer left.
+                Event::MotionNotify(e) if e.event == self.root => {
+                    self.focus_screen_at(e.root_x, e.root_y)?;
+                }
                 // Pointer enters empty desktop of a screen: focus that screen.
                 Event::EnterNotify(e) if e.event == self.root => {
                     let (px, py) = self.pointer_position_now();
@@ -282,6 +289,18 @@ impl Wm {
                 }
                 9 => {
                     self.view_global(d[1])?;
+                    None
+                }
+                // Local workspace commands from `niructl tag`/`movetotag`.
+                // Action 1 and 9 stay global for autostart and NIRUBAR, but a
+                // user-facing `tag N` must mean workspace N on the focused
+                // screen, exactly like Super+N.
+                13 => {
+                    self.view_tag(d[1])?;
+                    None
+                }
+                14 => {
+                    self.move_to_tag(d[1], false)?;
                     None
                 }
                 3 => Some(Action::SetLayout(

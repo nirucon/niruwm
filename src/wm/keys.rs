@@ -615,10 +615,12 @@ impl Wm {
                 if self.scratchpad_shown {
                     let tag = self.active_tag();
                     let monitor = self.focused_monitor;
+                    let monitor_name = self.monitor_name(monitor);
                     if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
                         c.floating = false;
                         c.tag = tag;
                         c.monitor = monitor;
+                        c.monitor_name = monitor_name;
                     }
                     self.hidden.insert(w);
                     self.c.unmap_window(w)?;
@@ -639,11 +641,13 @@ impl Wm {
                     };
                     let tag = self.active_tag();
                     let monitor = self.focused_monitor;
+                    let monitor_name = self.monitor_name(monitor);
                     if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
                         c.floating = true;
                         c.geom = geom;
                         c.tag = tag;
                         c.monitor = monitor;
+                        c.monitor_name = monitor_name;
                     }
                     self.hidden.remove(&w);
                     self.c.map_window(w)?;

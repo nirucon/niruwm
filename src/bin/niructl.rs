@@ -6928,8 +6928,11 @@ fn run() -> Result<()> {
     }
 
     let (action, value) = match cmd.as_str() {
-        "tag" => (1, parse_tag(&args)?),
-        "movetotag" => (2, parse_tag(&args)?),
+        // Local on the focused screen, matching Super+N. Actions 1 and 2 are
+        // the global-desktop protocol used by autostart, `_NET_WM_DESKTOP`
+        // and NIRUBAR, so they keep their existing meaning.
+        "tag" => (13, parse_tag(&args)?),
+        "movetotag" => (14, parse_tag(&args)?),
         // `niructl layout show|save` is handled before the display is opened;
         // this is the one-word `niructl layout NAME` form that sets a layout.
         "layout" => (
