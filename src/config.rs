@@ -840,9 +840,13 @@ impl Config {
             return Err("monitors.workspaces must be between 1 and 32".into());
         }
         for p in &self.monitors.profiles {
-            if p.name.is_empty() || p.workspaces.is_empty() {
-                return Err("monitors.profiles entries need a name and workspaces".into());
+            if p.name.is_empty() {
+                return Err("monitors.profiles entries need a name".into());
             }
+            // An incomplete profile with no workspace list is treated as a
+            // per-output layout/primary override with the common workspace
+            // count. A stale or interrupted layout save must not prevent the
+            // whole graphical session from starting.
         }
         if let Some(bad) = self
             .monitors

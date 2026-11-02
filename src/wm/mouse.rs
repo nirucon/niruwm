@@ -76,7 +76,8 @@ impl Wm {
             return Ok(());
         }
 
-        let mut floating = self.clients[index].floating;
+        let started_floating = self.clients[index].floating;
+        let mut floating = started_floating;
         let border = self.cfg.border_width;
         let size_hints = self.clients[index].size_hints;
         let mut release_at = None;
@@ -167,7 +168,7 @@ impl Wm {
         if !cancelled {
             if let Some((x, y)) = release_at {
                 if !resize {
-                    self.drop_to_monitor(win, x, y)?;
+                    self.drop_to_monitor(win, x, y, started_floating)?;
                 }
             }
         }
@@ -175,7 +176,13 @@ impl Wm {
         dragged
     }
 
-    fn drop_to_monitor(&mut self, win: Window, x: i16, y: i16) -> Result<()> {
+    fn drop_to_monitor(
+        &mut self,
+        win: Window,
+        x: i16,
+        y: i16,
+        started_floating: bool,
+    ) -> Result<()> {
         let Some(index) = self.clients.iter().position(|c| c.win == win) else {
             return Ok(());
         };
@@ -190,6 +197,8 @@ impl Wm {
         let source = self.clients[index].monitor;
         let target_tag = self.monitors[target].active as u32;
         let target_name = self.monitors[target].name.clone();
+        let target_layout = self.monitors[target].layout();
+        let tile_on_target = should_tile_drop(started_floating, source, target, target_layout);
         if let Some(c) = self.clients.get_mut(index) {
             c.geom = geometry;
             if target != source {
@@ -198,10 +207,31 @@ impl Wm {
                 c.tag = target_tag;
                 self.focused_monitor = target;
             }
+            if tile_on_target {
+                // A window that was tiled in its source workspace becomes part
+                // of the target workspace's tiling layout, not an arbitrary
+                // floating rectangle left where the pointer happened to stop.
+                c.floating = false;
+            } else {
+                c.floating = true;
+            }
         }
+        self.focused_monitor = target;
         self.arrange()?;
         self.set_focus(win)
     }
+}
+
+/// A cross-monitor drop from a tiled source is re-tiled when the target
+/// workspace's active layout is a tiling layout. Float preservation is
+/// deliberate for windows that were already floating and for `Floating`.
+fn should_tile_drop(
+    started_floating: bool,
+    source: usize,
+    target: usize,
+    target_layout: crate::layout::Layout,
+) -> bool {
+    !started_floating && source != target && target_layout != crate::layout::Layout::Floating
 }
 
 /// Pick the monitor under the pointer, then the nearest monitor for a gap.
@@ -486,6 +516,16 @@ mod tests {
         assert_eq!(target_monitor(&monitors, 100, 100), Some(1));
         // A gap between screens falls back to the nearest edge.
         assert_eq!(target_monitor(&monitors, 0, -1), Some(0));
+    }
+
+    #[test]
+    fn cross_monitor_tiled_drop_uses_the_target_layout() {
+        use crate::layout::Layout;
+        assert!(should_tile_drop(false, 0, 1, Layout::Tile));
+        assert!(should_tile_drop(false, 0, 1, Layout::Monocle));
+        assert!(!should_tile_drop(false, 0, 0, Layout::Tile));
+        assert!(!should_tile_drop(true, 0, 1, Layout::Tile));
+        assert!(!should_tile_drop(false, 0, 1, Layout::Floating));
     }
 
     #[test]
