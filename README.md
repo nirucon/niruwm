@@ -401,6 +401,12 @@ present; NIRUX uses it to update terminal colours.
 
 ## NIRUX suite
 
+### Agent maintenance assignment
+
+[One-shot: window lifecycle, focus and bar reliability](docs/agent-window-lifecycle-oneshot.md)
+defines the Steam/RetroArch flicker and workspace-click investigation, regression
+tests, root-cause fix and coordinated NIRUWM/NIRUBAR/NIRUX release acceptance.
+
 [NIRUX](https://github.com/nirucon/nirux) · [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot)
 
 ## Development
