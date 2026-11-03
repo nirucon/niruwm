@@ -23,7 +23,7 @@ use x11rb::{
     protocol::{
         randr::{ConnectionExt as _, NotifyMask},
         xproto::*,
-        Event,
+        ErrorKind, Event,
     },
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
@@ -53,6 +53,10 @@ pub(crate) struct Client {
     /// The transient parent, when the client supplied one. Scroll uses it to
     /// reveal the parent column behind a dialog.
     parent: Option<Window>,
+    /// Whether a newly mapped window may take focus. Utilities, notification
+    /// popups and menus are mapped and stacked, but must not steal focus from
+    /// the window the user is working in (Steam opens many of these helpers).
+    focus_on_map: bool,
     /// True when the parent was not a managed, viewable window. Such tray
     /// popups are one-shot: they must not reappear when a workspace is revisited.
     orphan: bool,
@@ -168,6 +172,14 @@ pub(crate) struct Wm {
     pub(crate) screen_h: u16,
     pub(crate) atoms: HashMap<&'static str, Atom>,
     pub(crate) clients: Vec<Client>,
+    /// Managed panels (NIRUBAR). They are not tiled clients, but they must be
+    /// restacked above normal/floating clients after fullscreen churn.
+    pub(crate) docks: HashSet<Window>,
+    /// Recently removed XIDs. A request sent just before DestroyNotify can
+    /// still produce a BadWindow error after cleanup; those are expected and
+    /// must not be logged or mistaken for a new failure. Bounded so a long
+    /// session cannot grow this without limit.
+    pub(crate) recently_gone: VecDeque<Window>,
     pub(crate) focus: Option<Window>,
     pub(crate) cfg: Config,
     pub(crate) theme: Theme,
@@ -283,9 +295,19 @@ impl Wm {
             "_NET_WM_DESKTOP",
             "_NET_WM_WINDOW_TYPE",
             "_NET_WM_WINDOW_TYPE_DOCK",
+            "_NET_WM_WINDOW_TYPE_DESKTOP",
             "_NET_WM_WINDOW_TYPE_DIALOG",
+            "_NET_WM_WINDOW_TYPE_NORMAL",
             "_NET_WM_WINDOW_TYPE_UTILITY",
             "_NET_WM_WINDOW_TYPE_SPLASH",
+            "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+            "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+            "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+            "_NET_WM_WINDOW_TYPE_TOOLTIP",
+            "_NET_WM_WINDOW_TYPE_COMBO",
+            "_NET_WM_WINDOW_TYPE_DND",
+            "_NET_WM_WINDOW_TYPE_TOOLBAR",
+            "_NET_WM_WINDOW_TYPE_MENU",
             "_NET_WM_STATE",
             "_NET_WM_STATE_FULLSCREEN",
             "_NET_WM_STATE_HIDDEN",
@@ -326,6 +348,8 @@ impl Wm {
             screen_h,
             atoms,
             clients: vec![],
+            docks: HashSet::new(),
+            recently_gone: VecDeque::new(),
             focus: None,
             cfg,
             theme,

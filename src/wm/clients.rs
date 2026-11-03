@@ -88,12 +88,28 @@ impl Wm {
         if a.override_redirect {
             return Ok(());
         }
+        // An input-only helper has no visible surface and cannot be tiled or
+        // focused. Mapping it and walking away is the correct ICCCM handling.
+        if a.class == WindowClass::INPUT_ONLY {
+            self.c.map_window(w)?;
+            self.c.flush()?;
+            return Ok(());
+        }
 
         let types = self.window_types(w);
+        // A desktop window belongs below everything and never takes focus.
+        if types.contains(&self.atom("_NET_WM_WINDOW_TYPE_DESKTOP")) {
+            self.c.map_window(w)?;
+            self.c
+                .configure_window(w, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW))?;
+            self.c.flush()?;
+            return Ok(());
+        }
         let is_dock = types.contains(&self.atom("_NET_WM_WINDOW_TYPE_DOCK"));
         if is_dock {
             // Panels are mapped as found and never tiled. NIRUBAR reserves
             // space via its strut, which `work_area()` reads.
+            self.docks.insert(w);
             self.c.map_window(w)?;
             self.c.flush()?;
             return self.arrange();
@@ -125,17 +141,44 @@ impl Wm {
             return Ok(());
         }
 
-        // Dialogs, utilities, splash screens and transients float above the
-        // tile layout, like dwm's `isfloating` rules.
+        // Dialogs, utilities, splash screens, notifications and menu/popup
+        // helpers float above the tile layout. The popup family is normally
+        // override-redirect, but Steam and some toolkits create managed
+        // variants; they still must not join the tiling layout.
+        let floating_types = [
+            "_NET_WM_WINDOW_TYPE_DIALOG",
+            "_NET_WM_WINDOW_TYPE_UTILITY",
+            "_NET_WM_WINDOW_TYPE_SPLASH",
+            "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+            "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+            "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+            "_NET_WM_WINDOW_TYPE_TOOLTIP",
+            "_NET_WM_WINDOW_TYPE_COMBO",
+            "_NET_WM_WINDOW_TYPE_DND",
+            "_NET_WM_WINDOW_TYPE_TOOLBAR",
+            "_NET_WM_WINDOW_TYPE_MENU",
+        ];
         let dialog_floating = transient.is_some()
-            || types.iter().any(|t| {
-                [
-                    self.atom("_NET_WM_WINDOW_TYPE_DIALOG"),
-                    self.atom("_NET_WM_WINDOW_TYPE_UTILITY"),
-                    self.atom("_NET_WM_WINDOW_TYPE_SPLASH"),
-                ]
-                .contains(t)
-            });
+            || types
+                .iter()
+                .any(|t| floating_types.iter().any(|name| self.atom(name) == *t));
+        // Only normal windows and real dialogs take focus when they map.
+        // Palettes, notifications, popups and toolbars wait for a click.
+        let no_focus_types = [
+            "_NET_WM_WINDOW_TYPE_UTILITY",
+            "_NET_WM_WINDOW_TYPE_SPLASH",
+            "_NET_WM_WINDOW_TYPE_NOTIFICATION",
+            "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+            "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+            "_NET_WM_WINDOW_TYPE_TOOLTIP",
+            "_NET_WM_WINDOW_TYPE_COMBO",
+            "_NET_WM_WINDOW_TYPE_DND",
+            "_NET_WM_WINDOW_TYPE_TOOLBAR",
+            "_NET_WM_WINDOW_TYPE_MENU",
+        ];
+        let focus_on_map = !types
+            .iter()
+            .any(|t| no_focus_types.iter().any(|name| self.atom(name) == *t));
 
         // Follow the client's own desktop when it asks for one (session
         // restore, `wmctrl -i -t`, applications started with a tag override).
@@ -272,6 +315,7 @@ impl Wm {
             take_focus,
             pid,
             parent: transient,
+            focus_on_map,
             orphan,
             sticky,
             size_hints,
@@ -366,7 +410,7 @@ impl Wm {
         if suite_settings {
             self.focused_monitor = monitor;
         }
-        if restored.is_none() && tag == self.active_tag() {
+        if restored.is_none() && focus_on_map && tag == self.active_tag() {
             self.set_focus(w)?;
         }
         self.arrange()?;
@@ -391,6 +435,14 @@ impl Wm {
     pub(crate) fn unmanage(&mut self, w: Window) {
         self.withdrawn.remove(&w);
         self.hidden.remove(&w);
+        self.docks.remove(&w);
+        self.remember_gone(w);
+        if self.dragging == Some(w) {
+            self.dragging = None;
+        }
+        if self.restore_focus.map(|(window, _, _)| window) == Some(w) {
+            self.restore_focus = None;
+        }
         if self.scratchpad == Some(w) {
             self.scratchpad = None;
             self.scratchpad_shown = false;
@@ -436,6 +488,70 @@ impl Wm {
         if self.focus == Some(w) {
             self.focus = neighbor;
             self.focus_dirty = neighbor.is_some();
+        }
+    }
+
+    /// Remove a managed window after the X server has already destroyed it.
+    ///
+    /// DestroyNotify normally handles this. Errors are the backstop for the
+    /// race where a request was already in flight: they identify the dead XID,
+    /// stop the WM from retrying the same window on every arrange, and let the
+    /// surviving clients keep their state. Unknown errors are left to the
+    /// caller's log instead of being mistaken for client XIDs.
+    pub(crate) fn repair_x11_error(&mut self, error: &x11rb::x11_utils::X11Error) -> bool {
+        if error.error_kind != ErrorKind::Window {
+            return false;
+        }
+        if self.recently_gone.contains(&error.bad_value) {
+            return true;
+        }
+        if !matches!(
+            error.request_name,
+            Some(
+                "ConfigureWindow"
+                    | "ChangeProperty"
+                    | "SetInputFocus"
+                    | "ChangeWindowAttributes"
+                    | "SendEvent"
+                    | "MapWindow"
+                    | "UnmapWindow"
+            )
+        ) {
+            return false;
+        }
+        let window = error.bad_value;
+        let tracked = self.clients.iter().any(|client| client.win == window)
+            || self.docks.contains(&window)
+            || self.hidden.contains(&window)
+            || self.withdrawn.contains(&window)
+            || self.scratchpad == Some(window)
+            || self.focus == Some(window)
+            || self.dragging == Some(window);
+        if !tracked {
+            return false;
+        }
+        self.unmanage(window);
+        if self.focus == Some(window) {
+            self.focus = None;
+            self.focus_dirty = true;
+        }
+        eprintln!(
+            "niruwm: dropped stale window {window:#x} after {}",
+            error.request_name.unwrap_or("X request")
+        );
+        if let Err(e) = self.arrange() {
+            eprintln!("niruwm: could not repair after stale window: {e}");
+        }
+        true
+    }
+
+    fn remember_gone(&mut self, w: Window) {
+        if self.recently_gone.contains(&w) {
+            return;
+        }
+        self.recently_gone.push_back(w);
+        while self.recently_gone.len() > 128 {
+            self.recently_gone.pop_front();
         }
     }
 
@@ -890,15 +1006,50 @@ impl Wm {
             }
         }
 
+        // Panels belong above ordinary and floating clients. A visible
+        // fullscreen client is the only exception; once it leaves fullscreen
+        // the next arrange raises the panel again. Without this, a Steam or
+        // RetroArch window that was raised over the bar can keep intercepting
+        // workspace clicks after it returns to a normal rectangle.
+        let fullscreen_visible = self
+            .clients
+            .iter()
+            .any(|c| visible.contains(&c.win) && c.fullscreen);
+        if !fullscreen_visible {
+            let docks: Vec<Window> = self.docks.iter().copied().collect();
+            for dock in docks {
+                self.c.configure_window(
+                    dock,
+                    &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+                )?;
+            }
+        }
+
         // Focus stays on a visible window of the focused screen.
         let focus_ok = self.focus.map(|w| visible.contains(&w)).unwrap_or(false);
         if !focus_ok {
             let next = self
                 .clients
                 .iter()
-                .filter(|c| visible.contains(&c.win) && c.monitor == self.focused_monitor)
+                .filter(|c| {
+                    visible.contains(&c.win) && c.monitor == self.focused_monitor && c.focus_on_map
+                })
                 .map(|c| c.win)
                 .next()
+                .or_else(|| {
+                    self.clients
+                        .iter()
+                        .filter(|c| visible.contains(&c.win) && c.monitor == self.focused_monitor)
+                        .map(|c| c.win)
+                        .next()
+                })
+                .or_else(|| {
+                    self.clients
+                        .iter()
+                        .rev()
+                        .find(|c| visible.contains(&c.win) && c.focus_on_map)
+                        .map(|c| c.win)
+                })
                 .or_else(|| {
                     self.clients
                         .iter()

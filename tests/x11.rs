@@ -895,3 +895,299 @@ fn niructl_tag_and_root_pointer_motion_follow_the_focused_screen() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn docks_stay_above_normal_clients_after_fullscreen() {
+    let dir = std::env::temp_dir().join(format!("niruwm-dock-stack-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+
+    let dock = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        dock,
+        root,
+        0,
+        0,
+        640,
+        28,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        dock,
+        atom(&c, "_NET_WM_WINDOW_TYPE"),
+        AtomEnum::ATOM,
+        &[atom(&c, "_NET_WM_WINDOW_TYPE_DOCK")],
+    )
+    .unwrap();
+    c.map_window(dock).unwrap();
+    c.flush().unwrap();
+    wait(|| {
+        c.get_window_attributes(dock)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|attrs| attrs.map_state == MapState::VIEWABLE)
+    });
+
+    let client = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        client,
+        root,
+        20,
+        40,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(client).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![client]);
+
+    let stacking = || {
+        c.query_tree(root)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .children
+            .iter()
+            .copied()
+            .position(|w| w == dock)
+            .zip(
+                c.query_tree(root)
+                    .unwrap()
+                    .reply()
+                    .unwrap()
+                    .children
+                    .iter()
+                    .copied()
+                    .position(|w| w == client),
+            )
+            .unwrap()
+    };
+
+    // A fullscreen client may cover the panel.
+    let full = atom(&c, "_NET_WM_STATE_FULLSCREEN");
+    message(&c, root, client, "_NET_WM_STATE", [1, full, 0, 0, 0]);
+    wait(|| {
+        let g = c.get_geometry(client).unwrap().reply().unwrap();
+        g.y == 0 && g.width == c.setup().roots[s].width_in_pixels
+    });
+    let (dock_at, client_at) = stacking();
+    assert!(
+        client_at > dock_at,
+        "fullscreen client was not above the dock"
+    );
+
+    // Leaving fullscreen must put the panel back above ordinary clients.
+    message(&c, root, client, "_NET_WM_STATE", [0, full, 0, 0, 0]);
+    wait(|| !values(&c, client, "_NET_WM_STATE").contains(&full));
+    wait(|| {
+        let (dock_at, client_at) = stacking();
+        dock_at > client_at
+    });
+
+    c.destroy_window(client).unwrap();
+    c.destroy_window(dock).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn utility_and_popup_windows_do_not_steal_focus() {
+    let dir = std::env::temp_dir().join(format!("niruwm-focus-steal-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+
+    let create = |class: &str, kind: &str| {
+        let w = c.generate_id().unwrap();
+        c.create_window(
+            0,
+            w,
+            root,
+            40,
+            60,
+            320,
+            240,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            0,
+            &CreateWindowAux::new(),
+        )
+        .unwrap();
+        c.change_property8(
+            PropMode::REPLACE,
+            w,
+            AtomEnum::WM_CLASS,
+            AtomEnum::STRING,
+            format!("{class}\0{class}\0").as_bytes(),
+        )
+        .unwrap();
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom(&c, "_NET_WM_WINDOW_TYPE"),
+            AtomEnum::ATOM,
+            &[atom(&c, kind)],
+        )
+        .unwrap();
+        c.map_window(w).unwrap();
+        c.flush().unwrap();
+        w
+    };
+
+    let normal = create("Steam", "_NET_WM_WINDOW_TYPE_NORMAL");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![normal]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![normal]);
+
+    let utility = create("Steam", "_NET_WM_WINDOW_TYPE_UTILITY");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        values(&c, root, "_NET_ACTIVE_WINDOW"),
+        vec![normal],
+        "a utility helper stole focus on map"
+    );
+
+    let popup = create("Steam", "_NET_WM_WINDOW_TYPE_POPUP_MENU");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 3);
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        values(&c, root, "_NET_ACTIVE_WINDOW"),
+        vec![normal],
+        "a managed popup stole focus on map"
+    );
+
+    c.destroy_window(popup).unwrap();
+    c.destroy_window(utility).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![normal]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![normal]);
+    c.destroy_window(normal).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn input_only_helpers_are_not_managed_or_focused() {
+    let dir = std::env::temp_dir().join(format!("niruwm-input-only-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+
+    let normal = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        normal,
+        root,
+        40,
+        60,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(normal).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![normal]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![normal]);
+
+    let helper = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        helper,
+        root,
+        0,
+        0,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_ONLY,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(helper).unwrap();
+    c.flush().unwrap();
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        values(&c, root, "_NET_CLIENT_LIST"),
+        vec![normal],
+        "an input-only helper entered the client list"
+    );
+    assert_eq!(
+        values(&c, root, "_NET_ACTIVE_WINDOW"),
+        vec![normal],
+        "an input-only helper took focus"
+    );
+
+    c.destroy_window(helper).unwrap();
+    c.destroy_window(normal).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

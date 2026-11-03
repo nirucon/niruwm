@@ -96,14 +96,23 @@ impl Wm {
                         // itself (a tray hide or a minimized main window). Record
                         // that fact; a stale notification from our own hide has
                         // already been remapped and is still VIEWABLE.
-                        if self
+                        match self
                             .c
-                            .get_window_attributes(e.window)?
-                            .reply()
-                            .map(|attrs| attrs.map_state == MapState::UNMAPPED)
-                            .unwrap_or(false)
+                            .get_window_attributes(e.window)
+                            .ok()
+                            .and_then(|cookie| cookie.reply().ok())
                         {
-                            self.withdrawn.insert(e.window);
+                            Some(attributes) if attributes.map_state == MapState::UNMAPPED => {
+                                self.withdrawn.insert(e.window);
+                            }
+                            Some(_) => {}
+                            None => {
+                                // Destroyed between the UnmapNotify and the
+                                // reply. Remove it now; DestroyNotify may
+                                // already have been consumed by the race.
+                                self.unmanage(e.window);
+                                self.arrange()?;
+                            }
                         }
                     } else {
                         self.unmanage(e.window);
@@ -169,7 +178,10 @@ impl Wm {
                         return Ok(false);
                     }
                 }
-                Event::Error(e) => eprintln!("niruwm: X11 error: {e:?}"),
+                Event::Error(e) => match self.repair_x11_error(&e) {
+                    true => {}
+                    false => eprintln!("niruwm: X11 error: {e:?}"),
+                },
                 _ => (),
             }
             self.c.flush()?;
