@@ -1161,7 +1161,21 @@ impl Wm {
         )?;
         self.publish_root32("_NET_CURRENT_DESKTOP", AtomEnum::CARDINAL.into(), &[active])?;
         let list: Vec<Window> = self.clients.iter().map(|c| c.win).collect();
-        self.publish_root32("_NET_CLIENT_LIST", AtomEnum::WINDOW.into(), &list)?;
+        let placements: Vec<(Window, u32)> = self
+            .clients
+            .iter()
+            .map(|client| {
+                (
+                    client.win,
+                    crate::monitor::offset(&self.monitors, client.monitor) + client.tag,
+                )
+            })
+            .collect();
+        if self.published_client_desktops.as_ref() != Some(&placements) {
+            // Notify workspace bars even if only a window's desktop changed.
+            self.published_root.remove("_NET_CLIENT_LIST");
+            self.published_client_desktops = Some(placements);
+        }
         let stacking: Vec<Window> = self
             .c
             .query_tree(self.root)?
@@ -1200,6 +1214,9 @@ impl Wm {
                 &[global],
             )?;
         }
+        // Send the root notification after the client properties so a bar
+        // observing it sees the updated desktop assignments immediately.
+        self.publish_root32("_NET_CLIENT_LIST", AtomEnum::WINDOW.into(), &list)?;
         // The monitor layout contract lets one bar per output describe its own
         // workspace range without guessing from the focused monitor.
         //

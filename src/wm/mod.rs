@@ -174,6 +174,9 @@ pub(crate) struct Wm {
     /// Last root desktop properties published by this WM instance. Avoid
     /// waking every panel on each arrange when a value has not changed.
     pub(crate) published_root: HashMap<&'static str, Vec<u8>>,
+    /// Workspace bars also use the client list notification to notice a
+    /// change of desktop assignment when the set of XIDs itself is unchanged.
+    pub(crate) published_client_desktops: Option<Vec<(Window, u32)>>,
     pub(crate) clients: Vec<Client>,
     /// Managed panels (NIRUBAR). They are not tiled clients, but they must be
     /// restacked above normal/floating clients after fullscreen churn.
@@ -351,6 +354,7 @@ impl Wm {
             screen_h,
             atoms,
             published_root: HashMap::new(),
+            published_client_desktops: None,
             clients: vec![],
             docks: HashSet::new(),
             recently_gone: VecDeque::new(),

@@ -113,6 +113,40 @@ fn unchanged_desktop_properties_do_not_emit_repeated_notifications() {
     }
     message(&c, root, root, "_NIRUWM_COMMAND", [1, 1, 0, 0, 0]);
     wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    let window = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        window,
+        root,
+        20,
+        20,
+        200,
+        150,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.map_window(window).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![window]);
+    while c.poll_for_event().unwrap().is_some() {}
+    let list_atom = atom(&c, "_NET_CLIENT_LIST");
+    message(&c, root, window, "_NET_WM_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, window, "_NET_WM_DESKTOP") == vec![0]);
+    let mut saw_list_notification = false;
+    wait(|| {
+        while let Some(event) = c.poll_for_event().unwrap() {
+            if matches!(event, x11rb::protocol::Event::PropertyNotify(e) if e.window == root && e.atom == list_atom)
+            {
+                saw_list_notification = true;
+            }
+        }
+        saw_list_notification
+    });
+    c.destroy_window(window).unwrap();
+    c.flush().unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
 #[test]
