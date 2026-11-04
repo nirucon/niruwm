@@ -758,10 +758,11 @@ fn prepare_output(
             ),
         };
         let status = std::process::Command::new("timeout")
-            .args(["20", "ffmpeg", "-loglevel", "error", "-y", "-i"])
+            .args(["20", "ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i"])
             .arg(source)
             .args(["-vf", &filter, "-frames:v", "1"])
             .arg(&path)
+            .stdin(std::process::Stdio::null())
             .status()
             .map_err(|error| format!("cannot start ffmpeg: {error}"))?;
         if !status.success() {
@@ -807,6 +808,7 @@ fn prepare_output(
         let status = std::process::Command::new("timeout")
             .args(["10", "convert"])
             .args(&args)
+            .stdin(std::process::Stdio::null())
             .status()
             .map_err(|error| format!("cannot start convert: {error}"))?;
         if !status.success() {
@@ -831,6 +833,7 @@ fn set_prepared(files: &[PathBuf]) -> Result<()> {
         command.arg(file);
     }
     let status = command
+        .stdin(std::process::Stdio::null())
         .status()
         .map_err(|error| format!("cannot start feh: {error}"))?;
     if !status.success() {
