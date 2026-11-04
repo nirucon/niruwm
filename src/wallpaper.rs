@@ -740,53 +740,81 @@ fn prepare_output(
     let Some(source) = source else {
         return Ok(solid_image(colour));
     };
-    if !which("convert") {
-        return Err("ImageMagick convert is required for per-output wallpapers".into());
-    }
-    let width = out.width.to_string();
-    let height = out.height.to_string();
-    let geometry = format!("{width}x{height}");
     let background = colour.trim_start_matches('#');
-    let mut args: Vec<String> = vec![source.display().to_string()];
-    match scale {
-        "fill" => args.extend([
-            "-resize".into(),
-            format!("{geometry}^"),
-            "-gravity".into(),
-            "center".into(),
-            "-extent".into(),
-            geometry.clone(),
-        ]),
-        "fit" => args.extend([
-            "-resize".into(),
-            geometry.clone(),
-            "-gravity".into(),
-            "center".into(),
-            "-background".into(),
-            format!("#{background}"),
-            "-extent".into(),
-            geometry.clone(),
-        ]),
-        "stretch" => args.extend(["-resize".into(), format!("{geometry}!")]),
-        _ => args.extend([
-            "-gravity".into(),
-            "center".into(),
-            "-background".into(),
-            format!("#{background}"),
-            "-extent".into(),
-            geometry.clone(),
-        ]),
+    // ffmpeg is already a NIRUX runtime dependency. Use it instead of adding a
+    // second image tool: compose each monitor to an exact output-sized PNG.
+    if which("ffmpeg") {
+        let (w, h) = (out.width, out.height);
+        let filter = match scale {
+            "fill" => format!(
+                "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
+            ),
+            "fit" => format!(
+                "scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0x{background}"
+            ),
+            "stretch" => format!("scale={w}:{h}"),
+            _ => format!(
+                "scale=w='min(iw,{w})':h='min(ih,{h})',pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0x{background}"
+            ),
+        };
+        let status = std::process::Command::new("timeout")
+            .args(["20", "ffmpeg", "-loglevel", "error", "-y", "-i"])
+            .arg(source)
+            .args(["-vf", &filter, "-frames:v", "1"])
+            .arg(&path)
+            .status()
+            .map_err(|error| format!("cannot start ffmpeg: {error}"))?;
+        if !status.success() {
+            return Err(format!("ffmpeg rejected {} with {status}", source.display()).into());
+        }
+        return Ok(path);
     }
-    args.push(path.display().to_string());
-    let status = std::process::Command::new("timeout")
-        .args(["10", "convert"])
-        .args(&args)
-        .status()
-        .map_err(|error| format!("cannot start convert: {error}"))?;
-    if !status.success() {
-        return Err(format!("convert rejected {} with {status}", source.display()).into());
+    if which("convert") {
+        let width = out.width.to_string();
+        let height = out.height.to_string();
+        let geometry = format!("{width}x{height}");
+        let mut args: Vec<String> = vec![source.display().to_string()];
+        match scale {
+            "fill" => args.extend([
+                "-resize".into(),
+                format!("{geometry}^"),
+                "-gravity".into(),
+                "center".into(),
+                "-extent".into(),
+                geometry.clone(),
+            ]),
+            "fit" => args.extend([
+                "-resize".into(),
+                geometry.clone(),
+                "-gravity".into(),
+                "center".into(),
+                "-background".into(),
+                format!("#{background}"),
+                "-extent".into(),
+                geometry.clone(),
+            ]),
+            "stretch" => args.extend(["-resize".into(), format!("{geometry}!")]),
+            _ => args.extend([
+                "-gravity".into(),
+                "center".into(),
+                "-background".into(),
+                format!("#{background}"),
+                "-extent".into(),
+                geometry.clone(),
+            ]),
+        }
+        args.push(path.display().to_string());
+        let status = std::process::Command::new("timeout")
+            .args(["10", "convert"])
+            .args(&args)
+            .status()
+            .map_err(|error| format!("cannot start convert: {error}"))?;
+        if !status.success() {
+            return Err(format!("convert rejected {} with {status}", source.display()).into());
+        }
+        return Ok(path);
     }
-    Ok(path)
+    Err("ffmpeg or ImageMagick convert is required for per-output wallpapers".into())
 }
 
 /// Set one prepared file per Xinerama/RandR monitor in one bounded operation.
