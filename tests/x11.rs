@@ -559,6 +559,9 @@ fn bar_bottom_hides_and_returns_without_breaking_work_area() {
     );
     assert!(run(&["bar", "hide"]).status.success());
     wait(|| text(&c, root, "_NIRUWM_BAR_STATE") == "hidden");
+    // Bar state is published before the asynchronous geometry requests have
+    // necessarily reached this independent X connection.
+    wait(|| c.get_geometry(w).unwrap().reply().unwrap().height > bottom.height);
     let hidden = c.get_geometry(w).unwrap().reply().unwrap();
     assert!(
         hidden.height > bottom.height,
@@ -566,6 +569,7 @@ fn bar_bottom_hides_and_returns_without_breaking_work_area() {
     );
     assert!(run(&["bar", "show"]).status.success());
     wait(|| text(&c, root, "_NIRUWM_BAR_STATE") == "bottom");
+    wait(|| c.get_geometry(w).unwrap().reply().unwrap().height < hidden.height);
     let shown = c.get_geometry(w).unwrap().reply().unwrap();
     assert!(
         shown.height < hidden.height,
@@ -573,6 +577,7 @@ fn bar_bottom_hides_and_returns_without_breaking_work_area() {
     );
     assert!(run(&["bar", "top"]).status.success());
     wait(|| text(&c, root, "_NIRUWM_BAR_STATE") == "top");
+    wait(|| c.get_geometry(w).unwrap().reply().unwrap().y > bottom.y);
     let top = c.get_geometry(w).unwrap().reply().unwrap();
     assert!(top.y > bottom.y, "top bar did not move the work area down");
 }
