@@ -833,8 +833,27 @@ impl Wm {
 
     /// Stop every bar and wait for it, so none survives a reload or logout.
     pub(crate) fn stop_bars(&mut self) {
+        // Give the bar a chance to release its X resources and terminate its
+        // owned status followers. SIGKILL alone leaves those children orphaned.
+        for bar in &self.bars {
+            unsafe {
+                libc::kill(bar.id() as i32, libc::SIGTERM);
+            }
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         for mut b in self.bars.drain(..) {
-            let _ = b.kill();
+            loop {
+                match b.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Ok(None) => {
+                        let _ = b.kill();
+                        break;
+                    }
+                }
+            }
             let _ = b.wait();
         }
     }

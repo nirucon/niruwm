@@ -63,6 +63,46 @@ fn message(c: &RustConnection, root: Window, w: Window, name: &str, data: [u32; 
 
 #[test]
 #[ignore = "requires isolated X server"]
+fn hiding_bar_sends_term_before_forced_cleanup() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("niruwm-bar-term-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = true\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let bar = dir.join("bin/nirubar");
+    std::fs::write(&bar, "#!/bin/sh\ntrap 'printf term > \"$BAR_TERM_TEST\"; exit 0' TERM\nprintf started > \"$BAR_START_TEST\"\nwhile :; do sleep 0.05; done\n").unwrap();
+    std::fs::set_permissions(&bar, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let started = dir.join("started");
+    let stopped = dir.join("stopped");
+    let _wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", dir.join("bin").display()),
+            )
+            .env("BAR_START_TEST", &started)
+            .env("BAR_TERM_TEST", &stopped)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, screen) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[screen].root;
+    wait(|| started.is_file());
+    message(&c, root, root, "_NIRUWM_COMMAND", [12, 3, 0, 0, 0]);
+    wait(|| stopped.is_file());
+    assert_eq!(std::fs::read_to_string(&stopped).unwrap(), "term");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
 fn unchanged_desktop_properties_do_not_emit_repeated_notifications() {
     let dir = std::env::temp_dir().join(format!("niruwm-property-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -84,7 +124,18 @@ fn unchanged_desktop_properties_do_not_emit_repeated_notifications() {
     .unwrap()
     .check()
     .unwrap();
-    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    wait(|| {
+        values(&c, root, "_NET_SUPPORTING_WM_CHECK")
+            .first()
+            .copied()
+            .is_some_and(|window| {
+                c.get_window_attributes(window)
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .is_some()
+                    && values(&c, window, "_NET_SUPPORTING_WM_CHECK") == vec![window]
+            })
+    });
     wait(|| !values(&c, root, "_NET_NUMBER_OF_DESKTOPS").is_empty());
     thread::sleep(Duration::from_millis(200));
     while c.poll_for_event().unwrap().is_some() {}
@@ -164,7 +215,21 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     );
     let (c, s) = x11rb::connect(None).unwrap();
     let root = c.setup().roots[s].root;
-    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    // A previous WM may have left a root property pointing at a destroyed
+    // window. Wait for the current WM's live self-referential check window,
+    // otherwise the duplicate process can win the startup race and hang.
+    wait(|| {
+        values(&c, root, "_NET_SUPPORTING_WM_CHECK")
+            .first()
+            .copied()
+            .is_some_and(|window| {
+                c.get_window_attributes(window)
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .is_some()
+                    && values(&c, window, "_NET_SUPPORTING_WM_CHECK") == vec![window]
+            })
+    });
     let duplicate = Command::new(env!("CARGO_BIN_EXE_niruwm"))
         .env("XDG_CONFIG_HOME", &dir)
         .output()
