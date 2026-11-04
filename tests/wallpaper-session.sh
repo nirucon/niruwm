@@ -89,15 +89,20 @@ printf 'PASS: startx without login runtime; theme wallpaper follows localized XD
 
 niructl wallpaper set "$HOME/Bilder med blanksteg/Wallpapers/NIRU/nirux-wallpaper-noir-4k.png"
 niructl theme niru-noir
-# Reload may allocate a new pixmap even for the same file. Assert the actual
-# image passed to the real setter, rather than comparing resource IDs here.
-grep -Fqx "$HOME/Bilder med blanksteg/Wallpapers/NIRU/nirux-wallpaper-noir-4k.png" "$HOME/last-wallpaper-args"
+# The setter receives a composed cache image. The WM's published rendered state
+# identifies the original image; check both rather than assuming feh receives
+# the source file directly.
+xprop -root _NIRUWM_WALLPAPER_STATE | grep -Fq "$HOME/Bilder med blanksteg/Wallpapers/NIRU/nirux-wallpaper-noir-4k.png"
+cache_image=$(tail -n 1 "$HOME/last-wallpaper-args")
+[ -f "$cache_image" ] || { echo 'FAIL composed wallpaper missing'; exit 1; }
 niructl wallpaper status | grep -qx 'mode=single'
 niructl wallpaper follow-theme on
 niructl wallpaper status | grep -qx 'mode=fixed'
 niructl theme niru-nord
 pixmap | grep -q 'pixmap id'
-grep -Fqx "$HOME/Bilder med blanksteg/Wallpapers/NIRU/nirux-wallpaper-nord-4k.png" "$HOME/last-wallpaper-args"
+xprop -root _NIRUWM_WALLPAPER_STATE | grep -Fq "$HOME/Bilder med blanksteg/Wallpapers/NIRU/nirux-wallpaper-nord-4k.png"
+cache_image=$(tail -n 1 "$HOME/last-wallpaper-args")
+[ -f "$cache_image" ] || { echo 'FAIL composed wallpaper missing'; exit 1; }
 niructl wallpaper status | grep -qx 'theme_following=enabled'
 xwininfo -root -tree | grep -q NIRUBAR
 printf 'PASS: explicit manual override is preserved; follow-theme on restores theme following\n'
@@ -112,7 +117,7 @@ done
 before=$(pixmap)
 niructl theme niru-noir
 [ "$before" = "$(pixmap)" ]
-grep -q 'could not set wallpaper.*feh:.*9' "$XDG_STATE_HOME/niruwm/session.log"
+grep -q 'could not set the wallpaper: feh failed.*9' "$XDG_STATE_HOME/niruwm/session.log"
 printf 'PASS: image setter failure is logged and does not erase the existing wallpaper\n'
 niructl quit
 wait "$START"
