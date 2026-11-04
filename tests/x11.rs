@@ -60,6 +60,61 @@ fn message(c: &RustConnection, root: Window, w: Window, name: &str, data: [u32; 
     .unwrap();
     c.flush().unwrap();
 }
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn unchanged_desktop_properties_do_not_emit_repeated_notifications() {
+    let dir = std::env::temp_dir().join(format!("niruwm-property-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let _wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    c.change_window_attributes(
+        root,
+        &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+    )
+    .unwrap()
+    .check()
+    .unwrap();
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    wait(|| !values(&c, root, "_NET_NUMBER_OF_DESKTOPS").is_empty());
+    thread::sleep(Duration::from_millis(200));
+    while c.poll_for_event().unwrap().is_some() {}
+    let monitored: Vec<Atom> = [
+        "_NET_CURRENT_DESKTOP",
+        "_NET_NUMBER_OF_DESKTOPS",
+        "_NET_CLIENT_LIST",
+        "_NET_CLIENT_LIST_STACKING",
+        "_NET_DESKTOP_NAMES",
+        "_NIRUWM_MONITORS",
+    ]
+    .iter()
+    .map(|name| atom(&c, name))
+    .collect();
+    for _ in 0..3 {
+        message(&c, root, root, "_NIRUWM_COMMAND", [1, 0, 0, 0, 0]);
+    }
+    thread::sleep(Duration::from_millis(300));
+    while let Some(event) = c.poll_for_event().unwrap() {
+        if let x11rb::protocol::Event::PropertyNotify(event) = event {
+            assert!(
+                !monitored.contains(&event.atom),
+                "unchanged desktop property was republished"
+            );
+        }
+    }
+    message(&c, root, root, "_NIRUWM_COMMAND", [1, 1, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
 #[test]
 #[ignore = "requires isolated X server"]
 fn window_lifecycle_tags_fullscreen_and_ownership() {

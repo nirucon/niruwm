@@ -1128,28 +1128,40 @@ impl Wm {
     /// Publish the desktop state in a way panels understand with several
     /// screens: one flat list of workspaces, with the focused screen's
     /// workspace selected.
+    fn publish_root32(&mut self, name: &'static str, ty: Atom, values: &[u32]) -> Result<()> {
+        let bytes: Vec<u8> = values
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect();
+        if self.published_root.get(name) == Some(&bytes) {
+            return Ok(());
+        }
+        self.prop(self.root, name, ty, values)?;
+        self.published_root.insert(name, bytes);
+        Ok(())
+    }
+
+    fn publish_root8(&mut self, name: &'static str, ty: Atom, value: &[u8]) -> Result<()> {
+        if self.published_root.get(name).map(Vec::as_slice) == Some(value) {
+            return Ok(());
+        }
+        self.c
+            .change_property8(PropMode::REPLACE, self.root, self.atom(name), ty, value)?;
+        self.published_root.insert(name, value.to_vec());
+        Ok(())
+    }
+
     fn publish_desktop_state(&mut self) -> Result<()> {
         let total: usize = self.monitors.iter().map(|m| m.workspaces.len()).sum();
         let active = crate::monitor::global_active(&self.monitors, self.focused_monitor);
-        self.prop(
-            self.root,
+        self.publish_root32(
             "_NET_NUMBER_OF_DESKTOPS",
             AtomEnum::CARDINAL.into(),
             &[total.max(1) as u32],
         )?;
-        self.prop(
-            self.root,
-            "_NET_CURRENT_DESKTOP",
-            AtomEnum::CARDINAL.into(),
-            &[active],
-        )?;
+        self.publish_root32("_NET_CURRENT_DESKTOP", AtomEnum::CARDINAL.into(), &[active])?;
         let list: Vec<Window> = self.clients.iter().map(|c| c.win).collect();
-        self.prop(
-            self.root,
-            "_NET_CLIENT_LIST",
-            AtomEnum::WINDOW.into(),
-            &list,
-        )?;
+        self.publish_root32("_NET_CLIENT_LIST", AtomEnum::WINDOW.into(), &list)?;
         let stacking: Vec<Window> = self
             .c
             .query_tree(self.root)?
@@ -1158,8 +1170,7 @@ impl Wm {
             .into_iter()
             .filter(|w| list.contains(w))
             .collect();
-        self.prop(
-            self.root,
+        self.publish_root32(
             "_NET_CLIENT_LIST_STACKING",
             AtomEnum::WINDOW.into(),
             &stacking,
@@ -1173,10 +1184,8 @@ impl Wm {
             }
         }
         if !names.is_empty() {
-            self.c.change_property8(
-                PropMode::REPLACE,
-                self.root,
-                self.atom("_NET_DESKTOP_NAMES"),
+            self.publish_root8(
+                "_NET_DESKTOP_NAMES",
                 self.atom("UTF8_STRING"),
                 names.as_bytes(),
             )?;
@@ -1216,10 +1225,8 @@ impl Wm {
         if layout.is_empty() {
             return Ok(());
         }
-        self.c.change_property8(
-            PropMode::REPLACE,
-            self.root,
-            self.atom("_NIRUWM_MONITORS"),
+        self.publish_root8(
+            "_NIRUWM_MONITORS",
             self.atom("UTF8_STRING"),
             layout.as_bytes(),
         )?;

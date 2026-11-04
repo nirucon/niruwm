@@ -171,6 +171,9 @@ pub(crate) struct Wm {
     pub(crate) screen_w: u16,
     pub(crate) screen_h: u16,
     pub(crate) atoms: HashMap<&'static str, Atom>,
+    /// Last root desktop properties published by this WM instance. Avoid
+    /// waking every panel on each arrange when a value has not changed.
+    pub(crate) published_root: HashMap<&'static str, Vec<u8>>,
     pub(crate) clients: Vec<Client>,
     /// Managed panels (NIRUBAR). They are not tiled clients, but they must be
     /// restacked above normal/floating clients after fullscreen churn.
@@ -347,6 +350,7 @@ impl Wm {
             screen_w,
             screen_h,
             atoms,
+            published_root: HashMap::new(),
             clients: vec![],
             docks: HashSet::new(),
             recently_gone: VecDeque::new(),
