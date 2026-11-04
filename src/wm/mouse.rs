@@ -173,7 +173,9 @@ impl Wm {
                         // must reach the normal dispatcher even while a drag owns
                         // the pointer. Dropping them here was the stale-client bug.
                         keep_going = self.handle(other)?;
-                        if !keep_going {
+                        if !keep_going || self.dragging != Some(win) {
+                            // A lock request or another lifecycle transition
+                            // ended the drag and released the pointer grab.
                             cancelled = true;
                             break;
                         }

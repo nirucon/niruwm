@@ -14,6 +14,7 @@
 //! desktop.
 
 use crate::config::{Result, WallpaperConfig};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -33,6 +34,7 @@ pub struct Output {
 
 impl Output {
     /// `WxH+X+Y`, the geometry form the background tools understand.
+    #[allow(dead_code)]
     pub fn geometry(&self) -> String {
         format!("{}x{}+{}+{}", self.width, self.height, self.x, self.y)
     }
@@ -113,6 +115,7 @@ impl Tool {
     }
 
     /// Arguments that paint one screen in a solid colour.
+    #[allow(dead_code)]
     fn colour_args(self, _geometry: &str, pixel: &str) -> Vec<String> {
         // Each tool has its own way to paint one screen with one colour.
         // `xsetroot` takes only a colour under `-solid` and rejects anything
@@ -618,11 +621,11 @@ impl Wallpaper {
             return Ok(None);
         }
         if self.outputs.is_empty() {
-            // Without RandR information the common picture still goes to the
-            // whole screen the old way.
+            // Without RandR information there is no per-output assignment to
+            // make; preserve the single-screen fallback.
             let (kind, path) = self.plan_for("");
             if let Some(path) = &path {
-                set_image(path, &self.cfg.scale, &[])?;
+                set_single_image(path, &self.cfg.scale)?;
                 return Ok(Some(path.clone()));
             }
             debug_assert_eq!(kind, "colour");
@@ -631,6 +634,7 @@ impl Wallpaper {
         let colour = self.theme_colour();
         let mut used = None;
         let mut failures: Vec<String> = Vec::new();
+        let mut files = Vec::new();
         for out in self.outputs.clone() {
             let (kind, path) = self.plan_for(&out.name);
             let scale = self.effective_scale(&out.name);
@@ -641,7 +645,7 @@ impl Wallpaper {
                     .as_ref()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
-                scale,
+                scale: scale.clone(),
                 source: if self.entry(&out.name).is_some() {
                     "override".into()
                 } else {
@@ -649,27 +653,32 @@ impl Wallpaper {
                 },
                 note: String::new(),
             };
-            let set = match &path {
-                Some(path) => set_image(path, &state.scale, std::slice::from_ref(&out)),
-                None => set_colour(&colour, &out),
-            };
-            match set {
-                Ok(()) => {
+            let prepared = prepare_output(&out, path.as_deref(), &scale, &colour);
+            match prepared {
+                Ok(file) => {
                     if state.kind == "colour" {
                         state.path = colour.clone();
                     }
-                    used = path.or(used);
+                    used = path.clone().or(used);
+                    files.push(file);
                 }
-                Err(e) => {
+                Err(error) => {
                     state.kind = "failed".into();
-                    state.note = e.to_string();
-                    failures.push(format!("{}: {e}", out.name));
+                    state.note = error.to_string();
+                    failures.push(format!("{}: {error}", out.name));
+                    files.push(solid_image(&colour));
                 }
             }
             self.last.push(state);
         }
-        if failures.len() == self.outputs.len() && !self.outputs.is_empty() {
-            return Err(format!("could not set the wallpaper: {}", failures.join("; ")).into());
+        if !files.is_empty() {
+            if let Err(error) = set_prepared(&files) {
+                for state in &mut self.last {
+                    state.kind = "failed".into();
+                    state.note = format!("{error}");
+                }
+                return Err(format!("could not set the wallpaper: {error}").into());
+            }
         }
         for failure in failures {
             eprintln!("niruwm: wallpaper: {failure}");
@@ -678,21 +687,140 @@ impl Wallpaper {
     }
 }
 
+fn wallpaper_cache_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("niruwm/wallpaper")
+}
+
+/// Render one output to an exact output-sized PNG. feh then assigns one file
+/// per monitor, so distinct pictures and scales no longer overwrite each other.
+fn prepare_output(
+    out: &Output,
+    source: Option<&Path>,
+    scale: &str,
+    colour: &str,
+) -> Result<PathBuf> {
+    let dir = wallpaper_cache_dir();
+    fs::create_dir_all(&dir)?;
+    let (size, changed) = source
+        .and_then(|path| {
+            fs::metadata(path).ok().map(|meta| {
+                (
+                    meta.len(),
+                    meta.modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|duration| duration.as_nanos())
+                        .unwrap_or(0),
+                )
+            })
+        })
+        .unwrap_or((0, 0));
+    let key = format!(
+        "{}|{}|{}x{}|{}|{}|{}|{}",
+        source
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        scale,
+        out.width,
+        out.height,
+        size,
+        changed,
+        colour,
+        out.name
+    );
+    let digest = Sha256::digest(key.as_bytes());
+    let path = dir.join(format!("{digest:x}.png"));
+    if path.is_file() {
+        return Ok(path);
+    }
+    let Some(source) = source else {
+        return Ok(solid_image(colour));
+    };
+    if !which("convert") {
+        return Err("ImageMagick convert is required for per-output wallpapers".into());
+    }
+    let width = out.width.to_string();
+    let height = out.height.to_string();
+    let geometry = format!("{width}x{height}");
+    let background = colour.trim_start_matches('#');
+    let mut args: Vec<String> = vec![source.display().to_string()];
+    match scale {
+        "fill" => args.extend([
+            "-resize".into(),
+            format!("{geometry}^"),
+            "-gravity".into(),
+            "center".into(),
+            "-extent".into(),
+            geometry.clone(),
+        ]),
+        "fit" => args.extend([
+            "-resize".into(),
+            geometry.clone(),
+            "-gravity".into(),
+            "center".into(),
+            "-background".into(),
+            format!("#{background}"),
+            "-extent".into(),
+            geometry.clone(),
+        ]),
+        "stretch" => args.extend(["-resize".into(), format!("{geometry}!")]),
+        _ => args.extend([
+            "-gravity".into(),
+            "center".into(),
+            "-background".into(),
+            format!("#{background}"),
+            "-extent".into(),
+            geometry.clone(),
+        ]),
+    }
+    args.push(path.display().to_string());
+    let status = std::process::Command::new("timeout")
+        .args(["10", "convert"])
+        .args(&args)
+        .status()
+        .map_err(|error| format!("cannot start convert: {error}"))?;
+    if !status.success() {
+        return Err(format!("convert rejected {} with {status}", source.display()).into());
+    }
+    Ok(path)
+}
+
+/// Set one prepared file per Xinerama/RandR monitor in one bounded operation.
+fn set_prepared(files: &[PathBuf]) -> Result<()> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    if !which("feh") {
+        return Err("feh is required for per-output wallpapers".into());
+    }
+    let mut command = std::process::Command::new("timeout");
+    command.args(["10", "feh", "--no-fehbg", "--bg-scale"]);
+    for file in files {
+        command.arg(file);
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot start feh: {error}"))?;
+    if !status.success() {
+        return Err(format!("feh failed with {status}").into());
+    }
+    Ok(())
+}
+
 /// Set one picture on zero or more screens.
 ///
-/// An empty `outputs` list means "the whole screen", which is the only option
-/// when RandR reported nothing.
-fn set_image(path: &Path, scale: &str, outputs: &[Output]) -> Result<()> {
+/// Whole-screen fallback when RandR reports no active output.
+fn set_single_image(path: &Path, scale: &str) -> Result<()> {
     let mut failures = Vec::new();
     for tool in TOOLS.iter().copied().filter(|t| t.is_image_capable()) {
         if !which(tool.binary()) {
             continue;
         }
-        let geometry = outputs
-            .first()
-            .map(Output::geometry)
-            .unwrap_or_else(|| "0x0+0+0".into());
-        let args = tool.image_args(scale, &geometry, path);
+        let args = tool.image_args(scale, "0x0+0+0", path);
         eprintln!("niruwm: wallpaper: {} {}", tool.binary(), args.join(" "));
         match std::process::Command::new(tool.binary())
             .args(&args)
@@ -712,44 +840,6 @@ fn set_image(path: &Path, scale: &str, outputs: &[Output]) -> Result<()> {
     Err(format!(
         "could not set wallpaper {}: {}",
         path.display(),
-        failures.join("; ")
-    )
-    .into())
-}
-
-/// Paint the root window with the theme's own background colour.
-///
-/// Used when a screen follows a theme that has no wallpaper image. Leaving the
-/// previous theme's picture on screen would silently show the wrong theme, so
-/// the fallback is a solid colour that belongs to the theme that is actually
-/// selected. The colour comes from the theme file, never a hardcoded value:
-/// Satie is light and the others are dark.
-fn set_colour(colour: &str, output: &Output) -> Result<()> {
-    let mut failures = Vec::new();
-    let mut tools = TOOLS.to_vec();
-    // xsetroot can always paint a colour, so it is the last resort rather than
-    // a separate path.
-    tools.push(Tool::Xsetroot);
-    for tool in tools {
-        if !which(tool.binary()) {
-            continue;
-        }
-        let args = tool.colour_args(&output.geometry(), colour);
-        match std::process::Command::new(tool.binary())
-            .args(&args)
-            .status()
-        {
-            Ok(status) if status.success() => return Ok(()),
-            Ok(status) => failures.push(format!("{}: {status}", tool.binary())),
-            Err(e) => failures.push(format!("{}: {e}", tool.binary())),
-        }
-    }
-    if failures.is_empty() {
-        eprintln!("niruwm: no tool can paint a solid background ({colour})");
-        return Ok(());
-    }
-    Err(format!(
-        "could not paint the {colour} background: {}",
         failures.join("; ")
     )
     .into())

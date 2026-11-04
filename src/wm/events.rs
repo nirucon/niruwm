@@ -414,6 +414,13 @@ impl Wm {
                 for extra in [0u16, 8, 16, 24] {
                     self.c.ungrab_key(0, self.root, ModMask::from(extra))?;
                 }
+                // A Super+drag owns an active pointer grab. The locker cannot
+                // ungrab another client's grab, so cancel the drag and release
+                // ours before it retries the lock grab.
+                if self.dragging.take().is_some() {
+                    let _ = self.c.ungrab_pointer(x11rb::CURRENT_TIME);
+                    eprintln!("niruwm: cancelled drag for lock takeover");
+                }
             } else {
                 self.keys_released = false;
                 self.grab()?;
@@ -462,11 +469,35 @@ impl Wm {
         };
         c.fullscreen = fullscreen;
         let full = self.atom("_NET_WM_STATE_FULLSCREEN");
-        // A bound local, not a `&[full]` inside the `if`: rustc 1.75, the
-        // declared baseline, rejects the latter.
-        let states: [u32; 1] = [full];
-        let state: &[u32] = if fullscreen { &states } else { &[] };
-        self.prop(e.window, "_NET_WM_STATE", AtomEnum::ATOM.into(), state)?;
+        let existing = self.values(e.window, "_NET_WM_STATE");
+        let state = next_fullscreen_states(&existing, full, fullscreen);
+        self.prop(e.window, "_NET_WM_STATE", AtomEnum::ATOM.into(), &state)?;
         self.arrange()
+    }
+}
+
+/// Add or remove fullscreen without erasing unrelated EWMH state atoms.
+fn next_fullscreen_states(existing: &[u32], fullscreen: u32, enabled: bool) -> Vec<u32> {
+    let mut state: Vec<u32> = existing
+        .iter()
+        .copied()
+        .filter(|atom| *atom != fullscreen)
+        .collect();
+    if enabled {
+        state.push(fullscreen);
+    }
+    state
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::next_fullscreen_states;
+
+    #[test]
+    fn fullscreen_transition_preserves_unrelated_state_atoms() {
+        let states = next_fullscreen_states(&[7, 11, 13], 11, true);
+        assert_eq!(states, vec![7, 13, 11]);
+        assert_eq!(next_fullscreen_states(&states, 11, false), vec![7, 13]);
+        assert_eq!(next_fullscreen_states(&states, 11, true), vec![7, 13, 11]);
     }
 }

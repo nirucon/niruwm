@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.16.162'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.16.165'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -111,36 +111,64 @@ command -v dbus-update-activation-environment >/dev/null 2>&1 &&
 # ── Audio: only Void needs this; Arch and Debian use systemd user units ──────
 DISTRO=""
 [ -r /etc/os-release ] && DISTRO="$(. /etc/os-release 2>/dev/null; printf '%s' "${ID:-}")"
+audio_core_ready() {
+  command -v wpctl >/dev/null 2>&1 || return 1
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 2 wpctl status >/dev/null 2>&1
+  else
+    wpctl status >/dev/null 2>&1
+  fi
+}
+# Stop only this session's audio helpers. A user-wide pkill can tear down the
+# audio of another graphical session using the same account.
+stop_owned_audio() {
+  for name in pipewire-pulse wireplumber pipewire; do
+    for pid in $(pgrep -u "$(id -u)" -x "$name" 2>/dev/null); do
+      [ -n "$pid" ] || continue
+      old_runtime=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^XDG_RUNTIME_DIR=//p')
+      [ "$old_runtime" = "$XDG_RUNTIME_DIR" ] || continue
+      kill "$pid" 2>/dev/null || :
+    done
+  done
+}
 if [ "$DISTRO" = void ] && command -v pipewire >/dev/null 2>&1; then
-  # The runtime directory must exist before PipeWire starts. A display manager
-  # normally creates it, but not always before the session script runs, and a
-  # PipeWire that starts too early keeps running without ever creating its
-  # socket: audio is then dead for the whole session while processes exist.
-  if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
-    # The runtime directory can be recreated empty by elogind between the check
-    # above and this point, and a startx session on Void owns no elogind session
-    # at all. Recreate it here so PipeWire has somewhere to put its socket; a
-    # PipeWire started against a missing directory runs on without one.
-    if [ ! -d "$XDG_RUNTIME_DIR" ]; then
-      (umask 077; mkdir -p "$XDG_RUNTIME_DIR") 2>/dev/null || :
-      log "recreated $XDG_RUNTIME_DIR for PipeWire"
-    fi
-    # A process without a socket is useless. Restart it rather than trusting
-    # that "pipewire is running" means audio works.
-    pkill -u "$(id -u)" -x pipewire 2>/dev/null || :
-    pkill -u "$(id -u)" -x pipewire-pulse 2>/dev/null || :
-    sleep 0.3
-    pipewire >/dev/null 2>&1 &
+  # A socket is not readiness: a stale pipewire-0 can survive after the core
+  # server died, while pipewire-pulse runs on and wpctl cannot connect.
+  if [ ! -d "$XDG_RUNTIME_DIR" ]; then
+    (umask 077; mkdir -p "$XDG_RUNTIME_DIR") 2>/dev/null || :
+    log "recreated $XDG_RUNTIME_DIR for PipeWire"
+  fi
+  if ! audio_core_ready; then
+    log "PipeWire core is not usable; replacing only this session's stale audio helpers"
+    stop_owned_audio
+    rm -f "$XDG_RUNTIME_DIR/pipewire-0" "$XDG_RUNTIME_DIR/pipewire-0.lock" 2>/dev/null || :
+    pipewire >/dev/null 2>&1 & PIPEWIRE_PID=$!
     i=0
-    while [ "$i" -lt 100 ] && [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; do sleep 0.1; i=$((i + 1)); done
-    if [ ! -S "$XDG_RUNTIME_DIR/pipewire-0" ]; then
-      log "PipeWire did not create its socket; audio and the volume module will be unavailable"
+    while [ "$i" -lt 40 ] && ! audio_core_ready; do sleep 0.05; i=$((i + 1)); done
+    if ! audio_core_ready; then
+      log "PipeWire did not become usable; audio and the volume module will be unavailable"
     fi
   fi
-  for d in wireplumber pipewire-pulse; do
-    command -v "$d" >/dev/null 2>&1 || continue
-    pgrep -u "$(id -u)" -x "$d" >/dev/null 2>&1 || "$d" >/dev/null 2>&1 &
-  done
+  if audio_core_ready; then
+    for d in wireplumber pipewire-pulse; do
+      command -v "$d" >/dev/null 2>&1 || continue
+      pgrep -u "$(id -u)" -x "$d" >/dev/null 2>&1 && continue
+      "$d" >/dev/null 2>&1 &
+      case "$d" in
+        wireplumber) WIREPLUMBER_PID=$! ;;
+        pipewire-pulse) PULSE_PID=$! ;;
+      esac
+    done
+    # Wait for the session's default nodes, not merely for a process or socket.
+    i=0
+    while [ "$i" -lt 30 ] && ! wpctl get-volume @DEFAULT_AUDIO_SINK@ >/dev/null 2>&1; do
+      sleep 0.05
+      i=$((i + 1))
+    done
+    if ! wpctl get-volume @DEFAULT_AUDIO_SINK@ >/dev/null 2>&1; then
+      log "audio server is reachable but no default output is ready yet"
+    fi
+  fi
 fi
 
 # The lock screen cannot show a message while it covers the screen, so its
@@ -194,7 +222,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
 cleanup() {
   # A deliberate session exit gets the shutdown cue. Playback is async and
   # never delays the actual logout; a crash path still reaches this only if
@@ -210,7 +238,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $NIRUSHARE_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $NIRUSHARE_PID $PIPEWIRE_PID $WIREPLUMBER_PID $PULSE_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -252,16 +280,16 @@ start_dunst() {
 start_nirunotify() {
   command -v nirunotify >/dev/null 2>&1 || return 1
   nirunotify >/dev/null 2>&1 & NOTIFY_PID=$!
+  # Notifications are optional. Do not add a five-second gate before the WM on
+  # hosts without busctl or with a slow session bus.
+  command -v busctl >/dev/null 2>&1 || return 0
   i=0
-  while [ "$i" -lt 50 ]; do
-    # The daemon exits at once when another one already owns the name; that is
-    # a working session too, so either an owner or our child is enough.
-    if command -v busctl >/dev/null 2>&1 &&
-       busctl --user --no-pager status org.freedesktop.Notifications >/dev/null 2>&1; then
+  while [ "$i" -lt 15 ]; do
+    if busctl --user --no-pager status org.freedesktop.Notifications >/dev/null 2>&1; then
       return 0
     fi
     kill -0 "$NOTIFY_PID" 2>/dev/null || return 0
-    sleep 0.1
+    sleep 0.05
     i=$((i + 1))
   done
   return 0
@@ -354,17 +382,21 @@ fi
 
 # ── Lock before suspend ─────────────────────────────────────────────────────
 # Hold a logind/elogind delay inhibitor for sleep. When PrepareForSleep(true)
-# arrives, lock and wait for NIRULOCK's verified readiness; only then does the
-# inner command exit and let the inhibitor go. A lock failure keeps the
-# inhibitor held instead of allowing an unlocked suspend. The outer loop
-# re-arms after resume.
+# arrives, lock and wait for NIRULOCK's verified readiness, then release the
+# inhibitor. A delay inhibitor is finite: logind/elogind may proceed after its
+# InhibitDelayMaxSec even if the inner command is still running, so this cannot
+# honestly promise to veto an external suspend forever. Report a lock failure
+# loudly instead of claiming a guarantee the platform does not provide.
 sleep_lock_loop() {
   INHIBIT_PID=""
   trap 'if [ -n "$INHIBIT_PID" ]; then kill "$INHIBIT_PID" 2>/dev/null || :; fi; exit 0' TERM INT HUP
   while :; do
     "$NIRU_INHIBIT" --what=sleep --mode=delay --who=NIRU --why="Lock before suspend" \
       sh -c 'if dbus-monitor --system "type=signal,interface=org.freedesktop.login1.Manager,member=PrepareForSleep" 2>/dev/null | grep -m1 "boolean true" >/dev/null; then
-               niructl lock || { echo "niruwm-session: lock failed; keeping sleep inhibited" >&2; sleep 3600; }
+               niructl lock || {
+                 echo "niruwm-session: lock failed; external suspend delay is finite and the system may sleep unlocked" >&2
+                 command -v notify-send >/dev/null 2>&1 && notify-send -a NIRUX -u critical "Lock before suspend failed" "The display locker did not become ready. The system may suspend unlocked." >/dev/null 2>&1 || :
+               }
              fi' &
     INHIBIT_PID=$!
     wait "$INHIBIT_PID" 2>/dev/null || :

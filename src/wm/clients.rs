@@ -299,13 +299,20 @@ impl Wm {
             .map(|m| m.name.clone())
             .unwrap_or_default();
         let size_hints = self.size_hints(w);
+        // Toolkits may establish fullscreen before the first MapWindow. The
+        // initial state must have the same meaning as a later ClientMessage;
+        // otherwise the client is tiled into the bar's work area while still
+        // claiming to be fullscreen.
+        let initial_fullscreen = self
+            .values(w, "_NET_WM_STATE")
+            .contains(&self.atom("_NET_WM_STATE_FULLSCREEN"));
         let client = Client {
             win: w,
             monitor,
             monitor_name,
             tag,
             floating,
-            fullscreen: false,
+            fullscreen: initial_fullscreen,
             geom: Rect {
                 x: g.x,
                 y: g.y,
