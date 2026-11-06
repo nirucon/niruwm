@@ -9,6 +9,8 @@ mod bindings;
 #[path = "../config.rs"]
 #[allow(dead_code)] // shared with NIRUWM; theme management consumes part of it
 mod config;
+#[path = "../display_auto.rs"]
+mod display_auto;
 #[path = "../layout.rs"]
 #[allow(dead_code)] // niructl prints the layout names
 mod layout;
@@ -49,7 +51,7 @@ timing show|set KEY MINUTES | \
 wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
-display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto|watch [--once] [--quiet] | \
+display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto|automatic on|off|status [--json]|run|doctor [--json]|watch [--once] [--quiet] | \
 action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD NEW|pin NAME|unpin NAME | \
 layout show|save | \
 powerprofile status|list|set NAME|next | \
@@ -1881,6 +1883,11 @@ struct DisplayOutput {
     rotation: String,
     #[serde(default)]
     primary: bool,
+    /// Hardware identity from the EDID, saved by 0.17 and later. A profile
+    /// entry with an identity follows the screen to whatever connector it is
+    /// on; one without (older profiles) matches its connector, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity: Option<display_auto::Identity>,
 }
 
 fn display_preferred_mode() -> String {
@@ -1939,6 +1946,7 @@ fn display_rotate(name: &str, rotation: &str) -> Result<()> {
     let profile = DisplayProfile {
         name: format!("rotate {name}"),
         outputs: layout,
+        ..Default::default()
     };
     if let Err(error) = display_apply(&outputs, &profile) {
         let _ = display_restore(&previous);
@@ -1955,16 +1963,54 @@ fn display_normal_rotation() -> String {
     "normal".into()
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct DisplayProfile {
     #[serde(default)]
     name: String,
     #[serde(default)]
     outputs: Vec<DisplayOutput>,
+    /// Connected screens the profile deliberately leaves off, such as the
+    /// laptop panel in a desk profile. Recorded when the profile is saved so
+    /// automatic matching can tell "off on purpose" from "unknown screen".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    off: Vec<DisplayOffOutput>,
+    /// `auto = false` keeps the profile out of automatic switching.
+    #[serde(default = "display_true", skip_serializing_if = "display_is_true")]
+    auto: bool,
+}
+
+impl Default for DisplayProfile {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            outputs: Vec::new(),
+            off: Vec::new(),
+            auto: true,
+        }
+    }
+}
+
+fn display_true() -> bool {
+    true
+}
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn display_is_true(value: &bool) -> bool {
+    *value
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+struct DisplayOffOutput {
+    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity: Option<display_auto::Identity>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct DisplayFile {
+    /// Switch profiles automatically when screens or the lid change. Off
+    /// unless the user turns it on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    automatic: bool,
     #[serde(default)]
     profile: Vec<DisplayProfile>,
     /// Opt-in profile applied once at login by niruwm-session.
@@ -2113,6 +2159,7 @@ fn display_outputs_from(text: &str) -> Vec<DisplayOutputState> {
                     .unwrap_or_else(display_zero_position),
                 rotation,
                 primary,
+                identity: None,
             }
         });
         outputs.push(DisplayOutputState {
@@ -2229,8 +2276,10 @@ fn display_apply(outputs: &[DisplayOutputState], profile: &DisplayProfile) -> Re
             args.push("--primary".into());
         }
     }
+    // A screen that was unplugged can keep its CRTC (a "ghost" area); turn
+    // off everything lit that the profile does not list, connected or not.
     for state in outputs {
-        if state.connected && state.current.is_some() && !names.contains(&state.name) {
+        if state.current.is_some() && !names.contains(&state.name) {
             args.extend([
                 "--output".to_string(),
                 state.name.clone(),
@@ -2288,10 +2337,28 @@ fn display_preview_write(state: &DisplayPreview) -> Result<()> {
 
 fn display_restore(previous: &[DisplayOutput]) -> Result<()> {
     let outputs = display_outputs()?;
-    let profile = DisplayProfile {
+    // A screen unplugged since the snapshot cannot come back; restore the
+    // others rather than failing and leaving the risky layout in place.
+    let still_here: Vec<DisplayOutput> = previous
+        .iter()
+        .filter(|output| {
+            outputs.iter().any(|state| {
+                state.name == output.name && state.connected && !state.modes.is_empty()
+            })
+        })
+        .cloned()
+        .collect();
+    if still_here.is_empty() {
+        return Err("none of the previous screens is connected".into());
+    }
+    let mut profile = DisplayProfile {
         name: "previous".into(),
-        outputs: previous.to_vec(),
+        outputs: still_here,
+        ..Default::default()
     };
+    if !profile.outputs.iter().any(|output| output.primary) {
+        profile.outputs[0].primary = true;
+    }
     display_apply(&outputs, &profile)
 }
 
@@ -2312,7 +2379,9 @@ fn display_startup_apply_profile() -> Result<Option<String>> {
         .into_iter()
         .find(|profile| profile.name == name)
         .ok_or_else(|| format!("startup display profile not found: {name}"))?;
-    let outputs = display_outputs()?;
+    let snapshot = DisplaySnapshot::read()?;
+    let profile = display_resolve_profile(&profile, &snapshot)?;
+    let outputs = snapshot.outputs;
     let previous = display_current_layout(&outputs);
     if let Err(error) = display_apply(&outputs, &profile) {
         if !previous.is_empty() {
@@ -2382,12 +2451,16 @@ fn display_connected_signature(outputs: &[DisplayOutputState]) -> Vec<String> {
 }
 
 fn profile_outputs_connected(outputs: &[DisplayOutputState], profile: &DisplayProfile) -> bool {
-    !profile.outputs.is_empty()
-        && profile.outputs.iter().all(|wanted| {
-            outputs
-                .iter()
-                .any(|output| output.name == wanted.name && output.connected)
-        })
+    if profile.outputs.is_empty() {
+        return false;
+    }
+    let identities = display_identity_map();
+    let screens = display_screens(outputs, &identities);
+    let (on, off) = display_wanted(profile);
+    !matches!(
+        display_auto::match_profile(&on, &off, &screens, false).fit,
+        display_auto::Fit::Missing { .. }
+    )
 }
 
 fn display_watch_pid_path() -> PathBuf {
@@ -2515,82 +2588,305 @@ fn display_watch_reconcile(quiet: bool, allow_startup: bool) -> Result<()> {
 }
 
 fn display_watch(args: &[String]) -> Result<()> {
+    use std::os::fd::AsRawFd;
     let once = args.iter().any(|arg| arg == "--once");
     let quiet = args.iter().any(|arg| arg == "--quiet");
-    let _guard = if once {
-        None
-    } else {
-        let path = display_watch_pid_path();
-        match WatchPidFile::acquire(path, std::process::id())? {
-            Some(guard) => Some(guard),
-            None => {
-                if !quiet {
-                    println!("display watch is already running for this display");
-                }
-                return Ok(());
-            }
-        }
-    };
-    let mut last = match display_outputs() {
-        Ok(outputs) => Some(display_output_signature(&outputs)),
-        Err(error) => {
-            eprintln!("niructl: display watch: {error}");
-            None
-        }
-    };
-    let mut last_connected = display_outputs()
-        .ok()
-        .map(|outputs| display_connected_signature(&outputs));
     if once {
-        match &last {
-            Some(signature) => {
-                if !quiet {
-                    for (name, enabled) in signature {
-                        println!("{name}\t{}", if *enabled { "enabled" } else { "disabled" });
-                    }
-                }
-                return Ok(());
+        let outputs = display_outputs().map_err(|_| "cannot read the display output state")?;
+        if !quiet {
+            for (name, enabled) in display_output_signature(&outputs) {
+                println!("{name}\t{}", if enabled { "enabled" } else { "disabled" });
             }
-            None => return Err("cannot read the display output state".into()),
         }
+        return Ok(());
     }
+    let _guard = match WatchPidFile::acquire(display_watch_pid_path(), std::process::id())? {
+        Some(guard) => guard,
+        None => {
+            if !quiet {
+                println!("display watch is already running for this display");
+            }
+            return Ok(());
+        }
+    };
+    // RandR tells us when screens, outputs or CRTCs change; nothing is
+    // polled. Only the lid has no event the session can read without root,
+    // so it is read once a second, and only while it can matter.
+    let (c, screen) = x11rb::connect(None)?;
+    let root = c.setup().roots[screen].root;
+    c.randr_query_version(1, 5)?.reply()?;
+    c.randr_select_input(
+        root,
+        x11rb::protocol::randr::NotifyMask::SCREEN_CHANGE
+            | x11rb::protocol::randr::NotifyMask::OUTPUT_CHANGE
+            | x11rb::protocol::randr::NotifyMask::CRTC_CHANGE,
+    )?;
+    c.flush()?;
+    let fd = c.stream().as_raw_fd();
+    let uevents = DrmUevents::open();
     if !quiet {
-        println!("display watch: monitoring display output state");
+        println!("display watch: waiting for RandR events");
+    }
+    const SETTLE: Duration = Duration::from_millis(700);
+    let mut seen = DisplaySeen::read();
+    let mut pending: Option<Instant> = None;
+    let mut deferred = false;
+    let mut retry_next: Option<u64> = None;
+    if display_read_file()
+        .map(|file| file.automatic)
+        .unwrap_or(false)
+    {
+        match display_auto_reconcile(DisplayTrigger::Start, quiet) {
+            Ok(done) => deferred = !done,
+            Err(error) => eprintln!("niructl: display watch: {error}"),
+        }
+        seen = DisplaySeen::read();
+        retry_next = display_retry_next();
     }
     loop {
-        std::thread::sleep(Duration::from_secs(2));
-        let outputs = match display_outputs() {
-            Ok(outputs) => outputs,
-            Err(error) => {
-                eprintln!("niructl: display watch: {error}");
-                continue;
-            }
+        let now = Instant::now();
+        let mut timeout: Option<Duration> = pending.map(|at| at.saturating_duration_since(now));
+        let mut tighten = |limit: Duration| {
+            timeout = Some(timeout.map_or(limit, |current| current.min(limit)));
         };
-        let signature = display_output_signature(&outputs);
-        let connected = display_connected_signature(&outputs);
-        if last.is_none() {
-            last = Some(signature);
-            last_connected = Some(connected);
+        if deferred || seen.lid_matters {
+            tighten(Duration::from_secs(1));
+        }
+        if let Some(next) = retry_next {
+            tighten(Duration::from_secs(next.saturating_sub(now_secs()).max(1)));
+        }
+        let mut events = false;
+        while let Some(event) = c.poll_for_event()? {
+            events |= matches!(
+                event,
+                x11rb::protocol::Event::RandrScreenChangeNotify(_)
+                    | x11rb::protocol::Event::RandrNotify(_)
+            );
+        }
+        if !events {
+            let mut pfds = [
+                libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: uevents.as_ref().map_or(-1, |u| u.fd),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let millis = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
+            unsafe { libc::poll(pfds.as_mut_ptr(), 2, millis) };
+            if uevents.as_ref().is_some_and(|u| u.drain()) {
+                events = true;
+            }
+            while let Some(event) = c.poll_for_event()? {
+                events |= matches!(
+                    event,
+                    x11rb::protocol::Event::RandrScreenChangeNotify(_)
+                        | x11rb::protocol::Event::RandrNotify(_)
+                );
+            }
+        }
+        if events {
+            pending = Some(Instant::now() + SETTLE);
+        }
+        if seen.lid_matters && pending.is_none() && display_lid_closed() != seen.lid {
+            pending = Some(Instant::now() + Duration::from_millis(300));
+        }
+        if deferred && pending.is_none() && display_preview_read().is_none() {
+            pending = Some(Instant::now());
+        }
+        // The file is read only when something is due, not on every lid poll.
+        let due = pending.is_some_and(|at| Instant::now() >= at)
+            || (pending.is_none() && retry_next.is_some_and(|next| now_secs() >= next));
+        if !due {
             continue;
         }
-        if last.as_ref() == Some(&signature) {
-            last_connected = Some(connected);
+        let automatic = display_read_file()
+            .map(|file| file.automatic)
+            .unwrap_or(false);
+        if automatic && pending.is_none() && retry_next.is_some_and(|next| now_secs() >= next) {
+            if let Err(error) = display_auto_reconcile(DisplayTrigger::Retry, quiet) {
+                eprintln!("niructl: display watch: {error}");
+            }
+            seen = DisplaySeen::read();
+            retry_next = display_retry_next();
             continue;
         }
-        let allow_startup = last_connected.as_ref() != Some(&connected);
-        last = Some(signature);
-        last_connected = Some(connected);
-        std::thread::sleep(Duration::from_secs(1));
-        if let Err(error) = display_watch_reconcile(quiet, allow_startup) {
-            eprintln!("niructl: display watch: {error}");
+        if !pending.is_some_and(|at| Instant::now() >= at) {
+            continue;
         }
-        // Record the settled state so an intermediate xrandr state does not
-        // trigger the same transition twice.
-        if let Ok(outputs) = display_outputs() {
-            last = Some(display_output_signature(&outputs));
-            last_connected = Some(display_connected_signature(&outputs));
+        pending = None;
+        let now_seen = DisplaySeen::read();
+        if display_preview_read().is_some() {
+            // Never act during a preview; look again when it has ended.
+            deferred = true;
+            continue;
+        }
+        deferred = false;
+        if now_seen.set != seen.set {
+            if automatic {
+                match display_auto_reconcile(DisplayTrigger::Screens, quiet) {
+                    Ok(done) => deferred = !done,
+                    Err(error) => eprintln!("niructl: display watch: {error}"),
+                }
+            } else if now_seen.legacy != seen.legacy {
+                let allow_startup = now_seen.connected != seen.connected;
+                if let Err(error) = display_watch_reconcile(quiet, allow_startup) {
+                    eprintln!("niructl: display watch: {error}");
+                }
+            }
+        } else if now_seen.layout != seen.layout {
+            if automatic {
+                if let Err(error) = display_auto_observe() {
+                    eprintln!("niructl: display watch: {error}");
+                }
+            } else if now_seen.legacy != seen.legacy {
+                // A manual change keeps the user's choice; it only re-homes
+                // windows, exactly as before the automation existed.
+                let allow_startup = now_seen.connected != seen.connected;
+                if let Err(error) = display_watch_reconcile(quiet, allow_startup) {
+                    eprintln!("niructl: display watch: {error}");
+                }
+            }
+            if !automatic {
+                let _ = display_auto_observe();
+            }
+        }
+        // Record the settled state, so our own change does not look like a
+        // new one when its RandR events arrive.
+        seen = DisplaySeen::read();
+        retry_next = if automatic {
+            display_retry_next()
+        } else {
+            None
+        };
+    }
+}
+
+/// Kernel uevents for the drm subsystem. A real hotplug sends one; X reads
+/// it through udev and sends RandR events, but not every server or driver
+/// reprobes by itself (amdgpu reports a lost screen only on the next query).
+/// Listening here makes the watcher independent of that. None when the
+/// socket cannot be opened; RandR events still work then.
+struct DrmUevents {
+    fd: libc::c_int,
+}
+
+impl DrmUevents {
+    fn open() -> Option<Self> {
+        const NETLINK_KOBJECT_UEVENT: libc::c_int = 15;
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_DGRAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                NETLINK_KOBJECT_UEVENT,
+            )
+        };
+        if fd < 0 {
+            return None;
+        }
+        let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        addr.nl_groups = 1; // kernel broadcasts
+        let bound = unsafe {
+            libc::bind(
+                fd,
+                &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if bound != 0 {
+            unsafe { libc::close(fd) };
+            return None;
+        }
+        Some(Self { fd })
+    }
+
+    /// Read every queued message; true when one was a drm change.
+    fn drain(&self) -> bool {
+        let mut found = false;
+        let mut buffer = [0u8; 8192];
+        loop {
+            let read = unsafe {
+                libc::recv(
+                    self.fd,
+                    buffer.as_mut_ptr() as *mut libc::c_void,
+                    buffer.len(),
+                    0,
+                )
+            };
+            if read <= 0 {
+                return found;
+            }
+            found |= drm_uevent_is_hotplug(&buffer[..read as usize]);
         }
     }
+}
+
+impl Drop for DrmUevents {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+/// A kernel uevent is NUL-separated `KEY=value` text after an
+/// `action@devpath` header. Any `change` of a drm card counts: real
+/// hotplugs carry `HOTPLUG=1`, `udevadm trigger` sends a bare change.
+fn drm_uevent_is_hotplug(message: &[u8]) -> bool {
+    let mut subsystem = false;
+    let mut change = false;
+    for field in message.split(|byte| *byte == 0) {
+        match field {
+            b"SUBSYSTEM=drm" => subsystem = true,
+            b"ACTION=change" => change = true,
+            _ => {}
+        }
+    }
+    subsystem && change
+}
+
+/// What the watcher compares between two events.
+struct DisplaySeen {
+    set: Vec<String>,
+    layout: Vec<String>,
+    legacy: Vec<(String, bool)>,
+    connected: Vec<String>,
+    lid: Option<bool>,
+    lid_matters: bool,
+}
+
+impl DisplaySeen {
+    fn read() -> Self {
+        match DisplaySnapshot::read() {
+            Ok(snapshot) => Self {
+                set: snapshot.set(),
+                layout: snapshot.layout_signature(),
+                legacy: display_output_signature(&snapshot.outputs),
+                connected: display_connected_signature(&snapshot.outputs),
+                lid: snapshot.lid,
+                lid_matters: snapshot.lid_matters(),
+            },
+            Err(error) => {
+                eprintln!("niructl: display watch: {error}");
+                Self {
+                    set: Vec::new(),
+                    layout: Vec::new(),
+                    legacy: Vec::new(),
+                    connected: Vec::new(),
+                    lid: None,
+                    lid_matters: false,
+                }
+            }
+        }
+    }
+}
+
+fn display_retry_next() -> Option<u64> {
+    let state: DisplayAutoState = display_read_toml(&display_auto_state_path());
+    state.retry.next
 }
 
 fn display_position_pair(position: &str) -> Option<(i32, i32)> {
@@ -2760,7 +3056,8 @@ fn display_profile_json(profile: &DisplayProfile) -> serde_json::Value {
 }
 
 fn display_status_json() -> Result<()> {
-    let outputs = display_outputs()?;
+    let snapshot = DisplaySnapshot::read()?;
+    let outputs = &snapshot.outputs;
     let identities = display_edid_identities();
     let file = display_read_file()?;
     let preview = display_preview_read().map(|preview| {
@@ -2772,10 +3069,18 @@ fn display_status_json() -> Result<()> {
     });
     let value = serde_json::json!({
         "schema": 1,
-        "outputs": outputs.iter().map(|output| display_output_json(output, &identities)).collect::<Vec<_>>(),
-        "profiles": file.profile.iter().map(display_profile_json).collect::<Vec<_>>(),
+        "outputs": outputs.iter().map(|output| {
+            let mut value = display_output_json(output, &identities);
+            if let Some(screen) = snapshot.screens.iter().find(|screen| screen.connector == output.name) {
+                value["key"] = serde_json::Value::String(screen.key());
+            }
+            value["internal"] = serde_json::Value::Bool(display_auto::is_internal(&output.name));
+            value
+        }).collect::<Vec<_>>(),
+        "profiles": file.profile.iter().map(|profile| display_profile_status_json(profile, &snapshot)).collect::<Vec<_>>(),
         "startup_profile": file.startup_profile,
         "preview": preview,
+        "automatic": display_auto_json(&file, &snapshot),
     });
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
@@ -2922,10 +3227,1118 @@ fn display_save_profile(profile: &DisplayProfile, name: &str) -> Result<()> {
     let mut file = display_read_file()?;
     let mut saved = profile.clone();
     saved.name = name.to_string();
-    file.profile.retain(|profile| profile.name != name);
-    file.profile.push(saved);
+    let previous = file
+        .profile
+        .iter()
+        .find(|profile| profile.name == name)
+        .cloned();
+    let saved = display_profile_for_saving(saved, previous.as_ref());
+    // Keep the profile's place in the list when it is updated.
+    match file.profile.iter().position(|profile| profile.name == name) {
+        Some(index) => file.profile[index] = saved,
+        None => file.profile.push(saved),
+    }
     display_write_file(&file)?;
     println!("saved display profile {name}");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Hardware identities, automatic switching, verification and doctor.
+//
+// The decisions live in `display_auto` (pure, unit-tested); this part reads
+// the screens, applies layouts through the same xrandr path as profiles and
+// keeps two small state files next to the preview transaction:
+// `display-memory.toml` (last layout per screen set, last mode per screen)
+// and `display-auto.toml` (what the automation did last, a pending retry).
+// ---------------------------------------------------------------------------
+
+/// Test seam: a file holding `open` or `closed` replaces the ACPI lid state.
+/// Documented in docs/niructl-display.md; nothing in a session sets it.
+const DISPLAY_LID_OVERRIDE: &str = "NIRUX_DISPLAY_LID_FILE";
+
+fn display_identity_map() -> HashMap<String, display_auto::Identity> {
+    display_edid_identities()
+        .into_iter()
+        .filter_map(|(name, value)| {
+            serde_json::from_value::<display_auto::Identity>(value)
+                .ok()
+                .map(|identity| (name, identity))
+        })
+        .collect()
+}
+
+fn display_screens(
+    outputs: &[DisplayOutputState],
+    identities: &HashMap<String, display_auto::Identity>,
+) -> Vec<display_auto::Screen> {
+    outputs
+        .iter()
+        .filter(|state| state.connected)
+        .map(|state| display_auto::Screen {
+            connector: state.name.clone(),
+            identity: identities.get(&state.name).cloned(),
+            modes: state
+                .modes
+                .iter()
+                .filter_map(|mode| {
+                    let (width, height) = display_mode_size(&mode.mode, state)?;
+                    Some(display_auto::Mode {
+                        name: mode.mode.clone(),
+                        width,
+                        height,
+                        rates: mode.rates.clone(),
+                    })
+                })
+                .collect(),
+            preferred: state.preferred.clone(),
+            current: state.current.as_ref().map(|current| {
+                let (x, y) = display_position_pair(&current.position).unwrap_or((0, 0));
+                display_auto::Current {
+                    mode: current.mode.clone(),
+                    rate: current.rate,
+                    rotation: current.rotation.clone(),
+                    x,
+                    y,
+                    primary: current.primary,
+                }
+            }),
+        })
+        .collect()
+}
+
+/// The ACPI lid switch, when the machine has one.
+fn display_lid_closed() -> Option<bool> {
+    let text = if let Some(path) = std::env::var_os(DISPLAY_LID_OVERRIDE) {
+        fs::read_to_string(path).ok()?
+    } else {
+        let dir = fs::read_dir("/proc/acpi/button/lid").ok()?;
+        let mut found = None;
+        for entry in dir.flatten() {
+            if let Ok(text) = fs::read_to_string(entry.path().join("state")) {
+                found = Some(text);
+                break;
+            }
+        }
+        found?
+    };
+    if text.contains("closed") {
+        Some(true)
+    } else if text.contains("open") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// One consistent reading of everything the automation looks at.
+struct DisplaySnapshot {
+    outputs: Vec<DisplayOutputState>,
+    identities: HashMap<String, display_auto::Identity>,
+    screens: Vec<display_auto::Screen>,
+    lid: Option<bool>,
+}
+
+impl DisplaySnapshot {
+    fn read() -> Result<Self> {
+        let outputs = display_outputs()?;
+        let identities = display_identity_map();
+        let screens = display_screens(&outputs, &identities);
+        Ok(Self {
+            outputs,
+            identities,
+            screens,
+            lid: display_lid_closed(),
+        })
+    }
+    fn lid_closed(&self) -> bool {
+        self.lid == Some(true)
+    }
+    fn set(&self) -> Vec<String> {
+        display_auto::set_signature(&self.screens, self.lid_closed())
+    }
+    /// Every lit screen with its placement: what "the layout changed" means.
+    fn layout_signature(&self) -> Vec<String> {
+        let mut lit: Vec<String> = self
+            .outputs
+            .iter()
+            .filter_map(|state| {
+                let current = state.current.as_ref()?;
+                Some(format!(
+                    "{} {} {:?} {} {} {}",
+                    state.name,
+                    current.mode,
+                    current.rate,
+                    current.position,
+                    current.rotation,
+                    current.primary
+                ))
+            })
+            .collect();
+        lit.sort();
+        lit
+    }
+    /// Outputs that lost their screen but still hold a CRTC: an area of the
+    /// desktop nobody can see.
+    fn ghosts(&self) -> Vec<String> {
+        self.outputs
+            .iter()
+            .filter(|state| !state.connected && state.current.is_some())
+            .map(|state| state.name.clone())
+            .collect()
+    }
+    fn has_internal(&self) -> bool {
+        self.screens.iter().any(|screen| screen.internal())
+    }
+    /// The lid only matters with a panel and another screen to show, or
+    /// while the panel is off; otherwise logind suspends or nothing changes.
+    fn lid_matters(&self) -> bool {
+        self.lid.is_some()
+            && self.has_internal()
+            && (self
+                .screens
+                .iter()
+                .any(|screen| !screen.internal() && screen.usable())
+                || self
+                    .screens
+                    .iter()
+                    .any(|screen| screen.internal() && screen.current.is_none()))
+    }
+}
+
+fn display_wanted(
+    profile: &DisplayProfile,
+) -> (Vec<display_auto::Wanted<'_>>, Vec<display_auto::Wanted<'_>>) {
+    let on = profile
+        .outputs
+        .iter()
+        .map(|output| display_auto::Wanted {
+            connector: &output.name,
+            identity: output.identity.as_ref(),
+        })
+        .collect();
+    let off = profile
+        .off
+        .iter()
+        .map(|output| display_auto::Wanted {
+            connector: &output.name,
+            identity: output.identity.as_ref(),
+        })
+        .collect();
+    (on, off)
+}
+
+fn display_entry_label(output: &DisplayOutput) -> String {
+    match &output.identity {
+        Some(identity) if display_auto::is_internal(&output.name) => {
+            format!("the built-in screen ({})", identity.describe())
+        }
+        Some(identity) => identity.describe(),
+        None => output.name.clone(),
+    }
+}
+
+fn display_match(
+    profile: &DisplayProfile,
+    snapshot: &DisplaySnapshot,
+    lid_closed: bool,
+) -> display_auto::ProfileMatch {
+    let (on, off) = display_wanted(profile);
+    display_auto::match_profile(&on, &off, &snapshot.screens, lid_closed)
+}
+
+/// Why a profile does not fit the screens that are connected now.
+fn display_mismatch_reason(
+    profile: &DisplayProfile,
+    matched: &display_auto::ProfileMatch,
+    snapshot: &DisplaySnapshot,
+) -> Option<String> {
+    match &matched.fit {
+        display_auto::Fit::Exact => None,
+        display_auto::Fit::Partial { extra } => Some(format!(
+            "also connected: {}",
+            extra
+                .iter()
+                .map(|connector| {
+                    snapshot
+                        .screens
+                        .iter()
+                        .find(|screen| &screen.connector == connector)
+                        .and_then(|screen| screen.identity.as_ref())
+                        .map(|identity| format!("{connector} ({})", identity.describe()))
+                        .unwrap_or_else(|| connector.clone())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        display_auto::Fit::Missing { entries } => {
+            let needs: Vec<String> = entries
+                .iter()
+                .filter_map(|index| profile.outputs.get(*index))
+                .map(|output| {
+                    if display_auto::is_internal(&output.name) && snapshot.lid_closed() {
+                        "the built-in screen (the lid is closed)".to_string()
+                    } else {
+                        display_entry_label(output)
+                    }
+                })
+                .collect();
+            Some(format!("needs {}", needs.join(" and ")))
+        }
+    }
+}
+
+/// The profile with every entry moved to the connector its screen is on now.
+/// The lid is ignored: a profile can always be loaded and applied by hand.
+fn display_resolve_profile(
+    profile: &DisplayProfile,
+    snapshot: &DisplaySnapshot,
+) -> Result<DisplayProfile> {
+    let matched = display_match(profile, snapshot, false);
+    if let display_auto::Fit::Missing { .. } = matched.fit {
+        let reason = display_mismatch_reason(profile, &matched, snapshot).unwrap_or_default();
+        return Err(format!("display profile {} does not fit: {reason}", profile.name).into());
+    }
+    let mut resolved = profile.clone();
+    for (output, connector) in resolved.outputs.iter_mut().zip(matched.on.iter()) {
+        output.name = connector.clone();
+    }
+    Ok(resolved)
+}
+
+/// Turn a resolved profile into concrete placements ("preferred" becomes the
+/// screen's preferred mode), for verification and the memory.
+///
+/// A mode or rate the screen does not offer is kept as asked: applying it
+/// fails, and the automation then relaxes it instead of dropping the screen.
+fn display_placements(
+    profile: &DisplayProfile,
+    snapshot: &DisplaySnapshot,
+) -> Vec<display_auto::Placement> {
+    profile
+        .outputs
+        .iter()
+        .filter_map(|output| {
+            let state = snapshot
+                .outputs
+                .iter()
+                .find(|state| state.name == output.name)?;
+            let mode = if output.mode == "preferred" || output.mode.is_empty() {
+                state
+                    .preferred
+                    .clone()
+                    .or_else(|| state.modes.first().map(|mode| mode.mode.clone()))?
+            } else {
+                output.mode.clone()
+            };
+            let (x, y) = display_position_pair(&output.position)?;
+            Some(display_auto::Placement {
+                connector: output.name.clone(),
+                mode,
+                rate: output.rate,
+                rotation: output.rotation.clone(),
+                x,
+                y,
+                primary: output.primary,
+            })
+        })
+        .collect()
+}
+
+fn display_profile_from_placements(
+    name: &str,
+    placements: &[display_auto::Placement],
+    identities: &HashMap<String, display_auto::Identity>,
+) -> DisplayProfile {
+    DisplayProfile {
+        name: name.to_string(),
+        outputs: placements
+            .iter()
+            .map(|placement| DisplayOutput {
+                name: placement.connector.clone(),
+                mode: placement.mode.clone(),
+                rate: placement.rate,
+                position: format!("{}x{}", placement.x, placement.y),
+                rotation: placement.rotation.clone(),
+                primary: placement.primary,
+                identity: identities.get(&placement.connector).cloned(),
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// The profile whose layout the screens show right now, if any.
+fn display_current_profile(file: &DisplayFile, snapshot: &DisplaySnapshot) -> Option<String> {
+    file.profile.iter().find_map(|profile| {
+        let resolved = display_resolve_profile(profile, snapshot).ok()?;
+        let placements = display_placements(&resolved, snapshot);
+        (placements.len() == resolved.outputs.len()
+            && display_auto::verify(&placements, &snapshot.screens).is_empty())
+        .then(|| profile.name.clone())
+    })
+}
+
+/// Attach identities and the deliberately-off screens before a profile is
+/// written. Re-saving an older profile is what upgrades it.
+fn display_profile_for_saving(
+    mut profile: DisplayProfile,
+    previous: Option<&DisplayProfile>,
+) -> DisplayProfile {
+    let identities = display_identity_map();
+    let outputs = display_outputs().unwrap_or_default();
+    for output in profile.outputs.iter_mut() {
+        if let Some(identity) = identities.get(&output.name) {
+            output.identity = Some(identity.clone());
+        }
+    }
+    profile.off = outputs
+        .iter()
+        .filter(|state| state.connected && !state.modes.is_empty())
+        .filter(|state| {
+            !profile
+                .outputs
+                .iter()
+                .any(|output| output.name == state.name)
+        })
+        .map(|state| DisplayOffOutput {
+            name: state.name.clone(),
+            identity: identities.get(&state.name).cloned(),
+        })
+        .collect();
+    if let Some(previous) = previous {
+        profile.auto = previous.auto;
+    }
+    profile
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct DisplayAutoEvent {
+    time: u64,
+    /// profile, remembered, extended, lid, ambiguous, retry, relaxed, failed
+    action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    detail: String,
+    ok: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct DisplayAutoState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last: Option<DisplayAutoEvent>,
+    #[serde(default)]
+    retry: display_auto::Retry,
+    /// The full layout a retry tries again, for the set it was made for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retry_target: Vec<display_auto::Placement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retry_set: Vec<String>,
+    /// Set while the layout came from the memory or the fallback rather than
+    /// a profile: the editor offers to save it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    automatic_layout: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    ambiguous: Vec<String>,
+}
+
+fn display_auto_state_path() -> PathBuf {
+    display_preview_path().with_file_name("display-auto.toml")
+}
+fn display_memory_path() -> PathBuf {
+    display_preview_path().with_file_name("display-memory.toml")
+}
+
+fn display_read_toml<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn display_write_toml<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("new");
+    fs::write(&temp, toml::to_string(value)?)?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+/// Apply placements, read the result back and relax what the screens
+/// refused. Returns the placements that are in effect and whether they are
+/// the ones asked for.
+fn display_apply_verified(
+    wanted: &[display_auto::Placement],
+    snapshot: &DisplaySnapshot,
+) -> Result<(Vec<display_auto::Placement>, bool, DisplaySnapshot)> {
+    let mut attempt = wanted.to_vec();
+    let mut step = 0;
+    loop {
+        let profile = display_profile_from_placements("automatic", &attempt, &snapshot.identities);
+        let applied = display_apply(&snapshot.outputs, &profile);
+        let after = DisplaySnapshot::read()?;
+        let mut wrong = display_auto::verify(&attempt, &after.screens);
+        wrong.extend(after.ghosts());
+        if applied.is_ok() && wrong.is_empty() {
+            return Ok((attempt, step == 0, after));
+        }
+        step += 1;
+        let failed = if wrong.is_empty() {
+            attempt.iter().map(|p| p.connector.clone()).collect()
+        } else {
+            wrong
+        };
+        match display_auto::degrade(wanted, &failed, &after.screens, step) {
+            Some(relaxed) => attempt = relaxed,
+            None => {
+                // Nothing left to relax. Never leave every screen dark.
+                if after.screens.iter().all(|screen| screen.current.is_none()) {
+                    let rescue = display_auto::extend(
+                        &after.screens,
+                        false,
+                        &display_auto::Memory::default(),
+                    );
+                    let profile =
+                        display_profile_from_placements("rescue", &rescue, &after.identities);
+                    let _ = display_apply(&after.outputs, &profile);
+                    let after = DisplaySnapshot::read()?;
+                    return Ok((rescue, false, after));
+                }
+                return Ok((attempt, false, after));
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DisplayTrigger {
+    /// The watcher started, or the automation was just turned on.
+    Start,
+    /// The set of screens changed (hotplug, or the lid hid or showed the panel).
+    Screens,
+    /// A relaxed layout is due for another try.
+    Retry,
+}
+
+fn display_notify_auto(summary: &str, body: &str) {
+    display_notify(summary, body);
+}
+
+/// Decide and apply the layout for the screens connected now. Holds the
+/// display transaction lock; never runs while a preview is pending.
+/// Returns false when it deferred because of a preview.
+fn display_auto_reconcile(trigger: DisplayTrigger, quiet: bool) -> Result<bool> {
+    let _guard = display_transaction_lock()?;
+    if display_preview_read().is_some() {
+        return Ok(false);
+    }
+    let file = display_read_file()?;
+    let snapshot = DisplaySnapshot::read()?;
+    let lid_closed = snapshot.lid_closed();
+    let set = snapshot.set();
+    let mut memory: display_auto::Memory = display_read_toml(&display_memory_path());
+    let mut state: DisplayAutoState = display_read_toml(&display_auto_state_path());
+    let now = now_secs();
+    let log = |text: &str| {
+        if !quiet {
+            println!("display auto: {text}");
+        }
+    };
+
+    if trigger == DisplayTrigger::Retry {
+        if state.retry_set != set || state.retry_target.is_empty() {
+            state.retry.clear();
+            state.retry_target.clear();
+            state.retry_set.clear();
+            display_write_toml(&display_auto_state_path(), &state)?;
+            return Ok(true);
+        }
+        let target = state.retry_target.clone();
+        let (_, exact, after) = display_apply_verified(&target, &snapshot)?;
+        if exact {
+            log("the saved settings were accepted on retry");
+            state.retry.clear();
+            state.retry_target.clear();
+            state.retry_set.clear();
+            state.last = Some(DisplayAutoEvent {
+                time: now,
+                action: "retry".into(),
+                profile: display_current_profile(&file, &after),
+                detail: "Saved settings accepted on retry.".into(),
+                ok: true,
+            });
+        } else {
+            let delay = state.retry.failed(now);
+            log(&format!("still relaxed; next try in {delay}s"));
+        }
+        let current = display_current_profile(&file, &after);
+        if memory.record(&after.screens, after.lid_closed(), current.as_deref(), now) {
+            display_write_toml(&display_memory_path(), &memory)?;
+        }
+        display_write_toml(&display_auto_state_path(), &state)?;
+        return Ok(true);
+    }
+
+    // A new set clears an old retry: it was for other screens.
+    if state.retry_set != set {
+        state.retry.clear();
+        state.retry_target.clear();
+        state.retry_set.clear();
+    }
+    let matches: Vec<(usize, display_auto::ProfileMatch)> = file
+        .profile
+        .iter()
+        .enumerate()
+        .map(|(index, profile)| (index, display_match(profile, &snapshot, lid_closed)))
+        .collect();
+    let candidates: Vec<display_auto::Candidate> = matches
+        .iter()
+        .map(|(index, matched)| display_auto::Candidate {
+            name: &file.profile[*index].name,
+            auto: file.profile[*index].auto,
+            matched,
+        })
+        .collect();
+    let preferred = if trigger == DisplayTrigger::Start {
+        file.startup_profile.as_deref()
+    } else {
+        None
+    };
+    let last = memory
+        .layout(&set)
+        .and_then(|layout| layout.profile.as_deref());
+    let choice = display_auto::choose(&candidates, preferred, last);
+    let description = display_auto::describe_set(&snapshot.screens, lid_closed);
+    let (target, action, profile_name, summary, body): (Vec<display_auto::Placement>, &str, Option<String>, String, String) =
+        match &choice {
+            display_auto::Choice::Profile(name) => {
+                let index = file.profile.iter().position(|p| &p.name == name).unwrap_or(0);
+                let (_, matched) = &matches[index];
+                let mut resolved = file.profile[index].clone();
+                for (output, connector) in resolved.outputs.iter_mut().zip(matched.on.iter()) {
+                    output.name = connector.clone();
+                }
+                (
+                    display_placements(&resolved, &snapshot),
+                    "profile",
+                    Some(name.clone()),
+                    format!("Display profile: {name}"),
+                    format!("Applied automatically for {description}."),
+                )
+            }
+            display_auto::Choice::Ambiguous(names) => {
+                let fallback = memory
+                    .restore(&snapshot.screens, lid_closed)
+                    .unwrap_or_else(|| display_auto::extend(&snapshot.screens, lid_closed, &memory));
+                (
+                    fallback,
+                    "ambiguous",
+                    None,
+                    "Display profiles: choose one".to_string(),
+                    format!(
+                        "{} fit {description}. Kept a usable layout; pick one in NIRU Display.",
+                        names.join(", ")
+                    ),
+                )
+            }
+            display_auto::Choice::None if display_auto::effective(&snapshot.screens, lid_closed).is_empty() => (
+                // The lid is closed and nothing else is connected: the panel
+                // stays (or comes back) on so the session is never dark.
+                display_auto::extend(&snapshot.screens, lid_closed, &memory),
+                "fallback",
+                None,
+                "Display layout".to_string(),
+                "No other screen is connected: the built-in screen stays on.".to_string(),
+            ),
+            display_auto::Choice::None => match memory.restore(&snapshot.screens, lid_closed) {
+                Some(remembered) => (
+                    remembered,
+                    "remembered",
+                    None,
+                    "Display layout restored".to_string(),
+                    format!("Last layout for {description}."),
+                ),
+                None => (
+                    display_auto::extend(&snapshot.screens, lid_closed, &memory),
+                    "extended",
+                    None,
+                    "Display layout".to_string(),
+                    format!("{description}: new screens placed to the right. Save it as a profile in NIRU Display."),
+                ),
+            },
+        };
+    state.ambiguous = match &choice {
+        display_auto::Choice::Ambiguous(names) => names.clone(),
+        _ => Vec::new(),
+    };
+    if target.is_empty() {
+        display_write_toml(&display_auto_state_path(), &state)?;
+        return Ok(true);
+    }
+    let already =
+        display_auto::verify(&target, &snapshot.screens).is_empty() && snapshot.ghosts().is_empty();
+    let snapshot_lit: Vec<String> = snapshot
+        .screens
+        .iter()
+        .filter(|screen| screen.current.is_some())
+        .map(|screen| screen.connector.clone())
+        .collect();
+    // "Extended" without a new screen (the lid hid the panel, a screen
+    // left) only kept the layout; say so.
+    let lit_before = |connector: &str| snapshot_lit.iter().any(|lit| lit == connector);
+    let added = target
+        .iter()
+        .any(|placement| !lit_before(&placement.connector));
+    let body = if action == "extended" && (already || !added) {
+        format!("Kept the layout for {description}.")
+    } else {
+        body
+    };
+
+    let (in_effect, exact, after) = if already {
+        (target.clone(), true, snapshot)
+    } else {
+        display_apply_verified(&target, &snapshot)?
+    };
+    let lid_note = if lid_closed
+        && after.has_internal()
+        && after
+            .screens
+            .iter()
+            .any(|screen| screen.internal() && screen.current.is_none())
+    {
+        " The lid is closed: built-in screen off."
+    } else {
+        ""
+    };
+    if !exact {
+        state.retry_target = target.clone();
+        state.retry_set = set.clone();
+        let delay = state.retry.failed(now);
+        display_notify_auto(
+            "Display settings relaxed",
+            &format!("A screen refused its saved mode or rate; using a safe one and trying again in {delay}s."),
+        );
+        log(&format!("relaxed {} ; retry in {delay}s", action));
+    }
+    if !already {
+        let mut text = body.clone();
+        text.push_str(lid_note);
+        display_notify_auto(&summary, &text);
+        log(&format!("{summary}: {text}"));
+    } else {
+        log(&format!("{action}: already in effect"));
+    }
+    state.automatic_layout = match action {
+        "profile" | "fallback" => None,
+        _ => Some(description.clone()),
+    };
+    if !already || state.last.is_none() || trigger == DisplayTrigger::Screens {
+        state.last = Some(DisplayAutoEvent {
+            time: now,
+            action: if exact {
+                action.to_string()
+            } else {
+                "relaxed".into()
+            },
+            profile: profile_name,
+            detail: if already {
+                format!("{body} (already in effect)")
+            } else {
+                body
+            },
+            ok: exact,
+        });
+    }
+    let _ = in_effect;
+    let current = display_current_profile(&file, &after);
+    if memory.record(&after.screens, after.lid_closed(), current.as_deref(), now) {
+        display_write_toml(&display_memory_path(), &memory)?;
+    }
+    display_write_toml(&display_auto_state_path(), &state)?;
+    if let Ok((c, screen)) = x11rb::connect(None) {
+        let root = c.setup().roots[screen].root;
+        let _ = windows_rescue_run(&c, root, false, true);
+    }
+    Ok(true)
+}
+
+/// Remember a layout the user arranged by hand, without acting on it.
+fn display_auto_observe() -> Result<()> {
+    let _guard = display_transaction_lock()?;
+    if display_preview_read().is_some() {
+        return Ok(());
+    }
+    let file = display_read_file()?;
+    let snapshot = DisplaySnapshot::read()?;
+    let current = display_current_profile(&file, &snapshot);
+    let mut memory: display_auto::Memory = display_read_toml(&display_memory_path());
+    if memory.record(
+        &snapshot.screens,
+        snapshot.lid_closed(),
+        current.as_deref(),
+        now_secs(),
+    ) {
+        display_write_toml(&display_memory_path(), &memory)?;
+    }
+    let mut state: DisplayAutoState = display_read_toml(&display_auto_state_path());
+    let mut changed = false;
+    if current.is_some() && state.automatic_layout.is_some() {
+        state.automatic_layout = None;
+        changed = true;
+    }
+    // The user changed the layout: a pending retry would undo that.
+    if state.retry.next.is_some() {
+        state.retry.clear();
+        state.retry_target.clear();
+        state.retry_set.clear();
+        changed = true;
+    }
+    if changed {
+        display_write_toml(&display_auto_state_path(), &state)?;
+    }
+    Ok(())
+}
+
+fn display_auto_json(file: &DisplayFile, snapshot: &DisplaySnapshot) -> serde_json::Value {
+    let state: DisplayAutoState = display_read_toml(&display_auto_state_path());
+    let current = display_current_profile(file, snapshot);
+    serde_json::json!({
+        "enabled": file.automatic,
+        "lid": snapshot.lid.map(|closed| if closed { "closed" } else { "open" }),
+        "last": state.last.as_ref().map(|event| serde_json::json!({
+            "time": event.time,
+            "action": event.action,
+            "profile": event.profile,
+            "detail": event.detail,
+            "ok": event.ok,
+        })),
+        "retry_in": state.retry.seconds_left(now_secs()),
+        "ambiguous": state.ambiguous,
+        "automatic_layout": if current.is_none() { state.automatic_layout.clone() } else { None },
+        "current_profile": current,
+    })
+}
+
+fn display_profile_status_json(
+    profile: &DisplayProfile,
+    snapshot: &DisplaySnapshot,
+) -> serde_json::Value {
+    let lid_closed = snapshot.lid_closed();
+    let matched = display_match(profile, snapshot, lid_closed);
+    let loadable = display_match(profile, snapshot, false);
+    let fit = match &matched.fit {
+        display_auto::Fit::Exact => "exact",
+        display_auto::Fit::Partial { .. } => "partial",
+        display_auto::Fit::Missing { .. } => "missing",
+    };
+    let names: Vec<String> = if loadable.on.len() == profile.outputs.len() {
+        loadable.on.clone()
+    } else {
+        profile
+            .outputs
+            .iter()
+            .map(|output| output.name.clone())
+            .collect()
+    };
+    serde_json::json!({
+        "name": profile.name,
+        "auto": profile.auto,
+        "fit": fit,
+        "reason": display_mismatch_reason(profile, &matched, snapshot),
+        // Every screen it names is connected (the lid aside): it can be
+        // loaded and applied by hand.
+        "loadable": !matches!(loadable.fit, display_auto::Fit::Missing { .. }),
+        "outputs": profile.outputs.iter().zip(names.iter()).map(|(output, name)| serde_json::json!({
+            "name": name,
+            "saved_name": output.name,
+            "label": display_entry_label(output),
+            "identity": output.identity,
+            "mode": output.mode,
+            "rate": output.rate,
+            "position": output.position,
+            "rotation": output.rotation,
+            "primary": output.primary,
+        })).collect::<Vec<_>>(),
+        "off": profile.off.iter().map(|output| output.name.clone()).collect::<Vec<_>>(),
+    })
+}
+
+fn display_doctor(json: bool) -> Result<()> {
+    let file = display_read_file()?;
+    let snapshot = DisplaySnapshot::read()?;
+    let lid_closed = snapshot.lid_closed();
+    let state: DisplayAutoState = display_read_toml(&display_auto_state_path());
+    let mut problems: Vec<String> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    // Screens that cannot be told apart.
+    let mut seen: HashMap<String, Vec<String>> = HashMap::new();
+    for screen in &snapshot.screens {
+        if let Some(identity) = &screen.identity {
+            seen.entry(identity.key())
+                .or_default()
+                .push(screen.connector.clone());
+        } else if screen.usable() {
+            notes.push(format!(
+                "{}: no EDID; profiles match it by connector only",
+                screen.connector
+            ));
+        }
+    }
+    for (key, connectors) in &seen {
+        if connectors.len() > 1 {
+            notes.push(format!(
+                "{} report the same identity ({key}); they are told apart by connector name",
+                connectors.join(" and ")
+            ));
+        }
+    }
+    let mut profiles = Vec::new();
+    for profile in &file.profile {
+        let mut issues = Vec::new();
+        let mut names = HashSet::new();
+        for output in &profile.outputs {
+            if !names.insert(output.name.clone()) {
+                issues.push(format!("{} is listed twice", output.name));
+            }
+            if !matches!(
+                output.rotation.as_str(),
+                "normal" | "left" | "right" | "inverted"
+            ) {
+                issues.push(format!(
+                    "{}: invalid rotation {}",
+                    output.name, output.rotation
+                ));
+            }
+            if display_position_pair(&output.position).is_none() {
+                issues.push(format!(
+                    "{}: invalid position {}",
+                    output.name, output.position
+                ));
+            }
+            if output.mode != "preferred" && !output.mode.contains('x') {
+                issues.push(format!("{}: invalid mode {}", output.name, output.mode));
+            }
+        }
+        if profile.outputs.is_empty() {
+            issues.push("no screens: it can never be applied".into());
+        }
+        if profile
+            .outputs
+            .iter()
+            .filter(|output| output.primary)
+            .count()
+            > 1
+        {
+            issues.push("more than one primary screen".into());
+        }
+        let matched = display_match(profile, &snapshot, lid_closed);
+        let reason = display_mismatch_reason(profile, &matched, &snapshot);
+        let legacy = profile
+            .outputs
+            .iter()
+            .any(|output| output.identity.is_none());
+        if legacy {
+            notes.push(format!(
+                "profile {}: saved without screen identities; it follows connectors. Save it again to upgrade.",
+                profile.name
+            ));
+        }
+        for issue in &issues {
+            problems.push(format!("profile {}: {issue}", profile.name));
+        }
+        profiles.push(serde_json::json!({
+            "name": profile.name,
+            "fit": match matched.fit { display_auto::Fit::Exact => "exact", display_auto::Fit::Partial{..} => "partial", display_auto::Fit::Missing{..} => "missing" },
+            "reason": reason,
+            "auto": profile.auto,
+            "identities": !legacy,
+            "issues": issues,
+        }));
+    }
+    if let Some(name) = &file.startup_profile {
+        match file.profile.iter().find(|profile| &profile.name == name) {
+            None => problems.push(format!("startup profile {name} does not exist")),
+            Some(profile) => {
+                if let Err(error) = display_resolve_profile(profile, &snapshot) {
+                    notes.push(format!("startup profile: {error}"));
+                }
+            }
+        }
+    }
+    let lit = snapshot
+        .screens
+        .iter()
+        .filter(|screen| screen.current.is_some())
+        .count();
+    if lit == 0 {
+        problems.push("no connected screen is lit".into());
+    }
+    for state_output in &snapshot.outputs {
+        if !state_output.connected && state_output.current.is_some() {
+            problems.push(format!(
+                "{} is disconnected but still holds a screen area; apply a profile or run niructl display auto",
+                state_output.name
+            ));
+        }
+    }
+    let current = display_current_profile(&file, &snapshot);
+    if json {
+        let value = serde_json::json!({
+            "schema": 1,
+            "automatic": file.automatic,
+            "lid": snapshot.lid.map(|closed| if closed { "closed" } else { "open" }),
+            "screens": snapshot.screens.iter().map(|screen| serde_json::json!({
+                "connector": screen.connector,
+                "key": screen.key(),
+                "identity": screen.identity,
+                "internal": screen.internal(),
+                "lit": screen.current.is_some(),
+            })).collect::<Vec<_>>(),
+            "current_profile": current,
+            "profiles": profiles,
+            "problems": problems,
+            "notes": notes,
+            "last": state.last.as_ref().map(|event| serde_json::json!({
+                "time": event.time, "action": event.action, "profile": event.profile, "detail": event.detail, "ok": event.ok,
+            })),
+            "retry_in": state.retry.seconds_left(now_secs()),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    println!(
+        "automatic switching: {}",
+        if file.automatic {
+            "on"
+        } else {
+            "off (niructl display automatic on)"
+        }
+    );
+    if let Some(closed) = snapshot.lid {
+        println!("lid: {}", if closed { "closed" } else { "open" });
+    }
+    println!("screens:");
+    for screen in &snapshot.screens {
+        println!(
+            "  {:<14} {:<4} {}",
+            screen.connector,
+            if screen.current.is_some() {
+                "on"
+            } else {
+                "off"
+            },
+            screen
+                .identity
+                .as_ref()
+                .map(|identity| identity.describe())
+                .unwrap_or_else(|| "no EDID".into())
+        );
+    }
+    println!(
+        "current layout: {}",
+        current
+            .as_deref()
+            .map(|name| format!("profile {name}"))
+            .unwrap_or_else(|| "not a saved profile".into())
+    );
+    println!("profiles:");
+    for profile in &profiles {
+        let name = profile["name"].as_str().unwrap_or("");
+        let fit = profile["fit"].as_str().unwrap_or("");
+        let reason = profile["reason"]
+            .as_str()
+            .map(|r| format!(" — {r}"))
+            .unwrap_or_default();
+        let auto = if profile["auto"].as_bool() == Some(false) {
+            " [not automatic]"
+        } else {
+            ""
+        };
+        println!("  {name}: {fit}{reason}{auto}");
+    }
+    if let Some(event) = &state.last {
+        let when = Local
+            .timestamp_opt(event.time as i64, 0)
+            .single()
+            .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default();
+        println!(
+            "last automatic action: {when} {}{} — {}",
+            event.action,
+            event
+                .profile
+                .as_deref()
+                .map(|p| format!(" {p}"))
+                .unwrap_or_default(),
+            event.detail
+        );
+    }
+    if let Some(seconds) = state.retry.seconds_left(now_secs()) {
+        println!("retrying the saved settings in {seconds}s");
+    }
+    for note in &notes {
+        println!("note: {note}");
+    }
+    for problem in &problems {
+        println!("problem: {problem}");
+    }
+    if problems.is_empty() {
+        println!("no problems found");
+    }
+    Ok(())
+}
+
+fn display_auto_command(args: &[String]) -> Result<()> {
+    let action = args.first().map(String::as_str).unwrap_or("status");
+    match action {
+        "on" | "off" => {
+            {
+                let _guard = display_transaction_lock()?;
+                let mut file = display_read_file()?;
+                file.automatic = action == "on";
+                display_write_file(&file)?;
+            }
+            println!(
+                "automatic display switching {}",
+                if action == "on" { "on" } else { "off" }
+            );
+            if action == "on" {
+                // Act on the screens connected now, as a hotplug would.
+                if !display_auto_reconcile(DisplayTrigger::Start, true)? {
+                    println!("a display preview is pending; the automation acts after it ends");
+                }
+            }
+        }
+        "status" => {
+            let file = display_read_file()?;
+            let snapshot = DisplaySnapshot::read()?;
+            let json = args.iter().any(|arg| arg == "--json");
+            let value = display_auto_json(&file, &snapshot);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&value)?);
+            } else {
+                println!("automatic: {}", if file.automatic { "on" } else { "off" });
+                if let Some(lid) = value["lid"].as_str() {
+                    println!("lid: {lid}");
+                }
+                if let Some(detail) = value["last"]["detail"].as_str() {
+                    println!(
+                        "last: {} — {detail}",
+                        value["last"]["action"].as_str().unwrap_or("")
+                    );
+                }
+            }
+        }
+        "run" | "now" => {
+            if !display_auto_reconcile(DisplayTrigger::Screens, false)? {
+                println!("a display preview is pending; nothing changed");
+            }
+        }
+        _ => return Err("display auto needs on, off, status [--json] or run".into()),
+    }
     Ok(())
 }
 
@@ -2934,7 +4347,10 @@ fn display(args: &[String]) -> Result<()> {
     // `watch` owns the lock only around each transition. Taking it for the
     // whole watch loop would make the watcher block against itself when it
     // reconciles the first output change.
-    let _guard = if matches!(action, "list" | "status" | "expire" | "watch") {
+    let _guard = if matches!(
+        action,
+        "list" | "status" | "expire" | "watch" | "automatic" | "doctor"
+    ) {
         None
     } else {
         Some(display_transaction_lock()?)
@@ -2959,15 +4375,32 @@ fn display(args: &[String]) -> Result<()> {
             }
             let mut file = display_read_file()?;
             let outputs = display_outputs()?;
-            let layout = display_current_layout(&outputs);
+            let layout: Vec<DisplayOutput> = display_current_layout(&outputs)
+                .into_iter()
+                .filter(|output| {
+                    outputs
+                        .iter()
+                        .any(|state| state.name == output.name && state.connected)
+                })
+                .collect();
             if layout.is_empty() {
                 return Err("no active display outputs to save".into());
             }
+            let previous = file
+                .profile
+                .iter()
+                .find(|profile| profile.name == *name)
+                .cloned();
+            let profile = display_profile_for_saving(
+                DisplayProfile {
+                    name: name.clone(),
+                    outputs: layout,
+                    ..Default::default()
+                },
+                previous.as_ref(),
+            );
             file.profile.retain(|profile| profile.name != *name);
-            file.profile.push(DisplayProfile {
-                name: name.clone(),
-                outputs: layout,
-            });
+            file.profile.push(profile);
             display_write_file(&file)?;
             println!("saved display profile {name}");
         }
@@ -3004,7 +4437,9 @@ fn display(args: &[String]) -> Result<()> {
                 .into_iter()
                 .find(|p| p.name == *name)
                 .ok_or_else(|| format!("unknown display profile: {name}"))?;
-            let outputs = display_outputs()?;
+            let snapshot = DisplaySnapshot::read()?;
+            let profile = display_resolve_profile(&profile, &snapshot)?;
+            let outputs = snapshot.outputs;
             if action == "apply" {
                 let previous = display_current_layout(&outputs);
                 if let Err(error) = display_apply(&outputs, &profile) {
@@ -3053,8 +4488,11 @@ fn display(args: &[String]) -> Result<()> {
             if args.get(1).map(String::as_str) != Some(state.token.as_str()) {
                 return Err("stale or missing display transaction token; refresh the view".into());
             }
-            display_restore(&state.previous)?;
+            let restored = display_restore(&state.previous);
+            // The transaction ends either way; a stale one would block the
+            // automation and every later preview.
             let _ = std::fs::remove_file(display_preview_path());
+            restored?;
             display_notify("Display layout reverted", "Previous layout restored");
             println!("display preview reverted");
         }
@@ -3082,8 +4520,9 @@ fn display(args: &[String]) -> Result<()> {
             if state.token != *token {
                 return Ok(());
             }
-            display_restore(&state.previous)?;
+            let restored = display_restore(&state.previous);
             let _ = std::fs::remove_file(display_preview_path());
+            restored?;
             display_notify("Display preview expired", "Previous layout restored");
         }
         "rotate" => {
@@ -3098,6 +4537,8 @@ fn display(args: &[String]) -> Result<()> {
             display_rotate(name, rotation)?;
         }
         "watch" => display_watch(&args[1..])?,
+        "automatic" => display_auto_command(&args[1..])?,
+        "doctor" => display_doctor(args.iter().any(|arg| arg == "--json"))?,
         "auto" => {
             // Lay the connected screens out side by side in xrandr's own
             // order, each at its preferred mode and upright. This is the
@@ -3118,6 +4559,7 @@ fn display(args: &[String]) -> Result<()> {
                     position: display_zero_position(),
                     rotation: display_normal_rotation(),
                     primary: false,
+                    identity: None,
                 });
                 output.mode = "preferred".into();
                 output.rate = None;
@@ -3136,6 +4578,7 @@ fn display(args: &[String]) -> Result<()> {
             let profile = DisplayProfile {
                 name: "auto".into(),
                 outputs: layout,
+                ..Default::default()
             };
             let previous = display_current_layout(&outputs);
             if let Err(error) = display_apply(&outputs, &profile) {
@@ -7619,13 +9062,16 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
                 DisplayProfile {
                     name: "Desk".into(),
                     outputs: Vec::new(),
+                    ..Default::default()
                 },
                 DisplayProfile {
                     name: "Other".into(),
                     outputs: Vec::new(),
+                    ..Default::default()
                 },
             ],
             startup_profile: Some("Desk".into()),
+            automatic: false,
         }
     }
 
@@ -7686,6 +9132,7 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
             position: "0x0".into(),
             rotation: "normal".into(),
             primary: true,
+            identity: None,
         };
         let resolved = display_resolve(&outputs, &with_rate).unwrap();
         assert_eq!(resolved.rate, Some(74.97));
@@ -7745,6 +9192,7 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
             position: "5120x0".into(),
             rotation: "normal".into(),
             primary: false,
+            identity: None,
         };
         let resolved = display_resolve(&outputs, &profile).expect("an off screen is placeable");
         assert_eq!(resolved.mode, "1920x1200");
@@ -7758,6 +9206,7 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
             position: "0x0".into(),
             rotation: "normal".into(),
             primary: false,
+            identity: None,
         }
     }
 
@@ -7835,6 +9284,7 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
                 wanted_output("DisplayPort-4"),
                 wanted_output("DisplayPort-6"),
             ],
+            ..Default::default()
         };
         // DisplayPort-6 is connected but switched off; that is still matched.
         assert!(profile_outputs_connected(&outputs, &profile));
@@ -7844,11 +9294,13 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
                 wanted_output("DisplayPort-4"),
                 wanted_output("DisplayPort-3"),
             ],
+            ..Default::default()
         };
         assert!(!profile_outputs_connected(&outputs, &missing));
         let empty = DisplayProfile {
             name: "Empty".into(),
             outputs: Vec::new(),
+            ..Default::default()
         };
         assert!(!profile_outputs_connected(&outputs, &empty));
     }
@@ -8416,5 +9868,20 @@ mod saved_action_tests {
             assert!(item["command"].is_array());
             assert!(item["favorite"].is_boolean());
         }
+    }
+}
+
+#[cfg(test)]
+mod display_uevent_tests {
+    use super::drm_uevent_is_hotplug;
+
+    #[test]
+    fn only_drm_changes_count() {
+        let hotplug = b"change@/devices/pci0000:00/0000:00:02.0/drm/card1\0ACTION=change\0DEVPATH=/devices/pci0000:00/0000:00:02.0/drm/card1\0SUBSYSTEM=drm\0HOTPLUG=1\0DEVNAME=dri/card1\0SEQNUM=4242\0";
+        assert!(drm_uevent_is_hotplug(hotplug));
+        let usb = b"add@/devices/usb1/1-1\0ACTION=add\0SUBSYSTEM=usb\0SEQNUM=1\0";
+        assert!(!drm_uevent_is_hotplug(usb));
+        let drm_add = b"add@/devices/drm/card1/card1-DP-1\0ACTION=add\0SUBSYSTEM=drm\0";
+        assert!(!drm_uevent_is_hotplug(drm_add));
     }
 }

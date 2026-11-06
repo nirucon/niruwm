@@ -357,8 +357,35 @@ niructl display startup off
 niructl display startup apply   # what the session runs at login
 ```
 
-There is no automatic switching by default. A missing profile or output leaves
-the current connected screens usable and logs why the profile was skipped.
+A missing profile or output leaves the current connected screens usable and
+logs why the profile was skipped.
+
+Since 0.17 a saved profile also records which physical screen each entry is
+(make, model and serial from the EDID). It therefore follows its screens when
+connector names such as `DP-1` and `DP-2` swap or a dock port changes.
+Profiles saved earlier keep matching by connector; saving one again upgrades
+it.
+
+Automatic switching is off by default. When it is on, the session's display
+watcher applies the right layout whenever screens are plugged in or out or
+the laptop lid closes:
+
+- a profile that fits the connected screens exactly;
+- otherwise the layout those screens had last time;
+- otherwise the current layout with the new screens added to the right.
+
+A closed lid turns the built-in screen off while another screen is
+connected, and the session is never left dark. Every change shows a short
+notification. The watcher waits for RandR and kernel events instead of
+polling.
+
+```sh
+niructl display automatic on|off|status [--json]|run
+niructl display doctor [--json]   # what fits, what is missing and why
+```
+
+See [docs/display-profiles.md](docs/display-profiles.md) for the matching
+rules, the lid, verification and retries, the state files and the limits.
 
 `niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
 display profiles, power profiles, DND, diagnostics, work modes and workspace

@@ -326,6 +326,7 @@ impl Wm {
             orphan,
             sticky,
             size_hints,
+            home: None,
         };
         if let Some(opacity) = rule.as_ref().and_then(|r| r.opacity) {
             let value = (u64::from(opacity.clamp(1, 100)) * u64::from(u32::MAX) / 100) as u32;

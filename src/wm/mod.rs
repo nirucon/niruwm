@@ -62,9 +62,28 @@ pub(crate) struct Client {
     orphan: bool,
     /// A rule may pin a floating window to every workspace on its monitor.
     sticky: bool,
+    /// Set when the window's screen went away: where it lived (output name
+    /// and workspace) and the output it was moved to. When that screen comes
+    /// back the window returns, unless the user moved it elsewhere meanwhile.
+    home: Option<Home>,
     /// Client min/max size hints. `geom` is the outer rectangle, so these
     /// limits are applied to the same rectangle that arrange() uses.
     size_hints: SizeHints,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Home {
+    output: String,
+    tag: u32,
+    moved_to: String,
+}
+
+/// What a screen showed when it was unplugged or turned off, so it shows the
+/// same workspace when it returns.
+#[derive(Clone, Debug)]
+pub(crate) struct DepartedMonitor {
+    active: usize,
+    states: Vec<crate::monitor::WorkspaceState>,
 }
 
 /// The size limits a client publishes in WM_NORMAL_HINTS.
@@ -214,6 +233,8 @@ pub(crate) struct Wm {
     pub(crate) wallpaper: Wallpaper,
     /// Connected screens. A window belongs to the screen it was opened on.
     pub(crate) monitors: Vec<Monitor>,
+    /// Screens that went away during this session, by output name.
+    pub(crate) departed: HashMap<String, DepartedMonitor>,
     /// True when more than one screen is active.
     pub(crate) multi_monitor: bool,
     /// Which screen has the input focus.
@@ -373,6 +394,7 @@ impl Wm {
             bindings: Vec::new(),
             wallpaper,
             monitors: Vec::new(),
+            departed: HashMap::new(),
             multi_monitor: false,
             focused_monitor: 0,
             monitor_cfg,
@@ -672,14 +694,63 @@ impl Wm {
         );
         let count = monitors.len().max(1);
         let previous = self.monitors.clone();
+        // Screens that left: remember what they showed.
+        for old in &previous {
+            if !monitors.iter().any(|m| m.name == old.name) {
+                self.departed.insert(
+                    old.name.clone(),
+                    DepartedMonitor {
+                        active: old.active,
+                        states: old.states.clone(),
+                    },
+                );
+            }
+        }
+        // Screens that came back show the workspace they showed when they left.
+        for m in monitors.iter_mut() {
+            if previous.iter().any(|p| p.name == m.name) {
+                continue;
+            }
+            if let Some(departed) = self.departed.remove(&m.name) {
+                if departed.active < m.workspaces.len() {
+                    m.active = departed.active;
+                }
+                m.states = departed.states;
+            }
+        }
         // Re-home by output name: RandR may reorder outputs.
         for c in self.clients.iter_mut() {
+            // A window whose screen returned goes back to it, unless the user
+            // moved it away from the screen it was parked on.
+            if let Some(home) = c.home.clone() {
+                if let Some(i) = monitors.iter().position(|m| m.name == home.output) {
+                    if c.monitor_name == home.moved_to {
+                        c.monitor_name = home.output.clone();
+                        if (home.tag as usize) < monitors[i].workspaces.len() {
+                            c.tag = home.tag;
+                        }
+                    }
+                    c.home = None;
+                }
+            }
             let index = monitors.iter().position(|m| m.name == c.monitor_name);
             c.monitor = match index {
                 Some(i) => i,
                 None => self.focused_monitor.min(monitors.len().saturating_sub(1)),
             };
             if let Some(m) = monitors.get(c.monitor) {
+                if index.is_none() && c.home.is_none() && !c.monitor_name.is_empty() {
+                    c.home = Some(Home {
+                        output: c.monitor_name.clone(),
+                        tag: c.tag,
+                        moved_to: m.name.clone(),
+                    });
+                }
+                if index.is_none() {
+                    if let Some(home) = c.home.as_mut() {
+                        home.moved_to = m.name.clone();
+                    }
+                }
                 c.monitor_name = m.name.clone();
                 if (c.tag as usize) >= m.workspaces.len() {
                     c.tag = m.active as u32;

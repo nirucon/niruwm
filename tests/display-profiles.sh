@@ -26,3 +26,24 @@ TOKEN=$("$BIN" display preview Test 5 | sed -n 's/^preview-token: //p')
 grep -q '^\[\[profile\]\]' "$XDG_CONFIG_HOME/niruwm/displays.toml"
 grep -q '^name = "Test"' "$XDG_CONFIG_HOME/niruwm/displays.toml"
 echo 'PASS: save/list/apply/preview/status/keep/revert with validated RandR state'
+
+# Automatic switching: off by default, on and off by command, acting on the
+# connected screens at once, and reported by status and doctor.
+"$BIN" display automatic status | grep -q '^automatic: off$'
+"$BIN" display automatic on | grep -q 'automatic display switching on'
+grep -q '^automatic = true$' "$XDG_CONFIG_HOME/niruwm/displays.toml"
+"$BIN" display status --json | grep -q '"enabled": true'
+"$BIN" display automatic status --json | grep -q '"action"'
+"$BIN" display doctor | grep -q '^automatic switching: on$'
+"$BIN" display doctor --json | grep -q '"schema": 1'
+"$BIN" display automatic off | grep -q 'automatic display switching off'
+if grep -q '^automatic' "$XDG_CONFIG_HOME/niruwm/displays.toml"; then
+  echo "automatic = false must not be written" >&2; exit 1
+fi
+# A profile saved now records the screens it leaves off (none here) and keeps
+# its place and "Use at login" when it is saved again.
+"$BIN" display startup set Test
+"$BIN" display save Test
+"$BIN" display startup show | grep -q '^Test$'
+echo "display automation PASS"
+
