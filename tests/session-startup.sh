@@ -83,3 +83,24 @@ cat > "$TEST/bin/pgrep" <<'EOF'
 exit 1
 EOF
 chmod +x "$TEST/bin/pgrep"
+
+# An installed NIRUDICTATE extra is started with the session (it decides
+# itself whether autostart is on) and is a tracked helper like the others.
+cat > "$TEST/bin/nirudictate" <<'EOF2'
+#!/bin/sh
+printf '%s\n' "$*" > "$HOME/nirudictate-args"
+EOF2
+cp "$TEST/bin/niruwm" "$TEST/niruwm.plain"
+cat > "$TEST/bin/niruwm" <<'EOF2'
+#!/bin/sh
+i=0
+while [ ! -f "$HOME/nirudictate-args" ] && [ "$i" -lt 100 ]; do /bin/sleep 0.05; i=$((i + 1)); done
+exit 0
+EOF2
+chmod +x "$TEST/bin/nirudictate" "$TEST/bin/niruwm"
+rm -f "$HOME/nirudictate-args"
+"$TEST/bin/niruwm-session"
+[ "$(cat "$HOME/nirudictate-args" 2>/dev/null)" = autostart ] || { echo "FAIL nirudictate was not started"; exit 1; }
+printf 'PASS: an installed NIRUDICTATE is started with the session\n'
+rm -f "$TEST/bin/nirudictate" "$HOME/nirudictate-args"
+cp "$TEST/niruwm.plain" "$TEST/bin/niruwm"

@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.17.1'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.17.2'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -222,7 +222,7 @@ if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
 fi
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""; NIRUDICTATE_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
 cleanup() {
   # A deliberate session exit gets the shutdown cue. Playback is async and
   # never delays the actual logout; a crash path still reaches this only if
@@ -238,7 +238,7 @@ cleanup() {
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $NIRUSHARE_PID $PIPEWIRE_PID $WIREPLUMBER_PID $PULSE_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $NIRUSHARE_PID $NIRUDICTATE_PID $PIPEWIRE_PID $WIREPLUMBER_PID $PULSE_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -480,6 +480,14 @@ if command -v nirushare >/dev/null 2>&1 &&
    ! pgrep -u "$(id -u)" -x nirushare >/dev/null 2>&1; then
   mkdir -p "$LOG_DIR" 2>/dev/null || :
   nirushare serve >>"$LOG_DIR/nirushare.log" 2>&1 & NIRUSHARE_PID=$!
+fi
+# NIRUDICTATE (a NIRUX extra) listens for its dictation shortcut itself. Start
+# it only when it is installed; `nirudictate autostart` honours its own
+# autostart setting and exits at once when an instance already runs. It is
+# session-scoped like the helpers above and stopped at logout.
+if command -v nirudictate >/dev/null 2>&1; then
+  mkdir -p "$LOG_DIR" 2>/dev/null || :
+  nirudictate autostart >>"$LOG_DIR/nirudictate.log" 2>&1 & NIRUDICTATE_PID=$!
 fi
 STATUS=0
 "$WM" "$@" || STATUS=$?
