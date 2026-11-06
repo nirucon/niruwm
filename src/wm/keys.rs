@@ -739,42 +739,67 @@ pub(crate) fn tag_index(n: u32) -> u32 {
 
 /// Volume key commands.
 ///
-/// They change the volume and then show the result, because a key that only
-/// changes something you cannot see is not feedback. `notify-send` reaches
-/// whatever notification daemon is running, and silence is acceptable when
-/// none is.
-/// Volume key commands.
-///
 /// They change the volume and then show the result, because a key that changes
-/// something invisible is not feedback. `notify-send` reaches whatever
-/// notification daemon runs, or is silent when none is.
+/// something invisible is not feedback. The suite OSD (`nirunotify --osd`)
+/// shows the level and, in the same call, plays the matching NIRUX feedback
+/// sound: a tick whose pitch follows the new level, a softer bump when the key
+/// cannot go further (0 % or 100 %), and a two-note mute/unmute. NIRUNOTIFY
+/// decides whether a sound is on and limits a held key, so this script never
+/// starts a sound player itself. Without NIRUNOTIFY, `notify-send` reaches
+/// whatever daemon runs (or is silent), and one bubble is replaced by the next
+/// through a stable id per operation.
 ///
-/// One notification is replaced by the next instead of stacking: pressing the
-/// key five times shows one bubble with the final level, not five. That is what
-/// `-r` (replace id) does, and the id is stable per operation.
+/// Raising stops at 100 %; a sink that is already above it (set elsewhere)
+/// comes back to 100 %. wpctl versions without `-l` raise without a limit.
+/// The mute sound plays just before the sink is muted, so it can be heard.
 const VOLUME_SCRIPT: &str = r#"op="$1"
+sink=@DEFAULT_AUDIO_SINK@
+level() { awk '{printf "%d", $2 * 100 + 0.5}'; }
+before=$(wpctl get-volume "$sink" 2>/dev/null || :)
+was=$(printf '%s\n' "$before" | level)
+have_osd=0
+command -v nirunotify >/dev/null 2>&1 && have_osd=1
 case "$op" in
-  up)   wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null; wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null || amixer -q set Master 5%+ unmute 2>/dev/null ;;
-  down) wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null ;;
-  mute) wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null ;;
+  up)   wpctl set-mute "$sink" 0 2>/dev/null
+        wpctl set-volume -l 1.0 "$sink" 5%+ 2>/dev/null || wpctl set-volume "$sink" 5%+ 2>/dev/null ||
+          amixer -q set Master 5%+ unmute 2>/dev/null ;;
+  down) wpctl set-volume "$sink" 5%- 2>/dev/null || amixer -q set Master 5%- 2>/dev/null ;;
+  mute)
+    case "$before" in
+      *MUTED*) : ;;
+      *) if [ "$have_osd" = 1 ]; then
+           nirunotify --sound mute "${was:-0}" unmuted >/dev/null 2>&1 && sleep 0.18 2>/dev/null
+         fi ;;
+    esac
+    wpctl set-mute "$sink" toggle 2>/dev/null || amixer -q set Master toggle 2>/dev/null ;;
 esac
-v=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | awk '{printf "%d", $2*100}')
+after=$(wpctl get-volume "$sink" 2>/dev/null || :)
+v=$(printf '%s\n' "$after" | level)
 [ -n "$v" ] || v=$(amixer get Master 2>/dev/null | sed -n 's/.*\[\([0-9]*\)%\].*/\1/p' | head -1)
-if wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null | grep -q MUTED; then
-  body="Muted"
-else
-  body="${v}%"
-fi
+sound=
+case "$after" in
+  *MUTED*) body="Muted" ;;
+  *) body="${v}%"
+     case "$op" in
+       up) if [ "${was:-0}" -ge 100 ] 2>/dev/null && [ "${v:-0}" -ge 100 ] 2>/dev/null; then sound=volume-limit; else sound=volume-up; fi ;;
+       down) if [ "${was:-1}" -le 0 ] 2>/dev/null && [ "${v:-1}" -le 0 ] 2>/dev/null; then sound=volume-limit; else sound=volume-down; fi ;;
+       mute) sound=unmute ;;
+     esac ;;
+esac
 # Prefer the suite OSD; a missing daemon falls back to notify-send.
-if command -v nirunotify >/dev/null 2>&1 && nirunotify --osd volume "$body" >/dev/null 2>&1; then
-  exit 0
+if [ "$have_osd" = 1 ]; then
+  if [ -n "$sound" ]; then
+    nirunotify --osd volume "$body" --sound "$sound" "${v:-0}" unmuted >/dev/null 2>&1 && exit 0
+  else
+    nirunotify --osd volume "$body" >/dev/null 2>&1 && exit 0
+  fi
 fi
 # A stable id per operation, so repeated presses replace the same bubble.
 case "$op" in up) id=9101 ;; down) id=9102 ;; *) id=9103 ;; esac
 notify-send -a NIRU -r "$id" -h int:value:"${v:-0}" -t 1200 "Volume" "$body" 2>/dev/null
 exit 0"#;
 
-/// Look up a program in PATH without spawning anything./// Look up a program in PATH without spawning anything.
+/// Look up a program in PATH without spawning anything.
 pub(crate) fn which(name: &str) -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;
@@ -924,5 +949,96 @@ mod tests {
         assert_eq!(tag_index(3), 2);
         assert_eq!(tag_index(9), 8);
         assert_eq!(tag_index(10), 9, "the 0 key selects workspace 10");
+    }
+
+    /// Run the volume script against a fake wpctl (a sink in a file) and a
+    /// fake nirunotify that records its arguments.
+    fn volume_key(op: &str, volume: &str, muted: bool) -> (String, Vec<String>) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "niruwm-volume-{}-{op}-{volume}-{muted}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sink = dir.join("sink");
+        std::fs::write(&sink, format!("{volume} {}\n", if muted { 1 } else { 0 })).unwrap();
+        let wpctl = r#"#!/bin/sh
+read v m < "$SINK"
+case "$1" in
+  get-volume) if [ "$m" = 1 ]; then echo "Volume: $v [MUTED]"; else echo "Volume: $v"; fi ;;
+  set-mute) case "$3" in toggle) m=$((1 - m)) ;; *) m=$3 ;; esac ;;
+  set-volume)
+    [ "$2" = -l ] && { limit=$3; shift 2; }
+    v=$(awk -v v="$v" -v s="$3" -v l="${limit:-9}" 'BEGIN {
+      d = substr(s, 1, length(s) - 2) / 100; if (s ~ /-$/) d = -d
+      v += d; if (v < 0) v = 0; if (v > l) v = l; printf "%.2f", v }') ;;
+esac
+echo "$v $m" > "$SINK"
+"#;
+        let notify = "#!/bin/sh\necho \"$*\" >> \"$CALLS\"\n";
+        for (name, body) in [("wpctl", wpctl), ("nirunotify", notify)] {
+            let path = dir.join(name);
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let status = std::process::Command::new("sh")
+            .args(["-c", VOLUME_SCRIPT, "sh", op])
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+            .env("SINK", &sink)
+            .env("CALLS", dir.join("calls"))
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let state = std::fs::read_to_string(&sink).unwrap().trim().to_string();
+        let calls = std::fs::read_to_string(dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        (state, calls)
+    }
+
+    #[test]
+    fn volume_keys_show_the_level_and_play_the_matching_sound() {
+        let (state, calls) = volume_key("up", "0.40", false);
+        assert_eq!(state, "0.45 0");
+        assert_eq!(calls, ["--osd volume 45% --sound volume-up 45 unmuted"]);
+        let (_, calls) = volume_key("down", "0.40", false);
+        assert_eq!(calls, ["--osd volume 35% --sound volume-down 35 unmuted"]);
+    }
+
+    #[test]
+    fn volume_keys_bump_at_the_ends() {
+        let (state, calls) = volume_key("up", "0.98", false);
+        assert_eq!(state, "1.00 0", "raising stops at 100 %");
+        assert_eq!(calls, ["--osd volume 100% --sound volume-up 100 unmuted"]);
+        let (state, calls) = volume_key("up", "1.00", false);
+        assert_eq!(state, "1.00 0");
+        assert_eq!(
+            calls,
+            ["--osd volume 100% --sound volume-limit 100 unmuted"]
+        );
+        let (_, calls) = volume_key("down", "0.00", false);
+        assert_eq!(calls, ["--osd volume 0% --sound volume-limit 0 unmuted"]);
+    }
+
+    #[test]
+    fn mute_sounds_before_muting_and_unmute_after() {
+        let (state, calls) = volume_key("mute", "0.50", false);
+        assert_eq!(state, "0.50 1");
+        assert_eq!(calls, ["--sound mute 50 unmuted", "--osd volume Muted"]);
+        let (state, calls) = volume_key("mute", "0.50", true);
+        assert_eq!(state, "0.50 0");
+        assert_eq!(calls, ["--osd volume 50% --sound unmute 50 unmuted"]);
+        // Lowering a muted sink changes the level silently.
+        let (state, calls) = volume_key("down", "0.50", true);
+        assert_eq!(state, "0.45 1");
+        assert_eq!(calls, ["--osd volume Muted"]);
+        // Raising unmutes, so the tick is heard.
+        let (state, calls) = volume_key("up", "0.50", true);
+        assert_eq!(state, "0.55 0");
+        assert_eq!(calls, ["--osd volume 55% --sound volume-up 55 unmuted"]);
     }
 }

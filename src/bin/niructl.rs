@@ -111,13 +111,24 @@ fn backlight_percent(device: &str) -> Option<u32> {
 }
 
 fn notify(summary: &str, body: &str, value: Option<u32>) {
+    notify_with_sound(summary, body, value, None);
+}
+
+/// Like `notify`, and the suite OSD also plays SOUND (a NIRUX feedback event
+/// and the new level) in the same call. NIRUNOTIFY decides whether the
+/// event is switched on in `~/.config/nirux/sounds.toml`.
+fn notify_with_sound(summary: &str, body: &str, value: Option<u32>, sound: Option<(&str, u32)>) {
     // Prefer the suite's coalesced hardware OSD when its daemon is running.
     // The CLI exits nonzero without a socket, so a Dunst session falls back
     // to the ordinary notification path.
     if let Some(osd) = program("nirunotify") {
         let channel = summary.to_lowercase().replace(' ', "-");
+        let mut args = vec!["--osd".to_string(), channel, body.to_string()];
+        if let Some((event, level)) = sound {
+            args.extend(["--sound".to_string(), event.to_string(), level.to_string()]);
+        }
         if std::process::Command::new(osd)
-            .args(["--osd", &channel, body])
+            .args(&args)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -185,7 +196,12 @@ fn brightness(args: &[String]) -> Result<()> {
         _ => return Err("brightness needs up, down, set N or status".into()),
     }
     let percent = backlight_percent(&device);
-    notify(
+    let sound = match action {
+        "up" => Some("brightness-up"),
+        "down" => Some("brightness-down"),
+        _ => None,
+    };
+    notify_with_sound(
         "Brightness",
         &format!(
             "{}%",
@@ -194,6 +210,7 @@ fn brightness(args: &[String]) -> Result<()> {
                 .unwrap_or_else(|| "--".into())
         ),
         percent,
+        sound.map(|event| (event, percent.unwrap_or(0))),
     );
     Ok(())
 }

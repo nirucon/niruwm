@@ -149,6 +149,13 @@ installations are maintained with `nirux update`.
 | XF86AudioNext / Prev | Next / previous track |
 | XF86MonBrightnessUp / Down | Brightness up / down |
 
+The volume keys stop at 100 % and show the level through `nirunotify --osd`.
+The same call plays the NIRUX feedback sound: a soft tick whose pitch follows
+the new level, a duller bump at 0 % or 100 %, and a two-note mute/unmute (the
+mute sound plays just before the sink is muted). Brightness keys can tick too
+(off by default). Switch them with `nirux sounds`; NIRUNOTIFY 0.4 or newer
+plays them.
+
 ### Mouse
 
 | Input | Action |
