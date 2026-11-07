@@ -75,8 +75,15 @@ pub enum Action {
     TagMonitor(i32),
     /// Swap the focused window with the previous/next window in the stack.
     SwapNext,
-    /// Show or hide the scratchpad window.
+    /// Show or hide the default scratchpad (Super+Shift+S).
     Scratchpad,
+    /// Show or hide numbered scratchpad 1-9 (Super+Alt+N).
+    ScratchpadSlot(u8),
+    /// Send the focused window to scratchpad N, or back when it is already
+    /// there (Super+Alt+Shift+N).
+    ScratchpadSend(u8),
+    /// Turn the focused scratchpad back into a normal window.
+    Unscratch,
     /// A hardware media key: volume, mute or playback.
     MediaKey(String),
     /// Change laptop backlight brightness by a percentage step.
@@ -314,6 +321,15 @@ impl Action {
         add("super+alt+s", "toggle_sticky");
         add("super+alt+b", "bar_cycle");
         add("super+shift+s", "scratchpad");
+        // Numbered scratchpads: Super+Alt+N shows or hides slot N,
+        // Super+Alt+Shift+N sends the focused window there (or back).
+        for n in 1..=9 {
+            add(&format!("super+alt+{n}"), &format!("scratchpad {n}"));
+            add(
+                &format!("super+alt+shift+{n}"),
+                &format!("scratchpad_send {n}"),
+            );
+        }
         add("super+h", "dec_master_ratio");
         add("super+l", "inc_master_ratio");
         add("super+i", "inc_master");
@@ -395,6 +411,14 @@ fn direction(spec: &str, name: &str) -> Result<(i16, i16), String> {
         .and_then(|r| r.ok())
         .ok_or(format!("{name}: left|right|up|down or dx dy"))?;
     Ok((dx, dy))
+}
+
+/// A scratchpad slot: 1-9, the digit in Super+Alt+N.
+fn slot_number(verb: &str, text: &str) -> Result<u8, String> {
+    match text.trim().parse::<u8>() {
+        Ok(n) if (1..=9).contains(&n) => Ok(n),
+        _ => Err(format!("{verb}: slot must be 1 to 9, got {text:?}")),
+    }
 }
 
 /// A few actions are aliases that keep the table readable.
@@ -487,7 +511,10 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "toggle_gaps" => Action::ToggleGaps,
         "focusmon" => Action::FocusMonitor(arg()?.parse().unwrap_or(1)),
         "tagmon" => Action::TagMonitor(arg()?.parse().unwrap_or(1)),
-        "scratchpad" => Action::Scratchpad,
+        "scratchpad" if rest.is_empty() => Action::Scratchpad,
+        "scratchpad" => Action::ScratchpadSlot(slot_number(verb, rest)?),
+        "scratchpad_send" => Action::ScratchpadSend(slot_number(verb, arg()?)?),
+        "unscratch" => Action::Unscratch,
         // Hardware keys. The X names are what `keysym_named` resolves.
         "media_key" => Action::MediaKey(arg()?.to_string()),
         "brightness_step" => Action::BrightnessStep(
@@ -567,6 +594,28 @@ mod tests {
                 "missing default binding: {keys} -> {action}"
             );
         }
+    }
+
+    #[test]
+    fn numbered_scratchpads_have_default_keys() {
+        let defaults = Action::defaults();
+        for n in 1..=9 {
+            let show = defaults
+                .iter()
+                .find(|raw| raw.keys == format!("super+alt+{n}"))
+                .expect("Super+Alt+N is bound");
+            assert_eq!(parse_action(&show.action), Ok(Action::ScratchpadSlot(n)));
+            let send = defaults
+                .iter()
+                .find(|raw| raw.keys == format!("super+alt+shift+{n}"))
+                .expect("Super+Alt+Shift+N is bound");
+            assert_eq!(parse_action(&send.action), Ok(Action::ScratchpadSend(n)));
+        }
+        assert_eq!(parse_action("scratchpad"), Ok(Action::Scratchpad));
+        assert_eq!(parse_action("unscratch"), Ok(Action::Unscratch));
+        assert!(parse_action("scratchpad 0").is_err());
+        assert!(parse_action("scratchpad_send 10").is_err());
+        assert!(parse_action("scratchpad_send").is_err());
     }
 
     #[test]

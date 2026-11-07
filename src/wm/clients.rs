@@ -1,5 +1,18 @@
 use super::*;
 
+/// Whether a client takes a tile on screen `monitor` showing workspace
+/// `active`. Floating, fullscreen and withdrawn windows do not, and neither
+/// does any scratchpad, shown or hidden: a scratchpad is never a workspace
+/// member, so showing or hiding one cannot move or resize a tiled window.
+pub(crate) fn tiles(c: &Client, monitor: usize, active: u32, withdrawn: &HashSet<Window>) -> bool {
+    c.monitor == monitor
+        && (c.tag == active || c.sticky)
+        && !c.floating
+        && !c.fullscreen
+        && c.scratch.is_none()
+        && !withdrawn.contains(&c.win)
+}
+
 fn suppress_transient(withdrawn: &HashSet<Window>, parent: Option<Window>) -> bool {
     parent.is_some_and(|parent| withdrawn.contains(&parent))
 }
@@ -222,11 +235,14 @@ impl Wm {
         let agent_window = class
             .split('\0')
             .any(|part| part.eq_ignore_ascii_case("niru-agent"));
-        let is_scratchpad = self.cfg.scratchpad.matches_class(&class);
-        if is_scratchpad {
-            self.scratchpad = Some(w);
-            self.scratchpad_shown = true;
-        }
+        // A window of a scratchpad's class takes that slot when the slot is
+        // free. A second window of the same class is an ordinary window.
+        let scratch_slot = self
+            .cfg
+            .scratchpad
+            .slot_for_class(&class)
+            .filter(|slot| self.scratch_window(*slot).is_none());
+        let is_scratchpad = scratch_slot.is_some();
         // A restored window carries the placement saved for it. Matching
         // happens after the scratchpad check so a terminal that happens to be
         // the scratchpad never consumes a normal session record.
@@ -327,6 +343,9 @@ impl Wm {
             sticky,
             size_hints,
             home: None,
+            class: class.clone(),
+            scratch: None,
+            scratch_floating: false,
         };
         if let Some(opacity) = rule.as_ref().and_then(|r| r.opacity) {
             let value = (u64::from(opacity.clamp(1, 100)) * u64::from(u32::MAX) / 100) as u32;
@@ -380,28 +399,16 @@ impl Wm {
                 c.geom.y = c.geom.y.max(screen.y);
             }
         }
-        if is_scratchpad {
-            let screen = self
-                .monitors
-                .get(monitor)
-                .map(|m| m.rect)
-                .unwrap_or_else(|| self.work_area());
-            let w_px = (f32::from(screen.w) * self.cfg.scratchpad.width) as u16;
-            let h_px = (f32::from(screen.h) * self.cfg.scratchpad.height) as u16;
-            if let Some(c) = self.clients.last_mut() {
-                c.geom = Rect {
-                    x: screen.x + ((screen.w - w_px) / 2) as i16,
-                    y: screen.y + ((screen.h - h_px) / 2) as i16,
-                    w: w_px,
-                    h: h_px,
-                };
-            }
+        if let Some(slot) = scratch_slot {
+            // Shown at once on the focused screen, above its workspace, and
+            // hiding any other scratchpad. It never joins the workspace.
+            self.adopt_scratch(w, slot);
         }
         self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
         self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
         // Keep floating windows centred if the client asked for a 1x1 size
         // (common for dialogs that size themselves after mapping).
-        if floating && (g.width <= 1 || g.height <= 1) {
+        if floating && !is_scratchpad && (g.width <= 1 || g.height <= 1) {
             let area = self.work_area();
             if let Some(c) = self.clients.last_mut() {
                 c.geom = Rect {
@@ -418,7 +425,10 @@ impl Wm {
         if suite_settings {
             self.focused_monitor = monitor;
         }
-        if restored.is_none() && focus_on_map && tag == self.active_tag() {
+        if is_scratchpad {
+            self.focus = Some(w);
+            self.focus_dirty = true;
+        } else if restored.is_none() && focus_on_map && tag == self.active_tag() {
             self.set_focus(w)?;
         }
         self.arrange()?;
@@ -451,10 +461,18 @@ impl Wm {
         if self.restore_focus.map(|(window, _, _)| window) == Some(w) {
             self.restore_focus = None;
         }
-        if self.scratchpad == Some(w) {
-            self.scratchpad = None;
-            self.scratchpad_shown = false;
+        if self.scratch_return == Some(w) {
+            self.scratch_return = None;
         }
+        // Closing a scratchpad frees its slot: the slot is a property of the
+        // client, so removing the client below is all it takes. Focus goes
+        // back to where it was before the scratchpad was shown.
+        let scratch_back = if self.scratch_shown == Some(w) {
+            self.scratch_shown = None;
+            self.scratch_return.take()
+        } else {
+            None
+        };
         let neighbor = if self.focus == Some(w) {
             self.clients
                 .iter()
@@ -494,8 +512,9 @@ impl Wm {
         }
         self.hidden.remove(&w);
         if self.focus == Some(w) {
-            self.focus = neighbor;
-            self.focus_dirty = neighbor.is_some();
+            let next = scratch_back.or(neighbor);
+            self.focus = next;
+            self.focus_dirty = next.is_some();
         }
     }
 
@@ -532,7 +551,7 @@ impl Wm {
             || self.docks.contains(&window)
             || self.hidden.contains(&window)
             || self.withdrawn.contains(&window)
-            || self.scratchpad == Some(window)
+            || self.scratch_shown == Some(window)
             || self.focus == Some(window)
             || self.dragging == Some(window);
         if !tracked {
@@ -693,7 +712,7 @@ impl Wm {
         let win = self
             .clients
             .iter()
-            .find(|c| c.monitor == target && c.tag == active)
+            .find(|c| c.monitor == target && c.tag == active && c.scratch.is_none())
             .map(|c| c.win);
         match win {
             Some(w) => self.set_focus(w),
@@ -799,6 +818,7 @@ impl Wm {
 
     pub(crate) fn arrange(&mut self) -> Result<()> {
         let area = self.work_area();
+        self.settle_scratch();
 
         // Tile each screen separately. A window is visible when its tag is the
         // active tag on its own screen, so two screens can show two different
@@ -818,13 +838,7 @@ impl Wm {
             let tiled: Vec<Window> = self
                 .clients
                 .iter()
-                .filter(|c| {
-                    c.monitor == mi
-                        && (c.tag == active || c.sticky)
-                        && !c.floating
-                        && !c.fullscreen
-                        && !self.withdrawn.contains(&c.win)
-                })
+                .filter(|c| tiles(c, mi, active, &self.withdrawn))
                 .map(|c| c.win)
                 .collect();
             let n = tiled.len();
@@ -832,6 +846,7 @@ impl Wm {
                 c.monitor == mi
                     && c.tag == active
                     && c.fullscreen
+                    && c.scratch.is_none()
                     && !self.withdrawn.contains(&c.win)
             });
             let (scroll_start, scroll_columns) = if layout == Layout::Scroll {
@@ -899,9 +914,12 @@ impl Wm {
                 if self.withdrawn.contains(&c.win) {
                     continue;
                 }
-                let shown = if self.scratchpad == Some(c.win) && !self.scratchpad_shown {
-                    false
-                } else if c.sticky {
+                // A hidden scratchpad is not on any workspace: no tile, no
+                // geometry, not visible. The shown one floats above.
+                if c.scratch.is_some() && self.scratch_shown != Some(c.win) {
+                    continue;
+                }
+                let shown = if c.scratch.is_some() || c.sticky {
                     true
                 } else if layout == Layout::Scroll {
                     if fullscreen_active {
@@ -967,6 +985,7 @@ impl Wm {
         // workspace they must not be remapped on a later visit.
         let recent_tray = self.tray_activation_recent();
         let mut dismiss_orphans = Vec::new();
+        let mut unmap = Vec::new();
         for c in &self.clients {
             let shown = visible.contains(&c.win);
             if !shown && c.orphan && !recent_tray {
@@ -978,10 +997,16 @@ impl Wm {
                 continue;
             }
             if !shown && self.hidden.insert(c.win) {
-                self.c.unmap_window(c.win)?;
+                unmap.push(c.win);
             } else if shown && self.hidden.remove(&c.win) {
                 self.c.map_window(c.win)?;
             }
+        }
+        // Map first, then unmap: replacing one scratchpad with another (or
+        // one workspace with the next) then never uncovers the window below
+        // for a moment, which would hand it the focus through EnterNotify.
+        for w in unmap {
+            self.c.unmap_window(w)?;
         }
         for w in dismiss_orphans {
             self.unmanage(w);
@@ -1012,6 +1037,12 @@ impl Wm {
                     &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
                 )?;
             }
+        }
+        // The shown scratchpad is above everything on its workspace,
+        // including other floating and fullscreen windows.
+        if let Some(w) = self.scratch_shown.filter(|w| visible.contains(w)) {
+            self.c
+                .configure_window(w, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         }
 
         // Panels belong above ordinary and floating clients. A visible
@@ -1142,7 +1173,12 @@ impl Wm {
         Ok(())
     }
 
-    fn publish_root8(&mut self, name: &'static str, ty: Atom, value: &[u8]) -> Result<()> {
+    pub(crate) fn publish_root8(
+        &mut self,
+        name: &'static str,
+        ty: Atom,
+        value: &[u8],
+    ) -> Result<()> {
         if self.published_root.get(name).map(Vec::as_slice) == Some(value) {
             return Ok(());
         }
@@ -1161,10 +1197,18 @@ impl Wm {
             &[total.max(1) as u32],
         )?;
         self.publish_root32("_NET_CURRENT_DESKTOP", AtomEnum::CARDINAL.into(), &[active])?;
-        let list: Vec<Window> = self.clients.iter().map(|c| c.win).collect();
+        // Scratchpads are not workspace members, so window lists and workspace
+        // indicators never count them; `_NIRUWM_SCRATCHPADS` describes them.
+        let list: Vec<Window> = self
+            .clients
+            .iter()
+            .filter(|c| c.scratch.is_none())
+            .map(|c| c.win)
+            .collect();
         let placements: Vec<(Window, u32)> = self
             .clients
             .iter()
+            .filter(|c| c.scratch.is_none())
             .map(|client| {
                 (
                     client.win,
@@ -1207,7 +1251,13 @@ impl Wm {
         }
         // Every client advertises its global desktop for panels using EWMH.
         for c in &self.clients {
-            let global = crate::monitor::offset(&self.monitors, c.monitor) + c.tag;
+            // EWMH: 0xFFFFFFFF is "on all desktops", which is how a
+            // scratchpad behaves while it is shown.
+            let global = if c.scratch.is_some() {
+                0xFFFF_FFFF
+            } else {
+                crate::monitor::offset(&self.monitors, c.monitor) + c.tag
+            };
             self.prop(
                 c.win,
                 "_NET_WM_DESKTOP",
@@ -1218,6 +1268,7 @@ impl Wm {
         // Send the root notification after the client properties so a bar
         // observing it sees the updated desktop assignments immediately.
         self.publish_root32("_NET_CLIENT_LIST", AtomEnum::WINDOW.into(), &list)?;
+        self.publish_scratchpads()?;
         // The monitor layout contract lets one bar per output describe its own
         // workspace range without guessing from the focused monitor.
         //
@@ -1302,6 +1353,7 @@ impl Wm {
                 m.active = workspace;
             }
         }
+        self.follow_scratch();
         self.publish_layout_readonly()?;
         self.arrange()
     }
@@ -1327,6 +1379,7 @@ impl Wm {
             .get(monitor)
             .map(|m| m.name.clone())
             .unwrap_or_default();
+        self.unscratch(w)?;
         if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
             c.monitor = monitor;
             c.monitor_name = monitor_name;
@@ -1346,6 +1399,7 @@ impl Wm {
                 m.active = tag as usize;
             }
         }
+        self.follow_scratch();
         // The published layout follows the focused workspace, so tools and
         // scripts read the layout the user is looking at.
         self.publish_layout_readonly()?;
@@ -1374,6 +1428,8 @@ impl Wm {
             return Ok(());
         }
         if let Some(w) = self.focus {
+            // Moving a scratchpad to a workspace makes it a normal window there.
+            self.unscratch(w)?;
             if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
                 c.tag = tag;
             }
@@ -1455,7 +1511,7 @@ impl Wm {
         let visible: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| c.monitor == monitor && c.tag == tag)
+            .filter(|c| c.monitor == monitor && c.tag == tag && !self.scratch_hidden(c))
             .map(|c| c.win)
             .collect();
         if visible.is_empty() {
@@ -1516,11 +1572,14 @@ impl Wm {
         let next = (self.focused_monitor as i32 + delta).rem_euclid(count as i32) as usize;
         self.focused_monitor = next;
         let active = self.monitors[next].active as u32;
-        let target = self
-            .clients
-            .iter()
-            .find(|c| c.monitor == next && c.tag == active)
-            .map(|c| c.win);
+        // A shown scratchpad comes along and keeps the keyboard.
+        self.follow_scratch();
+        let target = self.scratch_shown.or_else(|| {
+            self.clients
+                .iter()
+                .find(|c| c.monitor == next && c.tag == active && c.scratch.is_none())
+                .map(|c| c.win)
+        });
         match target {
             Some(w) => self.set_focus(w)?,
             None => self.focus_client(None)?,
@@ -1545,6 +1604,7 @@ impl Wm {
             c.tag = self.monitors[target].active as u32;
         }
         self.focused_monitor = target;
+        self.follow_scratch();
         self.arrange()
     }
 
@@ -1618,6 +1678,82 @@ mod tests {
     fn a_visible_window_that_unmaps_itself_is_unmanaged() {
         let hidden = HashSet::new();
         assert!(!stays_managed(&hidden, 42));
+    }
+
+    fn client(win: Window, tag: u32) -> Client {
+        Client {
+            win,
+            monitor: 0,
+            tag,
+            floating: false,
+            fullscreen: false,
+            geom: Rect {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 100,
+            },
+            take_focus: false,
+            monitor_name: "DP-1".into(),
+            pid: None,
+            parent: None,
+            focus_on_map: true,
+            orphan: false,
+            sticky: false,
+            home: None,
+            size_hints: SizeHints::default(),
+            class: String::new(),
+            scratch: None,
+            scratch_floating: false,
+        }
+    }
+
+    #[test]
+    fn a_scratchpad_never_takes_a_tile() {
+        // 0.17.3: hiding the scratchpad made it a tiled member of the active
+        // workspace, so the full-width window under it became half width.
+        let withdrawn = HashSet::new();
+        let normal = client(1, 0);
+        let mut hidden = client(2, 0);
+        hidden.scratch = Some(0);
+        let mut sent = client(3, 0);
+        sent.scratch = Some(4);
+        let tiled: Vec<Window> = [&normal, &hidden, &sent]
+            .into_iter()
+            .filter(|c| tiles(c, 0, 0, &withdrawn))
+            .map(|c| c.win)
+            .collect();
+        assert_eq!(tiled, vec![1], "only the ordinary window is tiled");
+        // A full-width single tile stays a single tile.
+        let screen = Rect {
+            x: 0,
+            y: 28,
+            w: 2560,
+            h: 1412,
+        };
+        let boxes = Layout::Tile.arrange_master(screen, tiled.len(), 1, 0.55, 8);
+        assert_eq!(boxes.len(), 1);
+        assert!(boxes[0].w > 2500, "the window keeps the full width");
+    }
+
+    #[test]
+    fn floating_fullscreen_and_withdrawn_windows_do_not_tile() {
+        let mut withdrawn = HashSet::new();
+        let mut floating = client(1, 0);
+        floating.floating = true;
+        let mut full = client(2, 0);
+        full.fullscreen = true;
+        let gone = client(3, 0);
+        withdrawn.insert(3);
+        let other = client(4, 1);
+        for c in [&floating, &full, &gone, &other] {
+            assert!(
+                !tiles(c, 0, 0, &withdrawn),
+                "window {} must not tile",
+                c.win
+            );
+        }
+        assert!(tiles(&other, 0, 1, &withdrawn));
     }
 
     #[test]

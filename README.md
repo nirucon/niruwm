@@ -21,8 +21,8 @@ the `niructl`/`niruidle` tools.
 - Ten workspaces per monitor, selected with `Super+1`…`Super+0`.
 - A theme without a wallpaper paints its own background colour, so switching
   theme never leaves the previous picture on screen.
-- Tiling, floating, fullscreen, scratchpad, master ratio, master count, gaps and
-  window swapping.
+- Tiling, floating, fullscreen, scratchpads (one default and nine numbered),
+  master ratio, master count, gaps and window swapping.
 - dwm-style mouse move/resize with **Super+left-drag** and **Super+right-drag**.
 - Session save/restore, autostart, workspace recipes and focus/presentation modes
   through `niructl`.
@@ -98,11 +98,46 @@ installations are maintained with `nirux update`.
 | Super+Ctrl+, / Super+Ctrl+. | Previous / next layout |
 | Super+Shift+Space | Toggle floating |
 | Super+Shift+E | Toggle fullscreen |
-| Super+Shift+S | Scratchpad |
+| Super+Shift+S | Show / hide the default scratchpad |
 | Super+Alt+B | Cycle bar: top, bottom, hidden |
 | Super+H / Super+L | Decrease / increase master ratio |
 | Super+I / Super+D | Increase / decrease master count |
 | Super+Shift+J / Super+Shift+K | Swap with next / previous window |
+
+### Scratchpads
+
+| Keys | Action |
+|---|---|
+| Super+Shift+S | Show / hide the default scratchpad (`[scratchpad] command`, started on first use) |
+| Super+Alt+1…9 | Show / hide scratchpad 1…9 |
+| Super+Alt+Shift+1…9 | Send the focused window to scratchpad 1…9; on a window already there, take it back |
+| Super+Shift+Space | On a scratchpad: make it a normal tiled window again |
+
+A scratchpad is a floating window you show and hide with one key. It is never a
+member of a workspace: showing or hiding one never moves or resizes any other
+window, and a hidden one is left out of tiling, focus cycling, window lists,
+workspace indicators and the saved session.
+
+- **One at a time.** Showing a scratchpad hides the one that was shown. The key
+  of the shown one hides it, and focus goes back to the window you were using.
+- **It follows you.** A shown scratchpad stays on top when you switch workspace,
+  and moves along when you go to the other screen with Super+, / Super+. or a
+  workspace key there. Moving the mouse alone does not drag it along.
+- **Any window can be one.** Super+Alt+Shift+N hides the focused window in slot N.
+  If slot N already holds a window, that window comes back to the current
+  workspace as a normal window (they swap places). Pressing Super+Alt+Shift+N on
+  the window in slot N, Super+Shift+Space, Super+Shift+1…0 or `niructl
+  scratchpad unscratch` makes it a normal window again.
+- **Closing frees the slot.** The next press of a slot with a configured command
+  starts it again; an empty slot without one shows a short hint.
+- Numbered slots may have their own command (recognised by its window class) and
+  size in `[[scratchpad.slot]]`; see `config.example.toml`.
+- `niructl scratchpad [N] [toggle|show|hide]`, `niructl scratchpad send N`,
+  `niructl scratchpad unscratch` and `niructl scratchpad list [--json]` do the
+  same from scripts. NIRUBAR's `scratchpad` module lists them and shows or hides
+  them with a click; it reads the `_NIRUWM_SCRATCHPADS` root property (one line
+  per slot: `slot<TAB>shown|hidden|empty<TAB>window<TAB>class`, slot 0 is the
+  default).
 
 ### Focus and windows
 

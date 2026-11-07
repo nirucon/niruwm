@@ -73,36 +73,208 @@ pub struct Config {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScratchpadConfig {
-    /// Command that provides the scratchpad window.
+    /// Command that provides the default scratchpad window (Super+Shift+S).
     pub command: Vec<String>,
     /// Size as a share of the screen.
     pub width: f32,
     pub height: f32,
+    /// Numbered scratchpads 1-9 (Super+Alt+1..9). A slot does not have to be
+    /// listed: any window can be sent to any slot with Super+Alt+Shift+N.
+    /// Listing one gives it a program to start on first use and/or its own size.
+    #[serde(rename = "slot")]
+    pub slots: Vec<ScratchpadSlot>,
+}
+
+/// One numbered scratchpad in `[[scratchpad.slot]]`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ScratchpadSlot {
+    /// 1-9: the digit in Super+Alt+N.
+    pub number: u8,
+    /// Program started the first time the slot is opened. Empty means the
+    /// slot only holds windows sent to it.
+    pub command: Vec<String>,
+    /// Size as a share of the screen; unset uses [scratchpad] width/height.
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+}
+
+/// The class a scratchpad command gives its window: the value of `--class`,
+/// `-class`, `--app-id`, `-name` or `--name`. Without one there is no way to
+/// recognise the window, so the command cannot be a scratchpad.
+pub fn scratchpad_class(command: &[String]) -> Option<String> {
+    let mut args = command.iter().peekable();
+    while let Some(arg) = args.next() {
+        // `--class=name` is accepted as well as `--class name`.
+        if let Some((flag, value)) = arg.split_once('=') {
+            if is_class_flag(flag) && !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        if is_class_flag(arg) {
+            if let Some(name) = args.peek().filter(|n| !n.is_empty()) {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn is_class_flag(arg: &str) -> bool {
+    matches!(arg, "--class" | "-class" | "--app-id" | "-name" | "--name")
+}
+
+/// How well a window's `WM_CLASS` matches a scratchpad class: 2 when one part
+/// of WM_CLASS is exactly that class (any case), 1 when it only contains it,
+/// 0 otherwise. Exact matches win, so a `scratch-btop` slot is never taken by
+/// the default `scratchpad` or the other way round.
+pub fn class_match(class: &str, wm_class: &str) -> u8 {
+    let needle = class.to_ascii_lowercase();
+    if needle.is_empty() {
+        return 0;
+    }
+    let lower = wm_class.to_ascii_lowercase();
+    // alacritty accepts `instance,general` in one argument.
+    let wanted: Vec<&str> = needle.split(',').filter(|n| !n.is_empty()).collect();
+    let exact = lower
+        .split(|ch: char| ch == '\0' || ch.is_whitespace())
+        .filter(|part| !part.is_empty())
+        .any(|part| wanted.contains(&part));
+    if exact {
+        2
+    } else if lower.contains(&needle) {
+        1
+    } else {
+        0
+    }
 }
 
 impl ScratchpadConfig {
-    /// True when a window with this `WM_CLASS` is the scratchpad.
+    /// True when a window with this `WM_CLASS` is the default scratchpad.
     ///
     /// Only the value of `--class` (or `-class`) counts. A command without one
     /// never matches, so ordinary windows of the same program stay tiled.
     pub fn matches_class(&self, wm_class: &str) -> bool {
-        let mut args = self.command.iter().peekable();
-        while let Some(arg) = args.next() {
-            let is_class_flag = matches!(
-                arg.as_str(),
-                "--class" | "-class" | "--app-id" | "-name" | "--name"
-            );
-            if is_class_flag {
-                if let Some(name) = args.peek() {
-                    let lower = wm_class.to_ascii_lowercase();
-                    let needle = name.to_ascii_lowercase();
-                    if !needle.is_empty() && lower.contains(&needle) {
-                        return true;
-                    }
-                }
+        scratchpad_class(&self.command).is_some_and(|class| class_match(&class, wm_class) > 0)
+    }
+
+    /// The configured entry for slot `n` (1-9), if the file lists one.
+    pub fn slot(&self, n: u8) -> Option<&ScratchpadSlot> {
+        self.slots.iter().find(|s| s.number == n)
+    }
+
+    /// The command that starts slot `n`: the default command for 0, the
+    /// slot's own for 1-9, or nothing for a slot without one.
+    pub fn command_for(&self, n: u8) -> Option<&[String]> {
+        if n == 0 {
+            return Some(&self.command);
+        }
+        self.slot(n)
+            .map(|s| s.command.as_slice())
+            .filter(|c| !c.is_empty())
+    }
+
+    /// Width and height (shares of the screen) for slot `n`.
+    pub fn size_for(&self, n: u8) -> (f32, f32) {
+        match self.slot(n) {
+            Some(s) if n != 0 => (
+                s.width.unwrap_or(self.width),
+                s.height.unwrap_or(self.height),
+            ),
+            _ => (self.width, self.height),
+        }
+    }
+
+    /// The slot a newly mapped window belongs to, judged by its `WM_CLASS`:
+    /// 0 for the default scratchpad, 1-9 for a numbered slot with a command,
+    /// or None for an ordinary window. Exact class matches beat partial ones.
+    pub fn slot_for_class(&self, wm_class: &str) -> Option<u8> {
+        let mut best: Option<(u8, u8)> = None;
+        let candidates = std::iter::once((0u8, self.command.as_slice())).chain(
+            self.slots
+                .iter()
+                .filter(|s| !s.command.is_empty())
+                .map(|s| (s.number, s.command.as_slice())),
+        );
+        for (n, command) in candidates {
+            let Some(class) = scratchpad_class(command) else {
+                continue;
+            };
+            let score = class_match(&class, wm_class);
+            if score > 0 && best.map_or(true, |(_, b)| score > b) {
+                best = Some((n, score));
             }
         }
-        false
+        best.map(|(n, _)| n)
+    }
+
+    /// Every configured scratchpad command, for session files written by
+    /// older versions that still name one.
+    pub fn commands(&self) -> impl Iterator<Item = &[String]> {
+        std::iter::once(self.command.as_slice()).chain(
+            self.slots
+                .iter()
+                .filter(|s| !s.command.is_empty())
+                .map(|s| s.command.as_slice()),
+        )
+    }
+
+    /// Check the section; every message names the setting to fix.
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let size_ok = |v: f32| (0.1..=0.95).contains(&v);
+        if !size_ok(self.width) || !size_ok(self.height) {
+            return Err("scratchpad.width and height must be between 0.1 and 0.95".into());
+        }
+        if self.command.is_empty() {
+            return Err("scratchpad.command must not be empty".into());
+        }
+        // A scratchpad without a class would either never appear or, worse,
+        // capture every window of its program.
+        if scratchpad_class(&self.command).is_none() {
+            return Err(
+                "scratchpad.command needs a window class, for example [\"kitty\", \"--class\", \"scratchpad\"]"
+                    .into(),
+            );
+        }
+        let mut seen = Vec::new();
+        let mut classes = vec![scratchpad_class(&self.command)
+            .unwrap_or_default()
+            .to_ascii_lowercase()];
+        for slot in &self.slots {
+            let n = slot.number;
+            if !(1..=9).contains(&n) {
+                return Err(format!(
+                    "scratchpad.slot number must be 1 to 9 (Super+Alt+1..9), got {n}"
+                ));
+            }
+            if seen.contains(&n) {
+                return Err(format!("scratchpad.slot {n} is listed twice"));
+            }
+            seen.push(n);
+            for (name, value) in [("width", slot.width), ("height", slot.height)] {
+                if value.is_some_and(|v| !size_ok(v)) {
+                    return Err(format!(
+                        "scratchpad.slot {n}: {name} must be between 0.1 and 0.95"
+                    ));
+                }
+            }
+            if slot.command.is_empty() {
+                continue;
+            }
+            let Some(class) = scratchpad_class(&slot.command) else {
+                return Err(format!(
+                    "scratchpad.slot {n}: command needs a window class, for example [\"kitty\", \"--class\", \"scratch-{n}\", \"-e\", \"btop\"]"
+                ));
+            };
+            let class = class.to_ascii_lowercase();
+            if classes.contains(&class) {
+                return Err(format!(
+                    "scratchpad.slot {n}: class {class:?} is already used by another scratchpad; give each one its own --class"
+                ));
+            }
+            classes.push(class);
+        }
+        Ok(())
     }
 }
 
@@ -112,6 +284,7 @@ impl Default for ScratchpadConfig {
             command: vec!["kitty".into(), "--class".into(), "scratchpad".into()],
             width: 0.6,
             height: 0.6,
+            slots: Vec::new(),
         }
     }
 }
@@ -909,33 +1082,11 @@ impl Config {
         if self.brightness.step == 0 || self.brightness.step > 50 {
             return Err("brightness.step must be between 1 and 50".into());
         }
-        if !(0.1..=0.95).contains(&self.scratchpad.width)
-            || !(0.1..=0.95).contains(&self.scratchpad.height)
-        {
-            return Err("scratchpad.width and height must be between 0.1 and 0.95".into());
-        }
-        if self.scratchpad.command.is_empty() {
-            return Err("scratchpad.command must not be empty".into());
-        }
+        self.scratchpad.validate()?;
         for r in &self.rules {
             if r.class.is_empty() {
                 return Err("rules entries need a class".into());
             }
-        }
-        // A scratchpad without a class would either never appear or, worse,
-        // capture every window of its program.
-        let has_class = self.scratchpad.matches_class("probe");
-        let names_a_class = self.scratchpad.command.iter().any(|a| {
-            matches!(
-                a.as_str(),
-                "--class" | "-class" | "--app-id" | "-name" | "--name"
-            )
-        });
-        if !has_class && !names_a_class {
-            return Err(
-                "scratchpad.command needs a window class, for example [\"kitty\", \"--class\", \"scratchpad\"]"
-                    .into(),
-            );
         }
         if !["fill", "fit", "stretch", "center"].contains(&self.wallpaper.scale.as_str()) {
             return Err("wallpaper.scale must be fill, fit, stretch or center".into());
@@ -1332,6 +1483,23 @@ pub fn dump() -> Result<String> {
     out.push_str("\n[brightness]\n");
     out.push_str(&format!("device = {:?}\n", c.brightness.device));
     out.push_str(&format!("step = {}\n", c.brightness.step));
+    out.push_str("\n[scratchpad]\n");
+    out.push_str("# Super+Shift+S shows or hides this one.\n");
+    out.push_str(&format!("command = {:?}\n", c.scratchpad.command));
+    out.push_str(&format!("width = {}\n", c.scratchpad.width));
+    out.push_str(&format!("height = {}\n", c.scratchpad.height));
+    for slot in &c.scratchpad.slots {
+        out.push_str(&format!(
+            "\n[[scratchpad.slot]] # Super+Alt+{}\n",
+            slot.number
+        ));
+        out.push_str(&format!("number = {}\n", slot.number));
+        if !slot.command.is_empty() {
+            out.push_str(&format!("command = {:?}\n", slot.command));
+        }
+        let (width, height) = c.scratchpad.size_for(slot.number);
+        out.push_str(&format!("width = {width}\nheight = {height}\n"));
+    }
     out.push_str("\n[bar]\n");
     out.push_str(&format!("modules = {:?}\n", c.bar.modules));
     out.push_str(&format!("tags = {:?}\n", c.bar.tags));
@@ -1960,6 +2128,85 @@ mod tests {
         // A plain kitty is not.
         assert!(!cfg.matches_class("kitty Kitty"));
         assert!(!cfg.matches_class("org.gnome.Terminal"));
+    }
+
+    #[test]
+    fn old_scratchpad_sections_still_parse() {
+        let c: Config = toml::from_str(
+            "[scratchpad]\ncommand = [\"kitty\", \"--class\", \"scratchpad\"]\nwidth = 0.5\n",
+        )
+        .unwrap();
+        c.validate().unwrap();
+        assert!(c.scratchpad.slots.is_empty());
+        assert_eq!(c.scratchpad.size_for(0), (0.5, 0.6));
+        assert_eq!(c.scratchpad.size_for(3), (0.5, 0.6));
+        assert_eq!(c.scratchpad.command_for(3), None);
+    }
+
+    #[test]
+    fn numbered_slots_have_their_own_command_size_and_class() {
+        let c: Config = toml::from_str(
+            "[scratchpad]\n\
+             [[scratchpad.slot]]\nnumber = 1\ncommand = [\"kitty\", \"--class\", \"scratch-btop\", \"-e\", \"btop\"]\nwidth = 0.8\n\
+             [[scratchpad.slot]]\nnumber = 4\nheight = 0.3\n",
+        )
+        .unwrap();
+        c.validate().unwrap();
+        let s = &c.scratchpad;
+        assert_eq!(s.size_for(1), (0.8, 0.6));
+        assert_eq!(s.size_for(4), (0.6, 0.3));
+        assert_eq!(
+            s.command_for(4),
+            None,
+            "a slot without a command only holds sent windows"
+        );
+        assert!(s.command_for(1).is_some());
+        assert_eq!(s.slot_for_class("scratch-btop\0scratch-btop\0"), Some(1));
+        assert_eq!(s.slot_for_class("scratchpad\0scratchpad\0"), Some(0));
+        assert_eq!(s.slot_for_class("kitty\0kitty\0"), None);
+        assert_eq!(s.commands().count(), 2);
+    }
+
+    #[test]
+    fn an_exact_class_beats_a_partial_one() {
+        // `scratchpad-btop` contains `scratchpad`; it must still be slot 2.
+        let c: Config = toml::from_str(
+            "[[scratchpad.slot]]\nnumber = 2\ncommand = [\"kitty\", \"--class=scratchpad-btop\"]\n",
+        )
+        .unwrap();
+        c.validate().unwrap();
+        assert_eq!(
+            c.scratchpad.slot_for_class("kitty\0scratchpad-btop\0"),
+            Some(2)
+        );
+        assert_eq!(c.scratchpad.slot_for_class("kitty\0scratchpad\0"), Some(0));
+    }
+
+    #[test]
+    fn bad_scratchpad_slots_are_explained() {
+        for (text, needle) in [
+            ("[[scratchpad.slot]]\nnumber = 0\n", "1 to 9"),
+            ("[[scratchpad.slot]]\nnumber = 10\n", "1 to 9"),
+            (
+                "[[scratchpad.slot]]\nnumber = 2\n[[scratchpad.slot]]\nnumber = 2\n",
+                "listed twice",
+            ),
+            (
+                "[[scratchpad.slot]]\nnumber = 3\ncommand = [\"btop\"]\n",
+                "needs a window class",
+            ),
+            (
+                "[[scratchpad.slot]]\nnumber = 3\ncommand = [\"kitty\", \"--class\", \"scratchpad\"]\n",
+                "already used",
+            ),
+            ("[[scratchpad.slot]]\nnumber = 5\nwidth = 2.0\n", "slot 5: width"),
+        ] {
+            let c: Config = toml::from_str(text).unwrap();
+            let e = c.validate().unwrap_err().to_string();
+            assert!(e.contains(needle), "{text:?}: {e}");
+        }
+        // Unknown keys in a slot are refused, as everywhere else.
+        assert!(toml::from_str::<Config>("[[scratchpad.slot]]\nnumber = 1\nkey = 1\n").is_err());
     }
 
     #[test]

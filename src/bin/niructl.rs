@@ -54,6 +54,7 @@ autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES]
 display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto|automatic on|off|status [--json]|run|doctor [--json]|watch [--once] [--quiet] | \
 action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD NEW|pin NAME|unpin NAME | \
 layout show|save | \
+scratchpad [N] [toggle|show|hide]|send N|unscratch|list [--json] | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
@@ -8300,6 +8301,10 @@ fn run() -> Result<()> {
         return bar_command(&c, root, &atom, &args[1..]);
     }
 
+    if cmd == "scratchpad" {
+        return scratchpad_command(&c, root, &atom, &args[1..]);
+    }
+
     if cmd == "restart-bar" {
         let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
             .ok_or("no window manager is running")?;
@@ -8483,6 +8488,149 @@ fn run() -> Result<()> {
         wait_applied(&c, root, &atom, action, value)?;
     }
     Ok(())
+}
+
+/// One line of `_NIRUWM_SCRATCHPADS`: slot (0 default, 1-9), state, window, class.
+fn scratchpad_rows(text: &str) -> Vec<(u8, String, u32, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut f = line.split('\t');
+            let slot = f.next()?.parse().ok()?;
+            let state = f.next()?.to_string();
+            let window = f.next()?.parse().ok()?;
+            let class = f.next().unwrap_or("").to_string();
+            Some((slot, state, window, class))
+        })
+        .collect()
+}
+
+/// `niructl scratchpad`: show, hide, send and list scratchpads.
+///
+///   scratchpad [N] [toggle|show|hide]   N = 1-9, none = the default (Super+Shift+S)
+///   scratchpad send N                   the focused window to slot N (again: back)
+///   scratchpad unscratch                the focused scratchpad becomes a normal window
+///   scratchpad list [--json]
+fn scratchpad_command(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    args: &[String],
+) -> Result<()> {
+    const HELP: &str = "Usage: niructl scratchpad [N] [toggle|show|hide] | send N | unscratch | list [--json]   (N = 1-9; no N = the default scratchpad)";
+    let slot_arg = |text: &str| -> Result<u32> {
+        match text.parse::<u32>() {
+            Ok(n) if (1..=9).contains(&n) => Ok(n),
+            _ => Err(format!("scratchpad: slot must be 1 to 9, got {text:?}\n{HELP}").into()),
+        }
+    };
+    // 0 or "default" names the Super+Shift+S scratchpad for show and hide.
+    let show_slot = |text: &str| -> Result<u32> {
+        if matches!(text, "0" | "default") {
+            Ok(0)
+        } else {
+            slot_arg(text)
+        }
+    };
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let data = match words.as_slice() {
+        ["list"] | ["list", "--json"] | ["status"] => {
+            let reply = c
+                .get_property(
+                    false,
+                    root,
+                    atom("_NIRUWM_SCRATCHPADS")?,
+                    atom("UTF8_STRING")?,
+                    0,
+                    4096,
+                )?
+                .reply()?;
+            let rows = scratchpad_rows(&String::from_utf8_lossy(&reply.value));
+            let title = |w: u32| -> String {
+                if w == 0 {
+                    return String::new();
+                }
+                atom("_NET_WM_NAME")
+                    .ok()
+                    .and_then(|name| {
+                        c.get_property(false, w, name, atom("UTF8_STRING").ok()?, 0, 256)
+                            .ok()
+                    })
+                    .and_then(|cookie| cookie.reply().ok())
+                    .map(|r| String::from_utf8_lossy(&r.value).to_string())
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| {
+                        c.get_property(false, w, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 256)
+                            .ok()
+                            .and_then(|cookie| cookie.reply().ok())
+                            .map(|r| String::from_utf8_lossy(&r.value).to_string())
+                    })
+                    .unwrap_or_default()
+            };
+            let key = |slot: u8| -> String {
+                if slot == 0 {
+                    "Super+Shift+S".into()
+                } else {
+                    format!("Super+Alt+{slot}")
+                }
+            };
+            if words.contains(&"--json") {
+                let list: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|(slot, state, window, class)| {
+                        serde_json::json!({
+                            "slot": slot,
+                            "key": key(*slot),
+                            "state": state,
+                            "window": window,
+                            "class": class,
+                            "title": title(*window),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::json!({"schema": 1, "scratchpads": list}));
+            } else if rows.is_empty() {
+                println!("no scratchpads (Super+Shift+S opens the default one)");
+            } else {
+                for (slot, state, window, class) in &rows {
+                    let name = if *slot == 0 {
+                        "default".to_string()
+                    } else {
+                        slot.to_string()
+                    };
+                    let what = if *window == 0 {
+                        "not started".to_string()
+                    } else {
+                        let t = title(*window);
+                        if t.is_empty() {
+                            class.clone()
+                        } else {
+                            t
+                        }
+                    };
+                    println!("{name:<8} {:<14} {state:<7} {what}", key(*slot));
+                }
+            }
+            return Ok(());
+        }
+        ["send", n] => [16, slot_arg(n)?, 0, 0, 0],
+        ["unscratch"] => [17, 0, 0, 0, 0],
+        [] => [15, 0, 0, 0, 0],
+        [op @ ("toggle" | "show" | "hide")] => [15, 0, op_code(op), 0, 0],
+        [n] => [15, show_slot(n)?, 0, 0, 0],
+        [n, op @ ("toggle" | "show" | "hide")] => [15, show_slot(n)?, op_code(op), 0, 0],
+        _ => return Err(HELP.into()),
+    };
+    send(c, root, atom(CMD_ATOM)?, data)?;
+    c.flush()?;
+    Ok(())
+}
+
+fn op_code(op: &str) -> u32 {
+    match op {
+        "show" => 1,
+        "hide" => 2,
+        _ => 0,
+    }
 }
 
 fn bar_state_from(

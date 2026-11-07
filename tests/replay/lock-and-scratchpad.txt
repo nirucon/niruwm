@@ -1,8 +1,30 @@
 # The scratchpad opens on Super+Shift+S, and a plain terminal still tiles.
+# A scratchpad is not a workspace window, so the client count stays at 1.
 expect wm NIRUWM
 key super+Return
 wait 1200
 expect clients 1
 key super+Shift+s
 wait 1500
-expect clients 2
+expect clients 1
+expect scratchpads 1
+expect shown 0
+# The same key hides it again; the terminal is untouched.
+key super+Shift+s
+wait 500
+expect shown none
+expect clients 1
+# Send the terminal to scratchpad 3 and bring it back with Super+Alt+3.
+key super+alt+shift+3
+wait 500
+expect clients 0
+expect scratchpads 2
+key super+alt+3
+wait 500
+expect shown 3
+# Super+Alt+Shift+3 on the window in slot 3 makes it a normal window again.
+key super+alt+shift+3
+wait 500
+expect clients 1
+expect scratchpads 1
+expect shown none

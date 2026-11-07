@@ -162,7 +162,14 @@ impl Wm {
                 // second safety window, so the WM event loop never blocks.
                 self.spawn_helper("suspend", &["niructl".into(), "suspend".into()]);
             }
-            Action::Scratchpad => self.toggle_scratchpad()?,
+            Action::Scratchpad => self.scratchpad(0, super::ScratchOp::Toggle)?,
+            Action::ScratchpadSlot(n) => self.scratchpad(n, super::ScratchOp::Toggle)?,
+            Action::ScratchpadSend(n) => self.send_to_scratch(n)?,
+            Action::Unscratch => {
+                if let Some(w) = focused {
+                    self.unscratch(w)?;
+                }
+            }
             Action::BrightnessStep(step) => {
                 let direction = if step >= 0 { "up" } else { "down" };
                 self.spawn_helper(
@@ -249,12 +256,21 @@ impl Wm {
             Action::IncMasterRatio => self.change_master_ratio(0.05)?,
             Action::DecMasterRatio => self.change_master_ratio(-0.05)?,
             Action::ToggleFloat => {
-                if let Some(c) = self.clients.iter_mut().find(|c| Some(c.win) == focused) {
+                // A scratchpad always floats; "un-floating" one makes it a
+                // normal tiled window on the current workspace.
+                if focused.is_some_and(|w| self.is_scratch(w)) {
+                    if let Some(w) = focused {
+                        self.unscratch(w)?;
+                    }
+                    if let Some(c) = self.clients.iter_mut().find(|c| Some(c.win) == focused) {
+                        c.floating = false;
+                    }
+                } else if let Some(c) = self.clients.iter_mut().find(|c| Some(c.win) == focused) {
                     c.floating = !c.floating;
                 }
             }
             Action::ToggleSticky => {
-                if let Some(focused) = self.focus {
+                if let Some(focused) = self.focus.filter(|w| !self.is_scratch(*w)) {
                     self.toggle_sticky(focused)?;
                 }
             }
@@ -405,8 +421,9 @@ impl Wm {
         let mut entries = Vec::new();
         for c in &self.clients {
             // A scratchpad is part of the window manager, not a session,
-            // whether it is shown or hidden when the session ends.
-            if self.scratchpad == Some(c.win) {
+            // whether it is shown or hidden when the session ends. That holds
+            // for windows sent to a slot as well.
+            if c.scratch.is_some() {
                 continue;
             }
             let Some(pid) = c.pid else { continue };
@@ -441,7 +458,12 @@ impl Wm {
         for e in crate::session_state::ordered(&entries) {
             // Old session files could contain the scratchpad even though it is
             // not part of the desktop the user arranged.
-            if e.program == self.cfg.scratchpad.command {
+            if self
+                .cfg
+                .scratchpad
+                .commands()
+                .any(|command| command == e.program.as_slice())
+            {
                 continue;
             }
             let Some(program) = e.program.first() else {
@@ -600,70 +622,6 @@ impl Wm {
         if self.clients.iter().any(|c| c.win == window) {
             self.set_focus(window)?;
         }
-        Ok(())
-    }
-
-    /// Show or hide the scratchpad.
-    ///
-    /// The scratchpad is a single floating window, kept alive between uses and
-    /// placed over the focused screen. Starting it the first time runs the
-    /// configured command; afterwards the same window is shown and hidden, which
-    /// is what makes it feel instant.
-    pub(crate) fn toggle_scratchpad(&mut self) -> Result<()> {
-        if let Some(w) = self.scratchpad {
-            if self.clients.iter().any(|c| c.win == w) {
-                if self.scratchpad_shown {
-                    let tag = self.active_tag();
-                    let monitor = self.focused_monitor;
-                    let monitor_name = self.monitor_name(monitor);
-                    if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
-                        c.floating = false;
-                        c.tag = tag;
-                        c.monitor = monitor;
-                        c.monitor_name = monitor_name;
-                    }
-                    self.hidden.insert(w);
-                    self.c.unmap_window(w)?;
-                    self.scratchpad_shown = false;
-                } else {
-                    let screen = self
-                        .monitors
-                        .get(self.focused_monitor)
-                        .map(|m| m.rect)
-                        .unwrap_or_else(|| self.work_area());
-                    let w_px = (f32::from(screen.w) * self.cfg.scratchpad.width) as u16;
-                    let h_px = (f32::from(screen.h) * self.cfg.scratchpad.height) as u16;
-                    let geom = Rect {
-                        x: screen.x + ((screen.w - w_px) / 2) as i16,
-                        y: screen.y + ((screen.h - h_px) / 2) as i16,
-                        w: w_px,
-                        h: h_px,
-                    };
-                    let tag = self.active_tag();
-                    let monitor = self.focused_monitor;
-                    let monitor_name = self.monitor_name(monitor);
-                    if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
-                        c.floating = true;
-                        c.geom = geom;
-                        c.tag = tag;
-                        c.monitor = monitor;
-                        c.monitor_name = monitor_name;
-                    }
-                    self.hidden.remove(&w);
-                    self.c.map_window(w)?;
-                    self.set_focus(w)?;
-                    self.scratchpad_shown = true;
-                }
-                return self.arrange();
-            }
-            // The window was closed by the application.
-            self.scratchpad = None;
-            self.scratchpad_shown = false;
-        }
-        // First use: start the command. The window becomes the scratchpad when
-        // it appears, because `manage` checks for it below.
-        let cmd = self.cfg.scratchpad.command.clone();
-        self.start(&cmd);
         Ok(())
     }
 

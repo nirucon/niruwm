@@ -25,6 +25,8 @@
 //!   `expect tag N`     workspace N is active (1-based)
 //!   `expect wm NAME`   the window manager advertises NAME
 //!   `expect layout L`  the active layout reports L
+//!   `expect scratchpads N` exactly N scratchpad windows (shown or hidden)
+//!   `expect shown N`   N is the shown scratchpad (0 default, 1-9), or `none`
 //!   `run CMD`          spawn a program, e.g. `run xterm`
 //!   `niructl ARGS`     run the control tool
 //!
@@ -48,6 +50,9 @@ pub enum Step {
     ExpectTag(u32),
     ExpectWm(String),
     ExpectLayout(String),
+    ExpectScratchpads(usize),
+    /// The shown scratchpad slot, or None for "no scratchpad is shown".
+    ExpectShown(Option<u8>),
     Run(String),
     Niructl(String),
 }
@@ -95,7 +100,18 @@ pub fn parse(text: &str) -> Result<Vec<Step>> {
                     },
                     "wm" => Step::ExpectWm(value.to_string()),
                     "layout" => Step::ExpectLayout(value.to_string()),
-                    _ => bad!("expect takes clients, tag, wm or layout"),
+                    "scratchpads" => match value.parse() {
+                        Ok(n) => Step::ExpectScratchpads(n),
+                        Err(_) => bad!("scratchpads needs a number"),
+                    },
+                    "shown" => match value {
+                        "none" => Step::ExpectShown(None),
+                        v => match v.parse::<u8>() {
+                            Ok(n) if n <= 9 => Step::ExpectShown(Some(n)),
+                            _ => bad!("shown needs a slot 0-9 or none"),
+                        },
+                    },
+                    _ => bad!("expect takes clients, tag, wm, layout, scratchpads or shown"),
                 }
             }
             "run" if !rest.is_empty() => Step::Run(rest.to_string()),
@@ -158,6 +174,29 @@ fn client_count() -> Option<usize> {
         Some(value) => Some(value.split(',').filter(|s| s.contains("0x")).count()),
         None => Some(0),
     }
+}
+
+/// Scratchpad windows as `niructl scratchpad list --json` reports them:
+/// (slot, shown) for every slot that holds a window.
+fn scratchpads() -> Option<Vec<(u8, bool)>> {
+    let out = Command::new("niructl")
+        .args(["scratchpad", "list", "--json"])
+        .output()
+        .ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    Some(
+        v.get("scratchpads")?
+            .as_array()?
+            .iter()
+            .filter(|s| s.get("window").and_then(|w| w.as_u64()).unwrap_or(0) != 0)
+            .map(|s| {
+                (
+                    s.get("slot").and_then(|n| n.as_u64()).unwrap_or(0) as u8,
+                    s.get("state").and_then(|t| t.as_str()) == Some("shown"),
+                )
+            })
+            .collect(),
+    )
 }
 
 fn current_tag() -> Option<u32> {
@@ -260,6 +299,18 @@ pub fn run(script: &str) -> Result<usize> {
                 Some(got) => Some(format!("expected a {want} window manager, got {got}")),
                 None => Some("no window manager advertises itself".to_string()),
             },
+            Step::ExpectScratchpads(n) => match scratchpads() {
+                Some(list) if list.len() == *n => None,
+                Some(list) => Some(format!("expected {n} scratchpads, got {}", list.len())),
+                None => Some("cannot read the scratchpads (niructl scratchpad list)".into()),
+            },
+            Step::ExpectShown(want) => match scratchpads() {
+                Some(list) => {
+                    let got = list.iter().find(|(_, shown)| *shown).map(|(slot, _)| *slot);
+                    (got != *want).then(|| format!("expected shown {want:?}, got {got:?}"))
+                }
+                None => Some("cannot read the scratchpads (niructl scratchpad list)".into()),
+            },
             Step::ExpectLayout(want) => {
                 // Layouts are not published over EWMH, so ask niructl.
                 let out = Command::new("niructl").arg("status").output().ok();
@@ -321,7 +372,7 @@ mod tests {
 
     #[test]
     fn accepts_every_documented_command() {
-        let text = "key super+q\ntype hello\nwait 10\nexpect clients 0\nexpect tag 1\nexpect wm NIRUWM\nexpect layout tile\nrun xterm\nniructl reload\n";
+        let text = "key super+q\ntype hello\nwait 10\nexpect clients 0\nexpect tag 1\nexpect wm NIRUWM\nexpect layout tile\nexpect scratchpads 1\nexpect shown none\nexpect shown 3\nrun xterm\nniructl reload\n";
         assert!(parse(text).is_ok());
     }
 }

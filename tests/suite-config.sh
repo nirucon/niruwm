@@ -42,6 +42,17 @@ check_ok "the documented 0.11.0 settings"
 printf 'theme = "niru-noir"\n' > "$CONF"
 check_ok "a config without [idle]"
 
+# 2b. Numbered scratchpads (NIRUWM 0.17.4, NIRUBAR 0.18.87) are accepted by
+#     both programs, and a slot without a window class is refused by both.
+printf '[scratchpad]\ncommand = ["kitty", "--class", "scratchpad"]\n\n[[scratchpad.slot]]\nnumber = 1\ncommand = ["kitty", "--class", "scratch-btop", "-e", "btop"]\nwidth = 0.8\n\n[[scratchpad.slot]]\nnumber = 4\n' > "$CONF"
+check_ok "numbered scratchpad slots"
+printf '[[scratchpad.slot]]\nnumber = 1\ncommand = ["btop"]\n' > "$CONF"
+for prog in niruwm nirubar; do
+  if "$BIN/$prog" --check-config >/dev/null 2>&1; then
+    fail "$prog accepted a scratchpad slot whose command has no window class"
+  fi
+done
+
 # 3. An out-of-range NUMBER is a value error and falls back safely; a wrong
 #    TYPE is a typo and must be reported rather than guessed.
 for bad in \

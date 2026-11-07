@@ -383,6 +383,44 @@ update_check_minutes = 30
 # the bar without any other program. Set false if another tray is running.
 tray = true
 
+# ── Scratchpads ─────────────────────────────────────────────────────────────
+# A scratchpad is a floating window you show and hide with one key, above
+# whatever workspace you are on. Showing one hides the one that was shown; the
+# key of the shown one hides it again. It is never part of a workspace, so it
+# never moves or resizes your other windows.
+#
+#   Super+Shift+S            the default scratchpad below
+#   Super+Alt+1 ... 9        scratchpad 1 ... 9
+#   Super+Alt+Shift+1 ... 9  send the focused window to scratchpad 1 ... 9
+#                            (on the window already there: take it back out)
+#   Super+Shift+Space        on a scratchpad: make it a normal window again
+#
+# The default scratchpad (Super+Shift+S). `command` is started the first time
+# and must give its window a class (--class, -class, --name or --app-id), which
+# is how the window is recognised. width/height: share of the screen,
+# 0.1 to 0.95, default 0.6.
+[scratchpad]
+command = ["kitty", "--class", "scratchpad"]
+width = 0.6
+height = 0.6
+
+# Numbered scratchpads need no settings: any window can be sent to any slot
+# with Super+Alt+Shift+N. Add a [[scratchpad.slot]] to give a slot a program
+# that starts the first time you press Super+Alt+N, or its own size. Each
+# command needs its own class. Unset width/height use the values above.
+#
+# [[scratchpad.slot]]     # Super+Alt+1
+# number = 1
+# command = ["kitty", "--class", "scratch-btop", "-e", "btop"]
+# width = 0.8
+# height = 0.8
+#
+# [[scratchpad.slot]]     # Super+Alt+2: a calculator
+# number = 2
+# command = ["kitty", "--class", "scratch-calc", "-e", "python3", "-q"]
+# width = 0.4
+# height = 0.5
+
 # ── Window rules ────────────────────────────────────────────────────────────
 # [[rules]]
 # class = "localsend"
@@ -415,6 +453,7 @@ tray = true
 #   move_float left|right|up|down, resize_float dx dy,
 #   media_key NAME, brightness_step N, nightlight_toggle, dnd_toggle, idle_toggle,
 #   close, quit, reload, toggle_gaps, theme NAME,
+#   scratchpad (the default), scratchpad N, scratchpad_send N, unscratch   (N = 1-9),
 #   focusmon N, tagmon N   (relative monitor step: -1 or 1)
 
 [[keys]]

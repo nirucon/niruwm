@@ -2,6 +2,8 @@ mod clients;
 mod events;
 mod keys;
 mod mouse;
+mod scratch;
+pub(crate) use scratch::ScratchOp;
 
 /// Exposed for `--doctor`, which reports which keys the layout can deliver.
 pub fn keysym_for(name: &str) -> Option<u32> {
@@ -69,6 +71,14 @@ pub(crate) struct Client {
     /// Client min/max size hints. `geom` is the outer rectangle, so these
     /// limits are applied to the same rectangle that arrange() uses.
     size_hints: SizeHints,
+    /// `WM_CLASS` as read when the window was managed ("instance\0class\0").
+    class: String,
+    /// The scratchpad slot this window is (0 default, 1-9 numbered). A
+    /// scratchpad is never part of a workspace: see `scratch.rs`.
+    scratch: Option<u8>,
+    /// Whether the window floated before it was sent to a scratchpad, so
+    /// taking it back out restores it as it was.
+    scratch_floating: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -240,9 +250,16 @@ pub(crate) struct Wm {
     /// Which screen has the input focus.
     pub(crate) focused_monitor: usize,
     pub(crate) monitor_cfg: MonitorConfig,
-    /// Scratchpad window and whether it is currently shown.
-    pub(crate) scratchpad: Option<Window>,
-    pub(crate) scratchpad_shown: bool,
+    /// The scratchpad shown right now; at most one is.
+    pub(crate) scratch_shown: Option<Window>,
+    /// The window that had focus before a scratchpad was shown.
+    pub(crate) scratch_return: Option<Window>,
+    /// When each slot's command was last started, so a second press while
+    /// it starts does not open a second copy.
+    pub(crate) scratch_launching: [Option<std::time::Instant>; 10],
+    /// Until when pointer crossings are the result of a scratchpad being
+    /// shown or hidden, and so must not move the focus.
+    pub(crate) scratch_enter_quiet: Option<std::time::Instant>,
     /// True while a lock screen owns the keyboard. The WM releases its key
     /// grabs so every key reaches the lock, then takes them back.
     pub(crate) keys_released: bool,
@@ -359,6 +376,7 @@ impl Wm {
             "_NIRUWM_QUIT",
             "_NIRUWM_LOCK",
             "_NIRUWM_MONITORS",
+            "_NIRUWM_SCRATCHPADS",
             "_NIRUWM_WALLPAPER_STATE",
             // Renamed by the layout save; a name missing from this list would
             // abort the manager when the command arrived.
@@ -398,8 +416,10 @@ impl Wm {
             multi_monitor: false,
             focused_monitor: 0,
             monitor_cfg,
-            scratchpad: None,
-            scratchpad_shown: false,
+            scratch_shown: None,
+            scratch_return: None,
+            scratch_launching: [None; 10],
+            scratch_enter_quiet: None,
             keys_released: false,
             last_bar_start: std::time::Instant::now(),
             pending_restore: Vec::new(),

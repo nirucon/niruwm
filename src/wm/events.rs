@@ -66,9 +66,19 @@ impl Wm {
             match event {
                 Event::MapRequest(e) => self.manage(e.window)?,
                 Event::DestroyNotify(e) => {
+                    // Helpers create and destroy small unmanaged windows all
+                    // the time. Only a window the manager knew about changes
+                    // the layout; re-arranging for the others restacked
+                    // floating windows and scratchpads over open bar panels.
+                    let known = self.clients.iter().any(|c| c.win == e.window)
+                        || self.docks.contains(&e.window)
+                        || self.withdrawn.contains(&e.window)
+                        || self.hidden.contains(&e.window);
                     self.withdrawn.remove(&e.window);
                     self.unmanage(e.window);
-                    self.arrange()?;
+                    if known {
+                        self.arrange()?;
+                    }
                 }
                 Event::UnmapNotify(e) => {
                     // Only a window this WM does not manage, or is not
@@ -140,6 +150,16 @@ impl Wm {
                         // focused one. Without this the keyboard stayed on the
                         // screen the pointer left, which is the opposite of
                         // focus-follows-mouse.
+                        // Showing or hiding a scratchpad uncovers or covers
+                        // the window under the pointer. That crossing is the
+                        // window manager's doing, not the user's, and must not
+                        // take the focus from the window it is given back to.
+                        let ours = self
+                            .scratch_enter_quiet
+                            .is_some_and(|until| std::time::Instant::now() < until);
+                        if ours {
+                            return Ok(true);
+                        }
                         if monitor != self.focused_monitor {
                             self.focused_monitor = monitor;
                         }
@@ -346,6 +366,21 @@ impl Wm {
                     }
                     None
                 }
+                // Scratchpads, for `niructl scratchpad` and NIRUBAR:
+                // 15 show/hide slot d[1] (0 default, 1-9) with d[2] 0 toggle,
+                // 1 show, 2 hide; 16 send the focused window to slot d[1];
+                // 17 make the focused scratchpad a normal window again.
+                15 => {
+                    if let Ok(slot) = u8::try_from(d[1]) {
+                        self.scratchpad(slot, super::ScratchOp::from_code(d[2]))?;
+                    }
+                    None
+                }
+                16 => u8::try_from(d[1])
+                    .ok()
+                    .filter(|n| (1..=9).contains(n))
+                    .map(Action::ScratchpadSend),
+                17 => Some(Action::Unscratch),
                 5 => Some(Action::Quit),
                 6 => Some(Action::SaveSession),
                 7 => Some(Action::ClearSession),
@@ -430,6 +465,15 @@ impl Wm {
             // From an external pager: a zero-based global desktop.
             self.view_global(d[0])?;
         } else if e.type_ == self.atom("_NET_ACTIVE_WINDOW") {
+            // Activating a scratchpad (a window switcher, a notification)
+            // shows it where the user is instead of switching workspace.
+            if self.is_scratch(e.window) {
+                if self.scratch_shown != Some(e.window) {
+                    self.show_scratch(e.window)?;
+                }
+                self.arrange()?;
+                return Ok(true);
+            }
             if let Some(c) = self.clients.iter().find(|c| c.win == e.window) {
                 let (monitor, tag) = (c.monitor, c.tag);
                 self.focused_monitor = monitor;

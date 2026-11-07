@@ -1350,3 +1350,169 @@ fn input_only_helpers_are_not_managed_or_focused() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+fn create(c: &RustConnection, root: Window, class: &[u8]) -> Window {
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        10,
+        10,
+        300,
+        200,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        w,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        class,
+    )
+    .unwrap();
+    c.map_window(w).unwrap();
+    c.flush().unwrap();
+    w
+}
+
+fn geometry(c: &RustConnection, w: Window) -> (i16, i16, u16, u16) {
+    let g = c.get_geometry(w).unwrap().reply().unwrap();
+    (g.x, g.y, g.width, g.height)
+}
+
+fn mapped(c: &RustConnection, w: Window) -> bool {
+    c.get_window_attributes(w)
+        .unwrap()
+        .reply()
+        .unwrap()
+        .map_state
+        == MapState::VIEWABLE
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn scratchpads_never_resize_the_workspace_and_return_focus() {
+    let dir = std::env::temp_dir().join(format!("niruwm-scratch-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n\
+         [scratchpad]\ncommand = [\"xterm\", \"-class\", \"scratchpad\"]\n\
+         [[scratchpad.slot]]\nnumber = 2\ncommand = [\"xterm\", \"-class\", \"scratch-two\"]\nwidth = 0.4\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+
+    // One ordinary window: it tiles at full width.
+    let a = create(&c, root, b"term\0Term\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![a]);
+    wait(|| geometry(&c, a).2 > screen_w - 40);
+    let full = geometry(&c, a);
+
+    // The default scratchpad appears floating, focused, and changes nothing.
+    let s0 = create(&c, root, b"scratchpad\0scratchpad\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![s0]);
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        geometry(&c, a),
+        full,
+        "showing the scratchpad moved the window"
+    );
+    assert_eq!(
+        values(&c, root, "_NET_CLIENT_LIST"),
+        vec![a],
+        "a scratchpad is not a workspace window"
+    );
+    assert!(text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("0\tshown\t{s0}")));
+
+    // Hide: the 0.17.3 bug made the hidden scratchpad a tile, halving `a`.
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 0, 0, 0]);
+    wait(|| !mapped(&c, s0));
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        geometry(&c, a),
+        full,
+        "hiding the scratchpad resized the window"
+    );
+    assert_eq!(
+        values(&c, root, "_NET_ACTIVE_WINDOW"),
+        vec![a],
+        "focus returns"
+    );
+    assert!(text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("0\thidden\t{s0}")));
+
+    // Show again, then switch workspace: the scratchpad follows, `a` stays.
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 0, 0, 0]);
+    wait(|| mapped(&c, s0));
+    assert_eq!(geometry(&c, a), full);
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 1, 0, 0, 0]);
+    wait(|| !mapped(&c, a));
+    assert!(mapped(&c, s0), "a shown scratchpad follows the workspace");
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 2, 0, 0]);
+    wait(|| !mapped(&c, s0));
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| mapped(&c, a));
+    assert_eq!(geometry(&c, a), full);
+
+    // Send `b` to slot 2: it hides and `a` gets the full width back.
+    let b = create(&c, root, b"other\0Other\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![a, b]);
+    wait(|| geometry(&c, a).2 < full.2);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [16, 2, 0, 0, 0]);
+    wait(|| !mapped(&c, b));
+    wait(|| geometry(&c, a) == full);
+    assert_eq!(values(&c, root, "_NET_CLIENT_LIST"), vec![a]);
+    // Only one scratchpad is shown at a time.
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 1, 0, 0]);
+    wait(|| mapped(&c, s0));
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 2, 0, 0, 0]);
+    wait(|| mapped(&c, b));
+    wait(|| !mapped(&c, s0));
+    assert_eq!(geometry(&c, a), full);
+    // Slot 2's own width (0.4 of the screen) applies to a sent window too.
+    let gb = geometry(&c, b);
+    assert!(
+        (i32::from(gb.2) - i32::from(screen_w) * 4 / 10).abs() < 8,
+        "{gb:?}"
+    );
+
+    // Sending it to the same slot again makes it a normal tiled window.
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [16, 2, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![a, b]);
+    wait(|| geometry(&c, a).2 < full.2);
+    assert!(!text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("\t{b}\t")));
+
+    // Closing a scratchpad frees its slot.
+    c.destroy_window(s0).unwrap();
+    c.flush().unwrap();
+    wait(|| !text(&c, root, "_NIRUWM_SCRATCHPADS").starts_with("0\t"));
+    // A new window of the class takes the free slot again.
+    let s1 = create(&c, root, b"scratchpad\0scratchpad\0");
+    wait(|| text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("0\tshown\t{s1}")));
+
+    c.destroy_window(s1).unwrap();
+    c.destroy_window(b).unwrap();
+    c.destroy_window(a).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
