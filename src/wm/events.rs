@@ -427,7 +427,8 @@ impl Wm {
                 // Scratchpads, for `niructl scratchpad` and NIRUBAR:
                 // 15 show/hide slot d[1] (0 default, 1-9) with d[2] 0 toggle,
                 // 1 show, 2 hide; 16 send the focused window to slot d[1];
-                // 17 make the focused scratchpad a normal window again.
+                // 17 make the focused scratchpad a normal window again;
+                // 18 send window d[2] to slot d[1] (whatever has the focus).
                 15 => {
                     if let Ok(slot) = u8::try_from(d[1]) {
                         self.scratchpad(slot, super::ScratchOp::from_code(d[2]))?;
@@ -439,6 +440,12 @@ impl Wm {
                     .filter(|n| (1..=9).contains(n))
                     .map(Action::ScratchpadSend),
                 17 => Some(Action::Unscratch),
+                18 => {
+                    if let Ok(slot) = u8::try_from(d[1]) {
+                        self.send_named_to_scratch(d[2], slot)?;
+                    }
+                    None
+                }
                 5 => {
                     eprintln!(
                         "niruwm: quit requested through _NIRUWM_COMMAND (niructl quit) by window {}; the session ends",

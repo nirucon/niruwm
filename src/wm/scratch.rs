@@ -441,10 +441,35 @@ impl Wm {
 
     /// Send the focused window to a numbered slot, or back from it.
     pub(crate) fn send_to_scratch(&mut self, slot: u8) -> Result<()> {
+        let Some(w) = self.focus else { return Ok(()) };
+        self.send_window_to_scratch(w, slot)
+    }
+
+    /// Send one named window to a numbered slot (`_NIRUWM_COMMAND` 18,
+    /// `niructl scratchpad send N --window ID`). A program that starts its
+    /// own window for a slot uses this, so it never depends on which window
+    /// has the focus. Unlike the key, it never takes a window back out: a
+    /// window already in that slot stays there.
+    pub(crate) fn send_named_to_scratch(&mut self, w: Window, slot: u8) -> Result<()> {
+        // Only a managed top-level window; a dialog belongs to its parent.
+        let managed = self.clients.iter().any(|c| c.win == w);
+        if !managed || self.scratch_owner(w).is_some_and(|owner| owner != w) {
+            return Ok(());
+        }
+        if self
+            .clients
+            .iter()
+            .any(|c| c.win == w && c.scratch == Some(slot))
+        {
+            return Ok(());
+        }
+        self.send_window_to_scratch(w, slot)
+    }
+
+    fn send_window_to_scratch(&mut self, w: Window, slot: u8) -> Result<()> {
         if !(1..=9).contains(&slot) {
             return Ok(());
         }
-        let Some(w) = self.focus else { return Ok(()) };
         let Some(current) = self.clients.iter().find(|c| c.win == w).map(|c| c.scratch) else {
             return Ok(());
         };
@@ -459,7 +484,10 @@ impl Wm {
                     self.hide_scratch()?;
                 } else {
                     self.quiet_crossings();
-                    self.focus = None;
+                    // The window disappears; only its own focus goes with it.
+                    if self.focus == Some(w) {
+                        self.focus = None;
+                    }
                 }
                 let fullscreen = self.clients.iter().any(|c| c.win == w && c.fullscreen);
                 if fullscreen {

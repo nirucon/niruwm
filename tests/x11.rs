@@ -1500,6 +1500,38 @@ fn scratchpads_never_resize_the_workspace_and_return_focus() {
     wait(|| geometry(&c, a).2 < full.2);
     assert!(!text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("\t{b}\t")));
 
+    // A named window goes to a slot whatever has the focus (command 18):
+    // `b` keeps the focus, `a` disappears into slot 3 and stays there when
+    // it is sent again.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [18, 3, a, 0, 0]);
+    wait(|| !mapped(&c, a));
+    wait(|| text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("3\thidden\t{a}")));
+    assert_eq!(
+        values(&c, root, "_NET_ACTIVE_WINDOW"),
+        vec![b],
+        "the focus stays"
+    );
+    assert_eq!(values(&c, root, "_NET_CLIENT_LIST"), vec![b]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [18, 3, a, 0, 0]);
+    thread::sleep(Duration::from_millis(150));
+    assert!(text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("3\thidden\t{a}")));
+    // An unknown window id changes nothing.
+    message(
+        &c,
+        root,
+        root,
+        "_NIRUWM_COMMAND",
+        [18, 4, 0x7fff_fff0, 0, 0],
+    );
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 3, 1, 0, 0]);
+    wait(|| mapped(&c, a));
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [17, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    assert!(!text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("\t{a}\t")));
+
     // Closing a scratchpad frees its slot.
     c.destroy_window(s0).unwrap();
     c.flush().unwrap();

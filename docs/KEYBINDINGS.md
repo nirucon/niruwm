@@ -96,7 +96,9 @@ workspace indicators and the saved session.
   size in `[[scratchpad.slot]]`; see [config.example.toml](../config.example.toml).
 - `niructl scratchpad [N] [toggle|show|hide]`, `niructl scratchpad send N`,
   `niructl scratchpad unscratch` and `niructl scratchpad list [--json]` do the
-  same from scripts. NIRUBAR's `scratchpad` module lists them and shows or hides
+  same from scripts. `niructl scratchpad send N --window ID` sends one named
+  window instead of the focused one (NIRUDICTATE's agent mode keeps opencode in
+  slot 9 this way); a window already in slot N stays there. NIRUBAR's `scratchpad` module lists them and shows or hides
   them with a click; it reads the `_NIRUWM_SCRATCHPADS` root property (one line
   per slot: `slot<TAB>shown|hidden|empty<TAB>window<TAB>class`, slot 0 is the
   default).

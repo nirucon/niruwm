@@ -8513,6 +8513,7 @@ fn scratchpad_rows(text: &str) -> Vec<(u8, String, u32, String)> {
 ///
 ///   scratchpad [N] [toggle|show|hide]   N = 1-9, none = the default (Super+Shift+S)
 ///   scratchpad send N                   the focused window to slot N (again: back)
+///   scratchpad send N --window ID       that window to slot N, whatever has the focus
 ///   scratchpad unscratch                the focused scratchpad becomes a normal window
 ///   scratchpad list [--json]
 fn scratchpad_command(
@@ -8521,7 +8522,7 @@ fn scratchpad_command(
     atom: &dyn Fn(&str) -> Result<Atom>,
     args: &[String],
 ) -> Result<()> {
-    const HELP: &str = "Usage: niructl scratchpad [N] [toggle|show|hide] | send N | unscratch | list [--json]   (N = 1-9; no N = the default scratchpad)";
+    const HELP: &str = "Usage: niructl scratchpad [N] [toggle|show|hide] | send N [--window ID] | unscratch | list [--json]   (N = 1-9; no N = the default scratchpad)";
     let slot_arg = |text: &str| -> Result<u32> {
         match text.parse::<u32>() {
             Ok(n) if (1..=9).contains(&n) => Ok(n),
@@ -8618,6 +8619,16 @@ fn scratchpad_command(
             return Ok(());
         }
         ["send", n] => [16, slot_arg(n)?, 0, 0, 0],
+        ["send", n, "--window", id] | ["send", "--window", id, n] => {
+            let parsed = match id.strip_prefix("0x").or_else(|| id.strip_prefix("0X")) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                None => id.parse::<u32>().ok(),
+            };
+            match parsed {
+                Some(w) if w != 0 => [18, slot_arg(n)?, w, 0, 0],
+                _ => return Err(format!("scratchpad: not a window id: {id:?}\n{HELP}").into()),
+            }
+        }
         ["unscratch"] => [17, 0, 0, 0, 0],
         [] => [15, 0, 0, 0, 0],
         [op @ ("toggle" | "show" | "hide")] => [15, 0, op_code(op), 0, 0],
