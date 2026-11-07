@@ -1,47 +1,77 @@
 # NIRUWM
 
-**Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
+Small Rust/X11 tiling window manager and session layer at the heart of the NIRUX desktop.
 
-**Early beta.** A small Rust/X11 tiling window manager and session layer for the
-NIRUX X11 desktop, built in the spirit of [suckless dwm](https://dwm.suckless.org/),
-which the author used for many years.
+**Status: beta** · Part of the [NIRUX](https://github.com/nirucon/nirux) suite · [MIT License](LICENSE)
 
-NIRU Login provides the greetd-based graphical login that starts this session.
+![NIRUWM](docs/screenshots/main.png)
+
+## About
+
+NIRUWM is the window manager of NIRUX. It is built in the spirit of
+[suckless dwm](https://dwm.suckless.org/), which I used for many years, but it
+is its own code and its own design, not a dwm fork or configuration.
+
 It keeps what makes dwm pleasant: tags instead of virtual desktops, a single
-plain-text configuration, keybindings as the primary interface, and a
-codebase small enough to read. It adds what a daily machine needs: per-monitor
-workspaces, eight layouts, a bar, a launcher, notifications, a lock screen and
-the `niructl`/`niruidle` tools.
+plain-text configuration, keybindings as the primary interface and a codebase
+small enough to read. It adds what a daily machine needs: per-monitor
+workspaces, eight layouts, scratchpads, session save/restore, display
+profiles, and the `niructl` and `niruidle` tools that the rest of the suite
+(NIRUBAR, NIRU Launcher, NIRUNOTIFY, NIRULOCK and friends) builds on.
+
+The repository also ships the session scripts: `niruwm-session` (what the
+display manager starts), `niruclipboard` (clipboard history helper) and
+`nirugestured` (touchpad gestures). NIRU Login starts this session.
 
 ## Features
 
 - Eight layouts: tile, left, monocle, centered, centered-floating, fibonacci,
   floating and Scroll. Scroll keeps one window per column and shows one or two
   adjacent columns, sliding horizontally with focus.
-- Ten workspaces per monitor, selected with `Super+1`…`Super+0`.
-- A theme without a wallpaper paints its own background colour, so switching
-  theme never leaves the previous picture on screen.
-- Tiling, floating, fullscreen, scratchpads (one default and nine numbered),
-  master ratio, master count, gaps and window swapping.
-- dwm-style mouse move/resize with **Super+left-drag** and **Super+right-drag**.
-- Session save/restore, autostart, workspace recipes and focus/presentation modes
-  through `niructl`.
-- Native notification, DND, audio, microphone, Bluetooth, display-profile, power-
-  profile, brightness, night-light and screenshot integration.
-- Shared NIRU themes, font metrics and appearance contract.
-- `niructl`: provider-neutral controls, diagnostics, work modes, recipes, storage
-  review, task status, off-screen window recovery, input settings and the optional
-  OpenCode handoff.
-- NIRU Actions: `Super+A` opens the focused action catalogue; the same entries are
-  available in the larger `Super+Shift+P` launcher view.
-- `niruidle`: idle, lock and DPMS timing without a separate idle daemon. The
-  whole ladder is one sequence with one timer per step: active ->
-  `screensaver_timeout` -> screensaver -> `lock_after_screensaver` -> locked,
-  configured in the shared `[idle]` section.
+- Ten workspaces per monitor (`Super+1`…`Super+0`); layout, master ratio and
+  master count are stored per workspace and survive a logout.
+- Tiling, floating, fullscreen, sticky windows, gaps, master ratio/count and
+  window swapping; dwm-style `Super`+drag to move and resize.
+- Scratchpads: one default (`Super+Shift+S`) and nine numbered slots
+  (`Super+Alt+1…9`); any window can be sent to a slot.
+- Window rules for floating, centering, workspace, sticky and compositor opacity.
+- Session save/restore, autostart, workspace recipes and focus/presentation
+  modes through `niructl`.
+- Display profiles that follow screens by EDID identity, with optional
+  automatic switching on hotplug and lid events.
+- Shared NIRU themes (ten built in, plus user themes), theme wallpapers per
+  screen and a theme hook for terminal colours.
+- Native integration for notifications, DND, audio, microphone, Bluetooth,
+  power profiles, brightness, night light and screenshots.
+- `niructl`: one control command for the whole suite (themes, bar, layouts,
+  wallpaper, displays, audio, input, power, diagnostics, tasks and the optional
+  OpenCode handoff).
+- `niruidle`: idle, screensaver, lock and DPMS timing in one process without a
+  separate idle daemon: active → screensaver → locked → display off.
 
-## Install
+## Requirements
 
-For the complete desktop and OS dependencies, use [NIRUX](https://github.com/nirucon/nirux#install).
+- Debian, Arch or Void Linux (glibc), x86_64.
+- An X11 server; NIRUWM is not a Wayland compositor.
+- Runtime helpers used when present: `feh` (or `hsetroot`, `nitrogen`,
+  `xwallpaper`) for wallpapers, `picom` for the compositor, `dbus-send` for
+  power actions, `brightnessctl`, `xrandr`, PipeWire/PulseAudio tools.
+  The default terminal is `kitty`, the default browser `brave` and the file
+  manager `pcmanfm`; all can be changed.
+- Building from source: Rust 1.75 or newer and a C linker.
+
+NIRUX installs all runtime dependencies for you.
+
+## Installation
+
+### With NIRUX
+
+NIRUWM is a core component. `nirux install` installs it together with the rest
+of the suite from the pinned manifest, and `nirux update` keeps it current. See
+the [NIRUX README](https://github.com/nirucon/nirux#installation).
+
+### Standalone
+
 To install NIRUWM and its session tools on an existing X11 system:
 
 ```sh
@@ -50,442 +80,195 @@ cd niruwm
 ./install.sh --register-session
 ```
 
-Choose **NIRUWM** at login. `./install.sh --build` needs Rust 1.75+ and a C
-linker. The bar is a separate component; NIRUX installs it. NIRUX-owned
-installations are maintained with `nirux update`.
+`./install.sh` downloads the released binaries (`niruwm`, `nirubar`, `niructl`,
+`niruidle` and the session scripts) into `~/.local/bin`, creates
+`~/.config/niruwm/config.toml` from the example and copies the bundled themes.
+`--register-session` also adds `/usr/share/xsessions/niruwm.desktop` (needs
+sudo), so you can choose **NIRUWM** at login. Other options:
 
-## Keybindings
+| Option | Effect |
+|---|---|
+| `--build` | Build from this checkout instead of downloading (needs Rust) |
+| `--check` | Verify the installed session, change nothing |
+| `--prefix DIR` | Install under `DIR` instead of `~/.local` |
+| `--uninstall` | Remove what this installer installed |
 
-### Applications and session
+The standalone installer refuses to touch files that NIRUX manages; on a NIRUX
+system use `nirux update`.
+
+For a TTY login without a display manager, run
+`startx "$HOME/.local/bin/niruwm-session"`.
+
+## Usage
+
+The most important keys (the full list is in
+[docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)):
 
 | Keys | Action |
 |---|---|
-| Super+Enter | Terminal |
-| Super+Shift+Enter | Alternative terminal |
-| Super+B | Browser |
-| Super+P | Application launcher |
-| Super+A | NIRU Actions: maintenance, diagnostics, contexts and optional OpenCode |
-| Super+Shift+P | Applications, windows and actions |
-| Super+S | Web search: type a phrase, Enter opens the engine |
-| Super+Shift+M | Unified launcher |
-| Super+W | Window switcher |
-| Super+Shift+F | File manager |
-| Super+Escape | Lock |
-| Super+Shift+Escape | Lock, wait three seconds, then suspend |
-| Super+Shift+R | Reload |
-| Super+R / Super+Ctrl+Shift+R | Reload |
-| Super+Shift+D | Toggle DND |
-| Super+Shift+C | Toggle idle inhibition |
-| Super+Shift+W | Save session |
-| Super+G | Toggle gaps |
-| Super+N | Toggle night light |
-| Super+Q | Close window |
-| Super+Ctrl+Shift+Q | Log out |
+| `Super+Enter` | Terminal |
+| `Super+P` | Application launcher |
+| `Super+Shift+P` | Unified launcher: applications, windows, actions and settings |
+| `Super+A` | NIRU Actions |
+| `Super+V` | Clipboard history |
+| `Alt+Tab` / `Super+grave` | Window switcher / workspace overview |
+| `Super+1…9`, `Super+0` | Select workspace 1…10 |
+| `Super+Shift+1…9`, `Super+Shift+0` | Move window to workspace 1…10 |
+| `Super+J` / `Super+K` | Next / previous window |
+| `Super+T` / `Super+M` / `Super+Ctrl+S` | Tile / monocle / Scroll layout |
+| `Super+Shift+Space` | Toggle floating |
+| `Super+Shift+E` | Toggle fullscreen |
+| `Super+Shift+S` | Show / hide the default scratchpad |
+| `Super+Alt+S` | Toggle sticky |
+| `Super+Escape` | Lock |
+| `Super+Q` | Close window |
+| `Super+R` | Reload configuration |
+| `Super+Ctrl+Shift+Q` | Log out |
 
-### Layouts
-
-| Keys | Action |
-|---|---|
-| Super+T | Tile |
-| Super+Y | Left stack |
-| Super+M | Monocle |
-| Super+C | Centered |
-| Super+U | Centered floating master |
-| Super+F | Floating layout |
-| Super+Ctrl+E | Fibonacci |
-| Super+Ctrl+S | Scroll layout |
-| Super+Ctrl+Shift+S | Scroll: toggle one/two visible columns |
-| Super+Ctrl+, / Super+Ctrl+. | Previous / next layout |
-| Super+Shift+Space | Toggle floating |
-| Super+Shift+E | Toggle fullscreen |
-| Super+Shift+S | Show / hide the default scratchpad |
-| Super+Alt+B | Cycle bar: top, bottom, hidden |
-| Super+H / Super+L | Decrease / increase master ratio |
-| Super+I / Super+D | Increase / decrease master count |
-| Super+Shift+J / Super+Shift+K | Swap with next / previous window |
-
-### Scratchpads
-
-| Keys | Action |
-|---|---|
-| Super+Shift+S | Show / hide the default scratchpad (`[scratchpad] command`, started on first use) |
-| Super+Alt+1…9 | Show / hide scratchpad 1…9 |
-| Super+Alt+Shift+1…9 | Send the focused window to scratchpad 1…9; on a window already there, take it back |
-| Super+Shift+Space | On a scratchpad: make it a normal tiled window again |
-
-A scratchpad is a floating window you show and hide with one key. It is never a
-member of a workspace: showing or hiding one never moves or resizes any other
-window, and a hidden one is left out of tiling, focus cycling, window lists,
-workspace indicators and the saved session.
-
-- **One at a time.** Showing a scratchpad hides the one that was shown. The key
-  of the shown one hides it, and focus goes back to the window you were using.
-- **It follows you.** A shown scratchpad stays on top when you switch workspace,
-  and moves along when you go to the other screen with Super+, / Super+. or a
-  workspace key there. Moving the mouse alone does not drag it along.
-- **Any window can be one.** Super+Alt+Shift+N hides the focused window in slot N.
-  If slot N already holds a window, that window comes back to the current
-  workspace as a normal window (they swap places). Pressing Super+Alt+Shift+N on
-  the window in slot N, Super+Shift+Space, Super+Shift+1…0 or `niructl
-  scratchpad unscratch` makes it a normal window again.
-- **Closing frees the slot.** The next press of a slot with a configured command
-  starts it again; an empty slot without one shows a short hint.
-- Numbered slots may have their own command (recognised by its window class) and
-  size in `[[scratchpad.slot]]`; see `config.example.toml`.
-- `niructl scratchpad [N] [toggle|show|hide]`, `niructl scratchpad send N`,
-  `niructl scratchpad unscratch` and `niructl scratchpad list [--json]` do the
-  same from scripts. NIRUBAR's `scratchpad` module lists them and shows or hides
-  them with a click; it reads the `_NIRUWM_SCRATCHPADS` root property (one line
-  per slot: `slot<TAB>shown|hidden|empty<TAB>window<TAB>class`, slot 0 is the
-  default).
-
-### Focus and windows
-
-| Keys | Action |
-|---|---|
-| Super+J / Super+K | Next / previous window |
-| Super+Right or Down | Next window |
-| Super+Left or Up | Previous window |
-| Super+Shift+Right or Down | Move window next |
-| Super+Shift+Left or Up | Move window previous |
-| Super+, / Super+. | Previous / next monitor |
-| Super+Shift+, / Super+Shift+. | Move window to previous / next monitor |
-
-### Workspaces
-
-| Keys | Action |
-|---|---|
-| Super+1…9 | Select workspace 1…9 |
-| Super+0 | Select workspace 10 |
-| Super+Shift+1…9 | Move window to workspace 1…9 |
-| Super+Shift+0 | Move window to workspace 10 |
-| Super+Ctrl+1…9 / 0 | Toggle workspace 1…9 / 10 on the current view |
-| Super+Ctrl+Shift+1…9 / 0 | Toggle window on workspace 1…9 / 10 and move it there |
-| Super+Tab / Super+Shift+Tab | Next / previous workspace |
-
-### Floating windows
-
-| Keys | Action |
-|---|---|
-| Super+Ctrl+Left / Right / Up / Down | Move floating window |
-| Super+Ctrl+Shift+Left / Right | Resize floating window horizontally |
-| Super+Ctrl+Shift+Up / Down | Resize floating window vertically |
-
-### Screenshots and hardware keys
-
-| Keys | Action |
-|---|---|
-| Super+Print | Full-screen capture and review |
-| Print | Region capture and review |
-| Super+Shift+Print | Active-window capture and review |
-| XF86AudioRaiseVolume / LowerVolume | Volume up / down |
-| XF86AudioMute | Mute |
-| XF86AudioPlay / Pause | Play / pause |
-| XF86AudioNext / Prev | Next / previous track |
-| XF86MonBrightnessUp / Down | Brightness up / down |
-
-The volume keys stop at 100 % and show the level through `nirunotify --osd`.
-The same call plays the NIRUX feedback sound: a soft tick whose pitch follows
-the new level, a duller bump at 0 % or 100 %, and a two-note mute/unmute (the
-mute sound plays just before the sink is muted). Brightness keys can tick too
-(off by default). Switch them with `nirux sounds`; NIRUNOTIFY 0.4 or newer
-plays them.
-
-### Mouse
-
-| Input | Action |
-|---|---|
-| Super+left-drag | Move window; a tiled window becomes floating and can cross monitor boundaries |
-| Super+right-drag | Resize from the nearest corner |
-| Click title/bar module | Normal application interaction; no Super required |
-
-
-## Settings
-
-Shared settings live in `~/.config/niruwm/config.toml`; start from
-[config.example.toml](config.example.toml). XDG paths are respected. The default
-workspace labels are numbers 1–10. To use icons or names, edit the `[bar] tags`
-line using the commented icon/text presets in the example; key bindings stay the
-same. Individual
-bindings override only that key; `action = "unbind"` removes a default. Set
-`browser` to an installed browser command.
+`niructl` controls the running session from scripts and the terminal:
 
 ```sh
-niruwm --check-config
-niruwm --reset-config   # restore the full example; keeps .niruwm-backup
-niructl reload
-niructl restart-bar
-niructl bar top       # persistent edge, default
+niructl reload                       # reload WM, bar and theme
+niructl theme niru-nord              # switch theme
+niructl layout monocle               # this workspace only
+niructl scratchpad 2 toggle
 niructl bar bottom
-niructl bar hide      # runtime only; returns at the next login
-niructl bar show
-niructl bar toggle
-niructl bar status
-niructl storage review
-niructl input status
-niructl input set-keyboard se
-niructl input set-pointer natural on
-niructl task list
-niructl agent --dry-run "explain why the microphone is silent"
-niructl theme niru-nord
-niructl themes                         # catalogue, origin and active marker
-niructl theme-catalog                  # the same catalogue as JSON for GUIs
-niructl theme-import ~/theme.toml --id my-theme --wallpaper ~/wall.png
-niructl theme-hide niru-satie          # hide a bundled theme
-niructl theme-show niru-satie
-niructl theme-remove my-theme          # user themes only
+niructl display save Desk            # save the current screen layout
+niructl display apply Desk
+niructl timing set screensaver_timeout 20
+niructl explain                      # what is going on with this session
 ```
 
-`niruthemeselector` is the graphical front end: it previews wallpaper and
-palette, applies through the same path and manages user imports and hidden
-bundled themes. NIRUWM's theme change still owns the terminal-hook, wallpaper,
-bar and running-session propagation.
-
-Session options live in `~/.config/niruwm/session.conf`. Screensaver and lock
-timing live in the shared config under `[idle]`:
-
-```toml
-[idle]
-screensaver_timeout = 15      # idle minutes before the screensaver
-lock_after_screensaver = 15   # screensaver minutes before locking
-dpms_off_after_lock = 15      # minutes after locking before the display sleeps
-```
-
-`niruidle` owns both timers in one process, so the ladder
-active -> screensaver -> locked has a single timer on each step. `niructl timing
-show` prints the effective values and `niructl timing set KEY MINUTES` changes
-one of them in place (comments and unrelated keys are preserved); the running
-`niruidle` reloads the file within a few seconds.
-
-`Super+Shift+Escape` is the explicit suspend shortcut. It starts NIRULOCK,
-waits for the verified `_NIRU_LOCK_READY` contract, keeps the lock screen
-visible for three seconds, verifies that the same lock window is still there
-and only then requests suspend through the login1 API. Repeated presses are
-coalesced, and unlocking during the delay cancels the request. The existing
-lid/sleep inhibitor path in the session keeps its own lock-before-sleep
-behaviour. A legacy
-`~/.config/niruui/screensaver.toml` is still read for any value `[idle]` does
-not set, so an older installation keeps its timing. Notifications use
-NIRUNOTIFY when installed, with Dunst fallback.
-
-For a TTY login, run `startx "$HOME/.local/bin/niruwm-session"` (or plain
-`startx` when `.xinitrc` selects NIRUWM). The session keeps a valid login-provided
-`XDG_RUNTIME_DIR`; without one it uses a private, mode-700 directory under
-`${XDG_CACHE_HOME:-$HOME/.cache}/niruwm/runtime` before starting D-Bus/audio.
-Startup errors and WM errors are recorded in
-`${XDG_STATE_HOME:-$HOME/.local/state}/niruwm/session.log`.
-
-### Theme wallpapers
-
-`niructl wallpaper status` shows the configured theme, resolved theme image and
-whether wallpaper following is disabled, overridden by a single file, or missing
-an asset. Image setter failures are reported in the session log. NIRUX installs
-`feh` and the theme images; localized XDG Pictures paths are supported.
-
-A config without a `[wallpaper]` section uses the built-in `enabled = false`
-default, so theme wallpapers never change while the bar still follows the theme.
-NIRUWM says so in the session log, and `niructl theme NAME` repairs such a file:
-missing sections are restored from `config.example.toml`, the previous file is
-kept as `config.toml.bak`, and a file that is not valid TOML is refused instead
-of overwritten. The repair works without an X server, so it also applies from a
-TTY or over ssh.
-
-Selecting a file with `niructl wallpaper set PATH` keeps that file across theme
-changes. To explicitly return to theme wallpapers:
+The program itself has a few diagnostic options:
 
 ```sh
-niructl wallpaper follow-theme on
-niructl theme niru-nord
+niruwm --check-config     # validate config.toml without applying it
+niruwm --reset-config     # restore the full example; keeps a .niruwm-backup copy
+niruwm --doctor
+niruwm --dump-config
+niruwm --version
 ```
 
-This enables wallpapers and changes a single-file override to fixed mode; the
-manual file remains in the config for `niructl wallpaper mode single`.
+See [docs/REFERENCE.md](docs/REFERENCE.md) for the complete `niructl`
+reference: themes, wallpapers per screen, layouts, displays, audio, input,
+power and the compositor.
 
-`niructl wallpaper status-json` reports the same settings as one JSON document
-together with `planned` (what each screen will show) and `rendered` (what the
-running session actually set, or `null` when no window manager is running).
-NIRUWM publishes the rendered result on `_NIRUWM_WALLPAPER_STATE`, so a
-configuration is never reported as a displayed picture.
+## Configuration
 
-### Layouts per workspace
+Everything lives in one file, `~/.config/niruwm/config.toml` (XDG paths are
+respected), shared by NIRUWM, NIRUBAR, `niruidle` and `niructl`. Start from
+the fully commented [config.example.toml](config.example.toml). An unknown key
+is rejected, so a typo is visible instead of silent; an invalid file keeps the
+previous settings in effect.
 
-A layout belongs to one workspace on one screen. Changing it there leaves
-every other workspace, on every screen, exactly as it was, and every workspace
-starts tiled until you change it:
+| Section | Contents |
+|---|---|
+| top level | `theme`, `gap`, `border_width`, `bar_height`, `master_ratio`, `terminal`, `browser`, `launcher`, `font_size`, weather coordinates |
+| `[wallpaper]`, `[[wallpaper.outputs]]` | Theme wallpapers, single file, scale, rotation, per-screen pictures |
+| `[autostart]`, `[[recipes]]` | Programs started at login, workspace recipes |
+| `[nightlight]`, `[brightness]` | Night light and brightness |
+| `[monitors]` | Per-workspace layouts, master ratios and counts, per-screen profiles |
+| `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each) |
+| `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
+| `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, numbered slots |
+| `[[rules]]` | Window rules: `class`, `workspace`, `floating`, `center`, `sticky`, opacity |
+| `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one |
+
+The default workspace labels are numbers 1–10; to use icons or names, edit
+`[bar] tags` using the presets commented in the example. After editing, press
+`Super+R` or run `niructl reload`.
+
+Session options (keyboard layout, notification provider, picom, idle) live in
+`~/.config/niruwm/session.conf`; see
+[docs/REFERENCE.md](docs/REFERENCE.md#session). Display profiles live in
+`~/.config/niruwm/displays.toml`; see
+[docs/display-profiles.md](docs/display-profiles.md).
+
+## Files and paths
+
+| Path | Purpose |
+|---|---|
+| `~/.config/niruwm/config.toml` | Shared configuration |
+| `~/.config/niruwm/session.conf` | Session options (shell syntax) |
+| `~/.config/niruwm/displays.toml` | Saved display profiles |
+| `~/.config/niruwm/themes/` | Bundled copies and user themes |
+| `~/.local/bin/niruwm`, `niructl`, `niruidle`, `niruwm-session`, `niruclipboard`, `nirugestured` | Programs |
+| `~/.local/state/niruwm/session.log` | Session and WM log |
+| `~/.local/state/niruwm/manifest.tsv` | Files installed by the standalone installer |
+| `/usr/share/xsessions/niruwm.desktop` | Display-manager session entry |
+
+## Troubleshooting
+
+- **A config change did nothing.** Run `niruwm --check-config`; the error is
+  also written to `~/.local/state/niruwm/session.log`.
+- **The session does not start from a TTY.** Check the session log; the
+  session creates a private runtime directory when the login provides none.
+- **Wallpapers no longer follow the theme.** `niructl wallpaper status` shows
+  why; `niructl wallpaper follow-theme on` returns to theme wallpapers, and
+  `niructl theme NAME` repairs a config without a `[wallpaper]` section.
+- **Windows ended up on a screen that is gone.** `niructl windows rescue`
+  moves them back to a connected display.
+- **A display profile does not apply.** `niructl display doctor` explains what
+  matches and what is missing.
+- **A new version is installed but nothing changed.** Log out and back in; a
+  running window manager is not replaced by an update.
+
+## Uninstall
+
+With NIRUX, use `nirux uninstall`. A standalone install is removed with:
 
 ```sh
-niructl layout show          # the layouts stored in the config
-niructl layout monocle       # this workspace only
-niructl layout save          # write the current ones to the file
+./install.sh --uninstall
 ```
 
-`Super+T/Y/M/C/U/F` set the focused workspace's layout; `Super+Ctrl+S` selects
-Scroll and `Super+Ctrl+period` / `comma` cycle through all eight. The choice is
-written to `[monitors] layouts` at once, so it survives a crash as well as a
-logout, and it comes back after the next login. A screen can override the common
-list in its own `[[monitors.profiles]]` entry with `layouts = [...]`.
+Your configuration in `~/.config/niruwm` is kept; delete it manually for a
+clean slate.
 
-Master ratio (`Super+H/L`) and master count (`Super+I/D`) are also per
-workspace. They are stored beside the layout as `master_ratios` and `nmasters`,
-so changing one workspace never resizes another. The top-level `master_ratio`
-is the default for new workspaces, not a live global override.
-
-Scroll keeps one window per column. Two adjacent columns are visible by default;
-focus reveals the minimum needed viewport, so `A B -> B C -> C D`. A single
-window fills the work area. Use `niructl layout columns 1|2|toggle` to change the
-mode; the layout name is persisted, the column mode is session state and returns
-to two columns after a restart. Off-viewport columns remain managed and appear
-in the window switcher, but are not treated as lost windows by rescue/display
-watch. If the work area is narrower than 480 px, two-column mode uses a
-one-column geometry fallback. Hidden columns stay in the window switcher and
-`_NET_CLIENT_LIST`; activating one reveals its column.
-
-### More than one screen
-
-Every connected screen is set separately, at its own geometry (for example
-`1080x1920+1600+0` for a portrait screen to the right of a laptop panel). The
-common settings apply to every screen that has no entry of its own:
+## Building from source
 
 ```sh
-niructl wallpaper output list                  # screens with source, mode and scale
-niructl wallpaper output set DP-1 image PATH   # this screen's own picture
-niructl wallpaper output set DP-1 scale fit
-niructl wallpaper output set DP-1 mode theme   # follow the theme on this screen
-niructl wallpaper output reset DP-1            # inherit the common settings
-```
-
-`[[wallpaper.outputs]]` entries are keyed by RandR output name, kept while a
-screen is unplugged and reused when it returns to the same port. A change is
-written with comments, permissions and unrelated keys preserved, then checked
-against the configuration rules; a rejected reload restores the previous file
-unless someone edited it meanwhile. The setter is `feh` (without writing
-`~/.fehbg`), then `hsetroot`, `nitrogen` or `xwallpaper`; a screen whose theme
-has no picture is painted with the theme's background colour.
-
-#### Turning a screen and saving a layout
-
-A screen mounted upside down or standing on its side is turned on its own:
-
-```sh
-niructl display rotate DisplayPort-5 inverted   # normal, left, right, inverted
-```
-
-Once the screens look right, the arrangement is saved as a profile. A profile
-stores every active screen with its mode, position, rotation and which one is
-primary, so a laptop-and-desk setup can be switched in one command:
-
-```sh
-niructl display save Desk                     # the layout as it is now
-niructl display list                          # saved profiles
-niructl display preview Desk 15               # try it; keeps or reverts after 15s
-niructl display keep                          # confirm during a preview
-niructl display apply Desk                    # switch without a countdown
-niructl display auto                          # side by side, preferred modes
-```
-
-A failed switch puts the previous layout back. Profiles live in
-`~/.config/niruwm/displays.toml`; `displays.example.toml` in the source tree
-shows the file format, and the launcher lists the same profiles under
-Displays. Each output can record a refresh rate, and old profiles without one
-keep xrandr's choice for the selected mode.
-
-An opt-in startup profile is applied once by `niruwm-session` before the WM
-reads the monitor layout:
-
-```sh
-niructl display startup show
-niructl display startup set Desk
-niructl display startup off
-niructl display startup apply   # what the session runs at login
-```
-
-A missing profile or output leaves the current connected screens usable and
-logs why the profile was skipped.
-
-Since 0.17 a saved profile also records which physical screen each entry is
-(make, model and serial from the EDID). It therefore follows its screens when
-connector names such as `DP-1` and `DP-2` swap or a dock port changes.
-Profiles saved earlier keep matching by connector; saving one again upgrades
-it.
-
-Automatic switching is off by default. When it is on, the session's display
-watcher applies the right layout whenever screens are plugged in or out or
-the laptop lid closes:
-
-- a profile that fits the connected screens exactly;
-- otherwise the layout those screens had last time;
-- otherwise the current layout with the new screens added to the right.
-
-A closed lid turns the built-in screen off while another screen is
-connected, and the session is never left dark. Every change shows a short
-notification. The watcher waits for RandR and kernel events instead of
-polling.
-
-```sh
-niructl display automatic on|off|status [--json]|run
-niructl display doctor [--json]   # what fits, what is missing and why
-```
-
-See [docs/display-profiles.md](docs/display-profiles.md) for the matching
-rules, the lid, verification and retries, the state files and the limits.
-
-`niructl` provides provider-neutral controls for audio, microphone, Bluetooth,
-display profiles, power profiles, DND, diagnostics, work modes and workspace
-recipes:
-
-```sh
-niructl audio status --json
-niructl audio outputs --json
-niructl audio sources --json
-niructl audio mic-status --json
-niructl audio mic-level set 30
-niructl audio mic-test 5 --json
-niructl bluetooth status
-niructl display preview Desk 15
-niructl powerprofile set balanced
-niructl explain
-niructl mode focus
-niructl recipe run Development
-```
-
-Shutdown, reboot and suspend use the shared logind/elogind login1 D-Bus API
-through `dbus-send`, with normal interactive authorization and inhibitor
-checks. Systemd's `loginctl` does not implement elogind's power commands.
-Without `dbus-send`, power actions use `systemctl` or a capability-checked
-elogind `loginctl`; rejected requests are never retried through another
-backend. Logout remains a `loginctl` session operation, and suspend still
-requires verified screen-lock readiness.
-
-Compositor: `niructl compositor status|on|off|toggle` controls picom. Inactive
-window transparency and shadows are configured in `~/.config/picom.conf`; the
-toggle does not rewrite that file. A conservative starting point is
-`inactive-opacity = 0.94`, `active-opacity = 1.0` and a small shadow radius.
-Floating windows can opt into centered placement with a `[[rules]]` entry:
-`class = "localsend"`, `floating = true`, `center = true`.
-
-Themes: Niru Noir, Nord, Satie, Carl Larsson, Forest Vigil, Blood of Urdr,
-Root and Stone, Blue Horizon, The Norns, Winter Nights and custom TOML files. On a theme
-change or reload, `nirux-theme-hook` from `~/.local/bin` or `PATH` runs when
-present; NIRUX uses it to update terminal colours.
-
-## NIRUX suite
-
-### Agent maintenance assignment
-
-[One-shot: window lifecycle, focus and bar reliability](docs/agent-window-lifecycle-oneshot.md)
-defines the Steam/RetroArch flicker and workspace-click investigation, regression
-tests, root-cause fix and coordinated NIRUWM/NIRUBAR/NIRUX release acceptance.
-The implemented fix and version matrix are recorded in
-[Window lifecycle / bar reliability fix](docs/window-lifecycle-fix.md).
-
-[NIRUX](https://github.com/nirucon/nirux) · [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot)
-
-## Development
-
-```sh
+cargo build --release --locked
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
-cargo test
+cargo test --locked
 ```
 
-MIT. Copyright 2026 Nicklas Rudolfsson.
+The shell tests in `tests/` are run by CI against the release build. Notes on
+the window lifecycle and bar reliability work are in
+[docs/window-lifecycle-fix.md](docs/window-lifecycle-fix.md) and
+[docs/agent-window-lifecycle-oneshot.md](docs/agent-window-lifecycle-oneshot.md).
+
+## Status, disclaimer and how it's made
+
+**Status: beta.** NIRUWM runs my desktop every day on Debian, Arch and Void;
+the core is stable for me, while newer pieces such as the Scroll layout and
+automatic display switching still get regular fixes.
+
+NIRUX and every niru* project are made by me, Nicklas Rudolfsson
+([@nirucon](https://github.com/nirucon)), for me. They are tailored to my own
+needs, preferences and workflows, on my own machines. If they fit yours too,
+that's a nice bonus.
+
+- **Free and open source.** Anyone is free to use, study, change and share
+  it under the [MIT License](LICENSE).
+- **No guarantees.** There is no warranty of any kind. Use it at your own
+  risk, read what you install and keep backups of anything that matters.
+- **How it's made.** Some of these projects I built from scratch by hand. In
+  more recent releases I have used Claude, Anthropic's AI, to do much of the
+  heavy lifting under my direction: I decide what to build and how it should
+  behave, and I test it on my own machines. It saves me a lot of time, and
+  the result is quite OK.
+- **Alpha, beta, dev, and maybe forever.** Most things here are alpha, beta
+  or dev, and may stay that way. Maybe one day there will be a real stable
+  release, but given how fast development moves, and how I am as a person,
+  maybe never :)
+
+| Label | Meaning |
+|---|---|
+| dev | Under active construction; may not build, install or work yet. |
+| alpha | Works on my machines, but incomplete or rough; expect breaking changes. |
+| beta | In daily use on my machines and mostly complete; rough edges remain. |
+
+## License
+
+MIT License, see [LICENSE](LICENSE). Copyright (c) 2026 Nicklas Rudolfsson.
