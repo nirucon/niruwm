@@ -31,14 +31,62 @@ extern "C" {
 }
 
 impl Wm {
+    /// Once a minute: keep the session log under its size cap.
+    fn cap_session_log(&mut self) {
+        let now = std::time::Instant::now();
+        if self
+            .log_checked
+            .is_some_and(|at| now.duration_since(at).as_secs() < 60)
+        {
+            return;
+        }
+        self.log_checked = Some(now);
+        let log = crate::logcap::session_log();
+        if !crate::logcap::stderr_is(&log) {
+            return;
+        }
+        match crate::logcap::rotate_in_place(&log, crate::logcap::MAX_BYTES, crate::logcap::KEEP) {
+            Ok(true) => eprintln!(
+                "niruwm: session log rotated (over {} MB; older lines in session.log.1)",
+                crate::logcap::MAX_BYTES / 1024 / 1024
+            ),
+            Ok(false) => {}
+            Err(e) => eprintln!("niruwm: could not rotate the session log: {e}"),
+        }
+    }
+
     pub(crate) fn run(&mut self) -> Result<()> {
         loop {
             self.reap_children();
             // Drain everything already queued first: a burst of events (a tag
             // switch unmap/map sequence) must be handled before sleeping.
             while let Some(event) = self.c.poll_for_event()? {
-                if !self.handle(event)? {
-                    return Ok(());
+                // A bug in one event handler must not end the session. The
+                // panic message is in the session log; the window manager
+                // carries on. Many in a row mean the state is broken: leave
+                // with an error, and niruwm-session starts a fresh manager
+                // that keeps the open windows.
+                let outcome =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.handle(event)));
+                match outcome {
+                    Ok(keep_going) => {
+                        if !keep_going? {
+                            return Ok(());
+                        }
+                    }
+                    Err(_) => {
+                        let now = std::time::Instant::now();
+                        self.panics
+                            .retain(|at| now.duration_since(*at).as_secs() < 60);
+                        self.panics.push(now);
+                        eprintln!(
+                            "niruwm: internal error while handling an event ({} in the last minute); continuing",
+                            self.panics.len()
+                        );
+                        if self.panics.len() >= 5 {
+                            return Err("five internal errors within a minute".into());
+                        }
+                    }
                 }
             }
             self.c.flush()?;
@@ -51,6 +99,7 @@ impl Wm {
             if self.wallpaper.tick() {
                 eprintln!("niruwm: wallpaper changed");
             }
+            self.cap_session_log();
             // The same tick notices a bar that died. It is cheap: one
             // try_wait per child, once a second, and nothing else.
             self.restart_bars();
@@ -157,14 +206,20 @@ impl Wm {
                         let ours = self
                             .scratch_enter_quiet
                             .is_some_and(|until| std::time::Instant::now() < until);
-                        if ours {
+                        // After a focus loop was noticed the pointer stops
+                        // moving the focus for a moment, which breaks it.
+                        let paused = self
+                            .pointer_focus_paused
+                            .is_some_and(|until| std::time::Instant::now() < until);
+                        if ours || paused {
                             return Ok(true);
                         }
                         if monitor != self.focused_monitor {
                             self.focused_monitor = monitor;
                         }
                         if tag == self.active_tag() {
-                            self.set_focus(e.event)?;
+                            let target = self.modal_for(e.event).unwrap_or(e.event);
+                            self.set_focus(target)?;
                         }
                     }
                 }
@@ -203,6 +258,9 @@ impl Wm {
                     false => eprintln!("niruwm: X11 error: {e:?}"),
                 },
                 _ => (),
+            }
+            if std::mem::take(&mut self.scratch_hide_pending) {
+                self.hide_scratch_after_focus_loss()?;
             }
             self.c.flush()?;
             Ok(true)
@@ -381,7 +439,13 @@ impl Wm {
                     .filter(|n| (1..=9).contains(n))
                     .map(Action::ScratchpadSend),
                 17 => Some(Action::Unscratch),
-                5 => Some(Action::Quit),
+                5 => {
+                    eprintln!(
+                        "niruwm: quit requested through _NIRUWM_COMMAND (niructl quit) by window {}; the session ends",
+                        e.window
+                    );
+                    Some(Action::Quit)
+                }
                 6 => Some(Action::SaveSession),
                 7 => Some(Action::ClearSession),
                 12 => Some(match d[1] {

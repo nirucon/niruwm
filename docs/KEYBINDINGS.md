@@ -73,6 +73,14 @@ workspace indicators and the saved session.
 - **It follows you.** A shown scratchpad stays on top when you switch workspace,
   and moves along when you go to the other screen with `Super+,` / `Super+.` or
   a workspace key there. Moving the mouse alone does not drag it along.
+- **It stays until you hide it.** Moving the mouse onto another window gives
+  that window the keyboard focus, but the scratchpad stays visible on top. Set
+  `hide_on_focus_loss = true` in `[scratchpad]` to hide it instead whenever
+  another window gets the focus (default: `false`).
+- **Its dialogs belong to it.** A dialog the scratchpad's program opens (Open,
+  Save, a confirmation) stays above the scratchpad, is hidden and shown with
+  it and follows it to another workspace or screen. A dialog never takes a
+  scratchpad slot itself, even when it has the scratchpad's window class.
 - **Any window can be one.** `Super+Alt+Shift+N` hides the focused window in
   slot N. If slot N already holds a window, that window comes back to the
   current workspace as a normal window (they swap places). Pressing

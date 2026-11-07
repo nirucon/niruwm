@@ -33,7 +33,11 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - Tiling, floating, fullscreen, sticky windows, gaps, master ratio/count and
   window swapping; dwm-style `Super`+drag to move and resize.
 - Scratchpads: one default (`Super+Shift+S`) and nine numbered slots
-  (`Super+Alt+1…9`); any window can be sent to a slot.
+  (`Super+Alt+1…9`); any window can be sent to a slot. A shown scratchpad
+  stays on top until you hide it, and its dialogs (an Open or Save dialog,
+  for example) stay above it and are hidden and shown with it.
+- A crash of the window manager does not end the session: `niruwm-session`
+  starts it again, and every open window keeps its workspace and scratchpad.
 - Window rules for floating, centering, workspace, sticky and compositor opacity.
 - Session save/restore, autostart, workspace recipes and focus/presentation
   modes through `niructl`.
@@ -170,9 +174,25 @@ previous settings in effect.
 | `[monitors]` | Per-workspace layouts, master ratios and counts, per-screen profiles |
 | `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each) |
 | `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
-| `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, numbered slots |
+| `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
 | `[[rules]]` | Window rules: `class`, `workspace`, `floating`, `center`, `sticky`, opacity |
 | `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one |
+
+### Scratchpads and focus
+
+A shown scratchpad stays on top of everything on its screen until you hide it
+with its key (or `niructl scratchpad`). When the mouse moves onto another
+window, that window gets the keyboard focus as usual, but the scratchpad stays
+visible above it. If you prefer a scratchpad that hides itself as soon as
+another window gets the focus, set this in `[scratchpad]`:
+
+```toml
+[scratchpad]
+hide_on_focus_loss = true   # default: false
+```
+
+A dialog that belongs to a scratchpad does not count as another window: the
+scratchpad stays open while its dialog has the focus.
 
 The default workspace labels are numbers 1–10; to use icons or names, edit
 `[bar] tags` using the presets commented in the example. After editing, press
@@ -193,7 +213,7 @@ Session options (keyboard layout, notification provider, picom, idle) live in
 | `~/.config/niruwm/displays.toml` | Saved display profiles |
 | `~/.config/niruwm/themes/` | Bundled copies and user themes |
 | `~/.local/bin/niruwm`, `niructl`, `niruidle`, `niruwm-session`, `niruclipboard`, `nirugestured` | Programs |
-| `~/.local/state/niruwm/session.log` | Session and WM log |
+| `~/.local/state/niruwm/session.log` | Session and WM log, capped at 8 MB; older lines in `session.log.1`…`.3` |
 | `~/.local/state/niruwm/manifest.tsv` | Files installed by the standalone installer |
 | `/usr/share/xsessions/niruwm.desktop` | Display-manager session entry |
 
@@ -210,6 +230,11 @@ Session options (keyboard layout, notification provider, picom, idle) live in
   moves them back to a connected display.
 - **A display profile does not apply.** `niructl display doctor` explains what
   matches and what is missing.
+- **The screen went back to the login screen.** The session log says why. A
+  deliberate quit is logged as `quit requested ...`; a crash as `niruwm
+  stopped with status N ... starting it again`. After a crash the window
+  manager is started again with the open windows; only four crashes within a
+  minute end the session.
 - **A new version is installed but nothing changed.** Log out and back in; a
   running window manager is not replaced by an update.
 

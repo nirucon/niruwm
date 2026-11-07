@@ -6,6 +6,7 @@ mod config;
 mod doctor;
 mod keyboard;
 mod layout;
+mod logcap;
 mod monitor;
 mod replay;
 mod session_state;

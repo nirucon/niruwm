@@ -260,6 +260,22 @@ pub(crate) struct Wm {
     /// Until when pointer crossings are the result of a scratchpad being
     /// shown or hidden, and so must not move the focus.
     pub(crate) scratch_enter_quiet: Option<std::time::Instant>,
+    /// How fast the focus has been changing; see `scratch::FocusRate`.
+    pub(crate) focus_rate: scratch::FocusRate,
+    /// Pointer focus is paused until then after a focus loop was noticed.
+    pub(crate) pointer_focus_paused: Option<std::time::Instant>,
+    /// When a focus loop was last reported, so the log gets one line, not
+    /// thousands.
+    pub(crate) focus_loop_reported: Option<std::time::Instant>,
+    /// `hide_on_focus_loss`: the focus left the shown scratchpad; hide it
+    /// once the current event has been handled.
+    pub(crate) scratch_hide_pending: bool,
+    /// True while windows that already existed are adopted at start-up.
+    pub(crate) adopting: bool,
+    /// Recent internal errors (panics) in event handlers.
+    pub(crate) panics: Vec<std::time::Instant>,
+    /// When the session log size was last checked.
+    pub(crate) log_checked: Option<std::time::Instant>,
     /// True while a lock screen owns the keyboard. The WM releases its key
     /// grabs so every key reaches the lock, then takes them back.
     pub(crate) keys_released: bool,
@@ -277,7 +293,18 @@ pub(crate) struct Wm {
 
 impl Wm {
     pub(crate) fn atom(&self, n: &str) -> Atom {
-        self.atoms[n]
+        if let Some(atom) = self.atoms.get(n) {
+            return *atom;
+        }
+        // A name missing from the start-up list used to panic here and take
+        // the whole session down (a window rule with `opacity` did that).
+        // Ask the server instead; it is a rare, cheap round trip.
+        self.c
+            .intern_atom(false, n.as_bytes())
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.atom)
+            .unwrap_or(x11rb::NONE)
     }
 
     pub(crate) fn prop(&self, w: Window, n: &str, t: Atom, v: &[u32]) -> Result<()> {
@@ -377,6 +404,9 @@ impl Wm {
             "_NIRUWM_LOCK",
             "_NIRUWM_MONITORS",
             "_NIRUWM_SCRATCHPADS",
+            "_NIRUWM_SCRATCH_SLOT",
+            "_NET_WM_STATE_MODAL",
+            "_NET_WM_WINDOW_OPACITY",
             "_NIRUWM_WALLPAPER_STATE",
             // Renamed by the layout save; a name missing from this list would
             // abort the manager when the command arrived.
@@ -420,6 +450,13 @@ impl Wm {
             scratch_return: None,
             scratch_launching: [None; 10],
             scratch_enter_quiet: None,
+            focus_rate: scratch::FocusRate::default(),
+            pointer_focus_paused: None,
+            focus_loop_reported: None,
+            scratch_hide_pending: false,
+            adopting: false,
+            panics: Vec::new(),
+            log_checked: None,
             keys_released: false,
             last_bar_start: std::time::Instant::now(),
             pending_restore: Vec::new(),
@@ -446,9 +483,17 @@ impl Wm {
                     .unwrap_or(false)
             })
             .collect();
+        // After a crash the session starts the window manager again in the
+        // same X session: every window is still there (the save-set mapped the
+        // hidden ones). They keep their workspaces through `_NET_WM_DESKTOP`
+        // and their scratchpad slots through `_NIRUWM_SCRATCH_SLOT`.
+        wm.adopting = true;
         for w in viewable {
-            wm.manage(w)?;
+            if let Err(e) = wm.manage(w) {
+                eprintln!("niruwm: could not adopt window {w}: {e}");
+            }
         }
+        wm.adopting = false;
         wm.arrange()?;
         wm.start_bar();
         // Set the wallpaper once the WM owns the display; a failure here must
@@ -459,7 +504,13 @@ impl Wm {
         wm.publish_wallpaper()?;
         // Bring back what was open last time, when the user asked for it. A
         // failure here costs comfort, never the session.
-        if wm.cfg.restore_session {
+        // A restart after a crash must not start the saved programs a second
+        // time: they are still running.
+        let restarted = std::env::var_os("NIRUWM_RESTARTED").is_some_and(|v| v == "1");
+        if restarted {
+            eprintln!("niruwm: started again after a crash; keeping the open windows");
+        }
+        if wm.cfg.restore_session && !restarted {
             if let Err(e) = wm.restore_session() {
                 eprintln!("niruwm: could not restore the session: {e}");
             }

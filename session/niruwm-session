@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.17.6'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.17.7'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -21,8 +21,29 @@ esac
 # runtime-directory setup on a TTY) otherwise leave no diagnostic behind.
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/niruwm"
 WM_LOG="$LOG_DIR/session.log"
+# The log has a size cap: at most LOG_MAX bytes, plus three older copies
+# (session.log.1 newest to session.log.3), each also capped. Every program in
+# the session writes here, and one laptop's log had reached 81 MB. NIRUWM
+# applies the same cap during the session (see src/logcap.rs).
+LOG_MAX=8388608
+LOG_KEEP=3
+rotate_log() {
+  [ -f "$1" ] || return 0
+  size=$(wc -c < "$1" 2>/dev/null) || return 0
+  [ "${size:-0}" -gt "$LOG_MAX" ] || return 0
+  i=$LOG_KEEP
+  while [ "$i" -gt 1 ]; do
+    j=$((i - 1))
+    [ -f "$1.$j" ] && mv -f "$1.$j" "$1.$i"
+    i=$j
+  done
+  tail -c "$LOG_MAX" "$1" > "$1.1" 2>/dev/null || :
+  : > "$1"
+}
 if [ "${NIRU_SESSION_LOG_READY:-0}" != 1 ]; then
   exec 3>&2
+  mkdir -p "$LOG_DIR" 2>/dev/null || true
+  rotate_log "$WM_LOG" 2>/dev/null || :
 fi
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 if { : >>"$WM_LOG"; } 2>/dev/null; then
@@ -489,7 +510,47 @@ if command -v nirudictate >/dev/null 2>&1; then
   mkdir -p "$LOG_DIR" 2>/dev/null || :
   nirudictate autostart >>"$LOG_DIR/nirudictate.log" 2>&1 & NIRUDICTATE_PID=$!
 fi
+# A crash of the window manager must not end the session. The X server and
+# every program keep running; a new NIRUWM adopts the open windows (they keep
+# their workspaces and scratchpad slots) and skips the session restore, since
+# those programs are still running. Only a deliberate quit (status 0, from
+# Super+Ctrl+Shift+Q or `niructl quit`) or a signal to this script ends the
+# session; so do HUP, INT and TERM. A manager that keeps failing is given up on after
+# WM_RESTART_LIMIT crashes within WM_RESTART_WINDOW seconds, so a broken
+# installation still ends at the login screen instead of looping forever.
+WM_RESTART_LIMIT=${WM_RESTART_LIMIT:-3}
+WM_RESTART_WINDOW=${WM_RESTART_WINDOW:-60}
+crashes=""
 STATUS=0
-"$WM" "$@" || STATUS=$?
+while :; do
+  STATUS=0
+  "$WM" "$@" || STATUS=$?
+  # Status 0 is a deliberate quit. HUP, INT and TERM (129, 130, 143) are a
+  # logout or someone stopping the manager on purpose. Anything else (a
+  # panic, an abort, SIGSEGV, SIGKILL from the OOM killer) is a crash.
+  case "$STATUS" in 0|129|130|143) break ;; esac
+  now=$(date +%s)
+  recent=""
+  for at in $crashes; do
+    [ $((now - at)) -lt "$WM_RESTART_WINDOW" ] && recent="$recent $at"
+  done
+  crashes="$recent $now"
+  count=$(printf '%s\n' $crashes | grep -c .)
+  if [ "$count" -gt "$WM_RESTART_LIMIT" ]; then
+    log "niruwm stopped with status $STATUS $count times within ${WM_RESTART_WINDOW}s; ending the session"
+    break
+  fi
+  # No display left (the X server itself went away): nothing to restart.
+  if command -v xprop >/dev/null 2>&1 && ! xprop -root -len 1 _NET_NUMBER_OF_DESKTOPS >/dev/null 2>&1; then
+    log "niruwm stopped with status $STATUS and the display is gone; ending the session"
+    break
+  fi
+  log "niruwm stopped with status $STATUS (crash $count of at most $WM_RESTART_LIMIT within ${WM_RESTART_WINDOW}s); starting it again, open windows are kept"
+  # The bars belonged to the manager that died; the new one starts its own.
+  pkill -u "$(id -u)" -x nirubar 2>/dev/null || :
+  sleep 1
+  NIRUWM_RESTARTED=1
+  export NIRUWM_RESTARTED
+done
 # The WM has stopped its bars; the EXIT trap cleans up session helpers.
 exit "$STATUS"

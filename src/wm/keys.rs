@@ -99,6 +99,13 @@ impl Wm {
             // A grabbed key that matches no binding (layout changed under us).
             return Ok(true);
         };
+        if matches!(b.action, Action::Quit) {
+            // The session log must say why a session ended.
+            eprintln!(
+                "niruwm: quit requested with a key binding (keycode {}, modifiers {:#x}); the session ends",
+                e.detail, state
+            );
+        }
         self.dispatch(b.action)
     }
 
@@ -423,7 +430,11 @@ impl Wm {
             // A scratchpad is part of the window manager, not a session,
             // whether it is shown or hidden when the session ends. That holds
             // for windows sent to a slot as well.
-            if c.scratch.is_some() {
+            if self.scratch_owner(c.win).is_some() {
+                continue;
+            }
+            // A dialog is not a program to start again; its application is.
+            if c.parent.is_some() {
                 continue;
             }
             let Some(pid) = c.pid else { continue };

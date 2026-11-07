@@ -237,11 +237,25 @@ impl Wm {
             .any(|part| part.eq_ignore_ascii_case("niru-agent"));
         // A window of a scratchpad's class takes that slot when the slot is
         // free. A second window of the same class is an ordinary window.
-        let scratch_slot = self
-            .cfg
-            .scratchpad
-            .slot_for_class(&class)
-            .filter(|slot| self.scratch_window(*slot).is_none());
+        //
+        // A dialog never takes a slot: Qt gives a file dialog the class of its
+        // application, so nirunote's Open dialog used to become the nirunote
+        // scratchpad itself whenever that slot was free.
+        //
+        // A window that was a scratchpad before the window manager started
+        // again (after a crash) says so in `_NIRUWM_SCRATCH_SLOT`.
+        let marked_slot = self
+            .values(w, "_NIRUWM_SCRATCH_SLOT")
+            .first()
+            .and_then(|slot| u8::try_from(*slot).ok())
+            .filter(|slot| *slot <= 9);
+        let scratch_slot = if transient.is_some() {
+            None
+        } else {
+            marked_slot
+                .or_else(|| self.cfg.scratchpad.slot_for_class(&class))
+                .filter(|slot| self.scratch_window(*slot).is_none())
+        };
         let is_scratchpad = scratch_slot.is_some();
         // A restored window carries the placement saved for it. Matching
         // happens after the scratchpad check so a terminal that happens to be
@@ -399,10 +413,53 @@ impl Wm {
                 c.geom.y = c.geom.y.max(screen.y);
             }
         }
+        let adopted_hidden = self.adopting && marked_slot.is_some() && is_scratchpad;
         if let Some(slot) = scratch_slot {
-            // Shown at once on the focused screen, above its workspace, and
-            // hiding any other scratchpad. It never joins the workspace.
-            self.adopt_scratch(w, slot);
+            if adopted_hidden {
+                // Found again after a restart: back in its slot, hidden, as
+                // the user most likely had it.
+                if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                    c.scratch = Some(slot);
+                    c.floating = true;
+                }
+            } else {
+                // Shown at once on the focused screen, above its workspace,
+                // and hiding any other scratchpad. It never joins the
+                // workspace.
+                self.adopt_scratch(w, slot);
+            }
+        }
+        // A dialog of a hidden scratchpad would open hidden with it. A dialog
+        // asks for attention, so its scratchpad comes up with it.
+        let owner = transient.and_then(|_| self.scratch_owner(w));
+        if let Some(owner) = owner {
+            if self.scratch_shown != Some(owner) && focus_on_map && !self.adopting {
+                self.show_scratch(owner)?;
+            }
+            // It follows the scratchpad: same screen and workspace, centred
+            // over it when the client did not place it inside.
+            let parent_geom = self
+                .clients
+                .iter()
+                .find(|c| c.win == owner)
+                .map(|c| (c.geom, c.monitor, c.tag));
+            if let (Some((pg, pm, pt)), Some(c)) =
+                (parent_geom, self.clients.iter_mut().find(|c| c.win == w))
+            {
+                c.monitor = pm;
+                c.tag = pt;
+                c.floating = true;
+                let inside = c.geom.x >= pg.x
+                    && c.geom.y >= pg.y
+                    && i32::from(c.geom.x) + i32::from(c.geom.w)
+                        <= i32::from(pg.x) + i32::from(pg.w)
+                    && i32::from(c.geom.y) + i32::from(c.geom.h)
+                        <= i32::from(pg.y) + i32::from(pg.h);
+                if !inside && c.geom.w > 1 && c.geom.h > 1 {
+                    c.geom.x = pg.x + (pg.w as i16 - c.geom.w as i16) / 2;
+                    c.geom.y = pg.y + (pg.h as i16 - c.geom.h as i16) / 2;
+                }
+            }
         }
         self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
         self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
@@ -425,10 +482,15 @@ impl Wm {
         if suite_settings {
             self.focused_monitor = monitor;
         }
-        if is_scratchpad {
+        if is_scratchpad && !adopted_hidden {
             self.focus = Some(w);
             self.focus_dirty = true;
-        } else if restored.is_none() && focus_on_map && tag == self.active_tag() {
+        } else if owner.is_some() && focus_on_map && !self.adopting {
+            // Focused once arrange() has mapped and stacked it above its
+            // scratchpad.
+            self.focus = Some(w);
+            self.focus_dirty = true;
+        } else if !is_scratchpad && restored.is_none() && focus_on_map && tag == self.active_tag() {
             self.set_focus(w)?;
         }
         self.arrange()?;
@@ -507,12 +569,22 @@ impl Wm {
         } else {
             None
         };
+        // A closed dialog gives the focus back to the window it belongs to.
+        let parent_back = if self.focus == Some(w) {
+            self.clients
+                .iter()
+                .find(|c| c.win == w)
+                .and_then(|c| c.parent)
+                .filter(|p| self.clients.iter().any(|c| c.win == *p) && !self.hidden.contains(p))
+        } else {
+            None
+        };
         if let Some(pos) = self.clients.iter().position(|c| c.win == w) {
             self.clients.remove(pos);
         }
         self.hidden.remove(&w);
         if self.focus == Some(w) {
-            let next = scratch_back.or(neighbor);
+            let next = scratch_back.or(parent_back).or(neighbor);
             self.focus = next;
             self.focus_dirty = next.is_some();
         }
@@ -594,9 +666,21 @@ impl Wm {
             .find(|c| c.win == w)
             .map(|c| c.take_focus)
             .unwrap_or(false);
+        let previous = self.focus;
         // Never raise an unmanaged window; the WM owns stacking for tiles.
-        self.c
-            .configure_window(w, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        // The window goes to the top together with its own dialogs, which
+        // stay above it.
+        //
+        // While a scratchpad is shown and stays on top, every other window is
+        // raised to just below it, never over it: raising a window over the
+        // scratchpad for a moment under the pointer is a crossing into that
+        // window, which takes the focus, and then the scratchpad goes up
+        // again, which is a crossing back. That loop ran on othala between a
+        // terminal and the nirunote scratchpad.
+        let mut group = vec![w];
+        group.extend(self.visible_descendants(w));
+        let ceiling = self.scratch_ceiling(w);
+        self.stack_group(&group, ceiling)?;
         if take_focus {
             // ICCCM: the client asked for focus messages and may keep
             // input focus itself (e.g. Java, some input methods).
@@ -625,7 +709,146 @@ impl Wm {
             &[w],
         )?;
         self.update_borders()?;
+        if previous != Some(w) {
+            self.note_focus_change(w);
+        }
         Ok(())
+    }
+
+    /// Count a focus change: pause pointer focus when it is a loop, and note
+    /// a focus loss of the shown scratchpad for `hide_on_focus_loss`.
+    fn note_focus_change(&mut self, w: Window) {
+        let now = std::time::Instant::now();
+        if self.focus_rate.record(now) {
+            self.pointer_focus_paused = Some(now + std::time::Duration::from_secs(1));
+            let report = self.focus_loop_reported.map_or(true, |at| {
+                now.duration_since(at) > std::time::Duration::from_secs(30)
+            });
+            if report {
+                self.focus_loop_reported = Some(now);
+                eprintln!(
+                    "niruwm: the focus changed more than {} times in a second (last: window {w}, class {:?}); pointer focus pauses for a second",
+                    super::scratch::FocusRate::LIMIT,
+                    self.clients
+                        .iter()
+                        .find(|c| c.win == w)
+                        .map(|c| c.class.replace('\0', " "))
+                        .unwrap_or_default()
+                );
+            }
+        }
+        if self.cfg.scratchpad.hide_on_focus_loss {
+            if let Some(shown) = self.scratch_shown {
+                if self.scratch_owner(w) != Some(shown) {
+                    self.scratch_hide_pending = true;
+                }
+            }
+        }
+    }
+
+    /// Raising the focused window must not cover what belongs above it: its
+    /// own dialogs, and the shown scratchpad with its dialogs, which stays on
+    /// top until it is hidden. 0.17.4 raised the focused window alone, so a
+    /// dialog went under its scratchpad, and moving the mouse onto a window
+    /// outside the scratchpad put that window over it (as if it had hidden).
+    /// The lowest window of the shown scratchpad's group (the scratchpad
+    /// itself) when `w` must stay below it, i.e. when `w` is not part of it
+    /// and the scratchpad stays on top (`hide_on_focus_loss` off).
+    fn scratch_ceiling(&self, w: Window) -> Option<Window> {
+        let shown = self.scratch_shown?;
+        if self.cfg.scratchpad.hide_on_focus_loss
+            || self.hidden.contains(&shown)
+            || self.scratch_owner(w) == Some(shown)
+        {
+            return None;
+        }
+        Some(shown)
+    }
+
+    /// Put `group` on top of the stack in this order (the last one topmost)
+    /// without ever stacking an earlier window over a later one, not even for
+    /// a moment.
+    ///
+    /// Raising a window and then its dialog one after the other covered the
+    /// dialog briefly. Under the pointer that is a crossing into the parent,
+    /// which focused the parent, which raised it over the dialog again: the
+    /// 0.17.4 flicker. The topmost window goes up first and each one before
+    /// it is placed directly below the next.
+    pub(crate) fn raise_group(&self, group: &[Window]) -> Result<()> {
+        self.stack_group(group, None)
+    }
+
+    /// `raise_group`, or with `ceiling` the group goes directly below that
+    /// window instead of to the very top.
+    pub(crate) fn stack_group(&self, group: &[Window], ceiling: Option<Window>) -> Result<()> {
+        let Some((&top, rest)) = group.split_last() else {
+            return Ok(());
+        };
+        match ceiling {
+            Some(ceiling) if ceiling != top => self.c.configure_window(
+                top,
+                &ConfigureWindowAux::new()
+                    .sibling(ceiling)
+                    .stack_mode(StackMode::BELOW),
+            )?,
+            _ => self
+                .c
+                .configure_window(top, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?,
+        };
+        let mut upper = top;
+        for &w in rest.iter().rev() {
+            self.c.configure_window(
+                w,
+                &ConfigureWindowAux::new()
+                    .sibling(upper)
+                    .stack_mode(StackMode::BELOW),
+            )?;
+            upper = w;
+        }
+        Ok(())
+    }
+
+    /// The mapped transients of `w` (dialogs, their dialogs), in the order
+    /// they were opened, which is the order they stack in.
+    pub(crate) fn visible_descendants(&self, w: Window) -> Vec<Window> {
+        self.clients
+            .iter()
+            .filter(|c| c.win != w && c.parent.is_some())
+            .filter(|c| !self.hidden.contains(&c.win) && !self.withdrawn.contains(&c.win))
+            .filter(|c| self.descends_from(c.win, w))
+            .map(|c| c.win)
+            .collect()
+    }
+
+    /// Whether `w` is a transient of `ancestor`, directly or through others.
+    pub(crate) fn descends_from(&self, w: Window, ancestor: Window) -> bool {
+        let mut current = w;
+        for _ in 0..8 {
+            let Some(parent) = self
+                .clients
+                .iter()
+                .find(|c| c.win == current)
+                .and_then(|c| c.parent)
+            else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            current = parent;
+        }
+        false
+    }
+
+    /// A modal dialog open over `w`. The pointer entering `w` focuses that
+    /// dialog instead: a toolkit hands the focus back to its modal dialog at
+    /// once anyway, and answering each other is how a focus loop starts.
+    pub(crate) fn modal_for(&self, w: Window) -> Option<Window> {
+        let modal = self.atom("_NET_WM_STATE_MODAL");
+        self.visible_descendants(w)
+            .into_iter()
+            .rev()
+            .find(|d| self.values(*d, "_NET_WM_STATE").contains(&modal))
     }
 
     fn focus_client(&mut self, w: Option<Window>) -> Result<()> {
@@ -712,7 +935,7 @@ impl Wm {
         let win = self
             .clients
             .iter()
-            .find(|c| c.monitor == target && c.tag == active && c.scratch.is_none())
+            .find(|c| c.monitor == target && c.tag == active && self.scratch_owner(c.win).is_none())
             .map(|c| c.win);
         match win {
             Some(w) => self.set_focus(w),
@@ -839,6 +1062,7 @@ impl Wm {
                 .clients
                 .iter()
                 .filter(|c| tiles(c, mi, active, &self.withdrawn))
+                .filter(|c| self.scratch_owner(c.win).is_none())
                 .map(|c| c.win)
                 .collect();
             let n = tiled.len();
@@ -916,10 +1140,12 @@ impl Wm {
                 }
                 // A hidden scratchpad is not on any workspace: no tile, no
                 // geometry, not visible. The shown one floats above.
-                if c.scratch.is_some() && self.scratch_shown != Some(c.win) {
+                // Its dialogs share its fate.
+                let owner = self.scratch_owner(c.win);
+                if owner.is_some_and(|o| self.scratch_shown != Some(o)) {
                     continue;
                 }
-                let shown = if c.scratch.is_some() || c.sticky {
+                let shown = if owner.is_some() || c.sticky {
                     true
                 } else if layout == Layout::Scroll {
                     if fullscreen_active {
@@ -1030,20 +1256,35 @@ impl Wm {
             }
         }
 
-        for c in &self.clients {
-            if c.floating && visible.contains(&c.win) {
-                self.c.configure_window(
-                    c.win,
-                    &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
-                )?;
-            }
-        }
+        // Floating windows above the tiles, in the order they were opened
+        // (so a dialog stays over its parent), as one group: raising them one
+        // by one briefly covered a dialog with its parent.
+        let floating: Vec<Window> = self
+            .clients
+            .iter()
+            .filter(|c| c.floating && visible.contains(&c.win))
+            .filter(|c| {
+                self.scratch_shown.is_none() || self.scratch_owner(c.win) != self.scratch_shown
+            })
+            .map(|c| c.win)
+            .collect();
         // The shown scratchpad is above everything on its workspace,
-        // including other floating and fullscreen windows.
-        if let Some(w) = self.scratch_shown.filter(|w| visible.contains(w)) {
-            self.c
-                .configure_window(w, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        // including other floating and fullscreen windows. Its dialogs go
+        // above it, in the order they were opened, so a file dialog is never
+        // covered by the scratchpad it belongs to. It goes up first and the
+        // floating windows are placed below it, so none of them is ever
+        // above it for a moment (a crossing under the pointer).
+        let shown = self.scratch_shown.filter(|w| visible.contains(w));
+        if let Some(w) = shown {
+            let mut group = vec![w];
+            group.extend(
+                self.scratch_children(w)
+                    .into_iter()
+                    .filter(|child| visible.contains(child)),
+            );
+            self.raise_group(&group)?;
         }
+        self.stack_group(&floating, shown)?;
 
         // Panels belong above ordinary and floating clients. A visible
         // fullscreen client is the only exception; once it leaves fullscreen
@@ -1202,13 +1443,13 @@ impl Wm {
         let list: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| c.scratch.is_none())
+            .filter(|c| self.scratch_owner(c.win).is_none())
             .map(|c| c.win)
             .collect();
         let placements: Vec<(Window, u32)> = self
             .clients
             .iter()
-            .filter(|c| c.scratch.is_none())
+            .filter(|c| self.scratch_owner(c.win).is_none())
             .map(|client| {
                 (
                     client.win,
@@ -1253,7 +1494,7 @@ impl Wm {
         for c in &self.clients {
             // EWMH: 0xFFFFFFFF is "on all desktops", which is how a
             // scratchpad behaves while it is shown.
-            let global = if c.scratch.is_some() {
+            let global = if self.scratch_owner(c.win).is_some() {
                 0xFFFF_FFFF
             } else {
                 crate::monitor::offset(&self.monitors, c.monitor) + c.tag
@@ -1577,7 +1818,9 @@ impl Wm {
         let target = self.scratch_shown.or_else(|| {
             self.clients
                 .iter()
-                .find(|c| c.monitor == next && c.tag == active && c.scratch.is_none())
+                .find(|c| {
+                    c.monitor == next && c.tag == active && self.scratch_owner(c.win).is_none()
+                })
                 .map(|c| c.win)
         });
         match target {

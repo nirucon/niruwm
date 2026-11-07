@@ -78,6 +78,10 @@ pub struct ScratchpadConfig {
     /// Size as a share of the screen.
     pub width: f32,
     pub height: f32,
+    /// Hide the shown scratchpad as soon as another window gets the focus
+    /// (for example when the pointer moves onto a window outside it). Off by
+    /// default: a shown scratchpad stays on top until its key hides it.
+    pub hide_on_focus_loss: bool,
     /// Numbered scratchpads 1-9 (Super+Alt+1..9). A slot does not have to be
     /// listed: any window can be sent to any slot with Super+Alt+Shift+N.
     /// Listing one gives it a program to start on first use and/or its own size.
@@ -284,6 +288,7 @@ impl Default for ScratchpadConfig {
             command: vec!["kitty".into(), "--class".into(), "scratchpad".into()],
             width: 0.6,
             height: 0.6,
+            hide_on_focus_loss: false,
             slots: Vec::new(),
         }
     }
@@ -1488,6 +1493,10 @@ pub fn dump() -> Result<String> {
     out.push_str(&format!("command = {:?}\n", c.scratchpad.command));
     out.push_str(&format!("width = {}\n", c.scratchpad.width));
     out.push_str(&format!("height = {}\n", c.scratchpad.height));
+    out.push_str(&format!(
+        "hide_on_focus_loss = {}\n",
+        c.scratchpad.hide_on_focus_loss
+    ));
     for slot in &c.scratchpad.slots {
         out.push_str(&format!(
             "\n[[scratchpad.slot]] # Super+Alt+{}\n",
@@ -2128,6 +2137,14 @@ mod tests {
         // A plain kitty is not.
         assert!(!cfg.matches_class("kitty Kitty"));
         assert!(!cfg.matches_class("org.gnome.Terminal"));
+    }
+
+    #[test]
+    fn a_scratchpad_stays_shown_on_focus_loss_unless_asked() {
+        let c: Config = toml::from_str("[scratchpad]\n").unwrap();
+        assert!(!c.scratchpad.hide_on_focus_loss);
+        let c: Config = toml::from_str("[scratchpad]\nhide_on_focus_loss = true\n").unwrap();
+        assert!(c.scratchpad.hide_on_focus_loss);
     }
 
     #[test]

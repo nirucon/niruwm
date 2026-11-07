@@ -137,7 +137,78 @@ pub(crate) fn describe(slots: &[(u8, Option<Window>, String)], shown: Option<Win
     out
 }
 
+/// The scratchpad a window belongs to: the window itself when it is one, or
+/// the scratchpad its chain of transient parents leads to (a file dialog of a
+/// scratchpad, a dialog of that dialog). `link` returns, for a managed window,
+/// its slot and its transient parent. The walk is bounded, so a transient
+/// cycle a broken client sets up cannot hang the window manager.
+pub(crate) fn owner_of(
+    w: Window,
+    link: impl Fn(Window) -> Option<(Option<u8>, Option<Window>)>,
+) -> Option<Window> {
+    let mut current = w;
+    for _ in 0..8 {
+        let (slot, parent) = link(current)?;
+        if slot.is_some() {
+            return Some(current);
+        }
+        current = parent?;
+    }
+    None
+}
+
+/// Notices focus that flips between windows far faster than a person can
+/// move: two clients (or a client and the window manager) answering each
+/// other's focus changes. 0.17.4 met one between a scratchpad and its Qt file
+/// dialog: about 9,000 focus changes a second, a flickering screen and a
+/// desktop that no longer reacted.
+#[derive(Debug, Default)]
+pub(crate) struct FocusRate {
+    window_start: Option<std::time::Instant>,
+    changes: u32,
+}
+
+impl FocusRate {
+    /// Focus changes per second above which pointer focus pauses.
+    pub(crate) const LIMIT: u32 = 60;
+
+    /// Count one focus change at `now`. True when the rate is over the limit.
+    pub(crate) fn record(&mut self, now: std::time::Instant) -> bool {
+        match self.window_start {
+            Some(start) if now.duration_since(start) < std::time::Duration::from_secs(1) => {
+                self.changes += 1;
+            }
+            _ => {
+                self.window_start = Some(now);
+                self.changes = 1;
+            }
+        }
+        self.changes > Self::LIMIT
+    }
+}
+
 impl Wm {
+    /// The scratchpad `w` belongs to: itself, or the scratchpad it is a
+    /// (possibly nested) transient of.
+    pub(crate) fn scratch_owner(&self, w: Window) -> Option<Window> {
+        owner_of(w, |x| {
+            self.clients
+                .iter()
+                .find(|c| c.win == x)
+                .map(|c| (c.scratch, c.parent))
+        })
+    }
+
+    /// The dialogs (transients) of the shown scratchpad, parents first.
+    pub(crate) fn scratch_children(&self, owner: Window) -> Vec<Window> {
+        self.clients
+            .iter()
+            .filter(|c| c.scratch.is_none() && c.parent.is_some())
+            .filter(|c| self.scratch_owner(c.win) == Some(owner))
+            .map(|c| c.win)
+            .collect()
+    }
+
     /// The window held by `slot`, if any.
     pub(crate) fn scratch_window(&self, slot: u8) -> Option<Window> {
         self.clients
@@ -152,9 +223,13 @@ impl Wm {
             .any(|c| c.win == w && c.scratch.is_some())
     }
 
-    /// A scratchpad that is not shown: it takes part in nothing.
+    /// A scratchpad that is not shown, or a dialog of one: it takes part in
+    /// nothing.
     pub(crate) fn scratch_hidden(&self, c: &Client) -> bool {
-        c.scratch.is_some() && self.scratch_shown != Some(c.win)
+        match self.scratch_owner(c.win) {
+            Some(owner) => self.scratch_shown != Some(owner),
+            None => false,
+        }
     }
 
     /// Show, hide or start a scratchpad slot (0 = default, 1-9 numbered).
@@ -292,6 +367,76 @@ impl Wm {
             self.clients[index].tag = m.active as u32;
         }
         self.clients[index].floating = true;
+        // Its dialogs go wherever it goes: same screen, same workspace,
+        // floating. One that would now sit on another screen is centred over
+        // the scratchpad again.
+        let (tag, name, owner_geom) = (
+            self.clients[index].tag,
+            self.clients[index].monitor_name.clone(),
+            self.clients[index].geom,
+        );
+        let screen = self.monitors.get(monitor).map(|m| m.rect);
+        for child in self.scratch_children(w) {
+            let Some(c) = self.clients.iter_mut().find(|c| c.win == child) else {
+                continue;
+            };
+            c.monitor = monitor;
+            c.monitor_name = name.clone();
+            c.tag = tag;
+            c.floating = true;
+            c.fullscreen = false;
+            if let Some(screen) = screen {
+                let cx = i32::from(c.geom.x) + i32::from(c.geom.w) / 2;
+                let cy = i32::from(c.geom.y) + i32::from(c.geom.h) / 2;
+                let inside = cx >= i32::from(screen.x)
+                    && cx < i32::from(screen.x) + i32::from(screen.w)
+                    && cy >= i32::from(screen.y)
+                    && cy < i32::from(screen.y) + i32::from(screen.h);
+                if !inside {
+                    c.geom.x = owner_geom.x + (owner_geom.w as i16 - c.geom.w as i16) / 2;
+                    c.geom.y = owner_geom.y + (owner_geom.h as i16 - c.geom.h as i16) / 2;
+                }
+            }
+        }
+    }
+
+    /// Remember a window's slot on the window itself, so a window manager
+    /// started again in the same X session (after a crash) finds its
+    /// scratchpads instead of turning them into ordinary windows.
+    pub(crate) fn mark_scratch(&mut self, w: Window, slot: Option<u8>) {
+        let atom = self.atom("_NIRUWM_SCRATCH_SLOT");
+        let _ = match slot {
+            Some(slot) => self
+                .c
+                .change_property32(
+                    PropMode::REPLACE,
+                    w,
+                    atom,
+                    AtomEnum::CARDINAL,
+                    &[u32::from(slot)],
+                )
+                .map(|_| ()),
+            None => self.c.delete_property(w, atom).map(|_| ()),
+        };
+    }
+
+    /// `hide_on_focus_loss`: the focus moved to a window outside the shown
+    /// scratchpad (and outside its dialogs), so it hides. The window that
+    /// has the focus now keeps it.
+    pub(crate) fn hide_scratch_after_focus_loss(&mut self) -> Result<()> {
+        let Some(shown) = self.scratch_shown else {
+            return Ok(());
+        };
+        let Some(focus) = self.focus else {
+            return Ok(());
+        };
+        if self.scratch_owner(focus) == Some(shown) {
+            return Ok(());
+        }
+        self.quiet_crossings();
+        self.scratch_shown = None;
+        self.scratch_return = None;
+        self.arrange()
     }
 
     /// Send the focused window to a numbered slot, or back from it.
@@ -328,6 +473,7 @@ impl Wm {
                     c.floating = true;
                     c.sticky = false;
                 }
+                self.mark_scratch(w, Some(slot));
             }
         }
         self.arrange()
@@ -356,6 +502,7 @@ impl Wm {
         c.monitor = monitor;
         c.monitor_name = name;
         c.tag = tag;
+        self.mark_scratch(w, None);
         if was_shown {
             self.scratch_shown = None;
             self.scratch_return = None;
@@ -375,6 +522,7 @@ impl Wm {
             c.scratch_floating = false;
             c.floating = true;
         }
+        self.mark_scratch(w, Some(slot));
         if let Some(f) = self.focus.filter(|f| *f != w && !self.is_scratch(*f)) {
             self.scratch_return = Some(f);
         }
@@ -467,6 +615,53 @@ mod tests {
         assert_eq!(plan_send(7, Some(1), None, 3), Send::Take { evict: None });
         // The same slot again: back to normal tiling.
         assert_eq!(plan_send(7, Some(3), Some(7), 3), Send::Unscratch);
+    }
+
+    #[test]
+    fn dialogs_belong_to_the_scratchpad_their_parents_lead_to() {
+        use std::collections::HashMap;
+        // 1 is scratchpad slot 3; 2 is its file dialog; 3 a dialog of that
+        // dialog; 4 an ordinary window; 5 a dialog of 4; 6 and 7 a cycle.
+        let links: HashMap<Window, (Option<u8>, Option<Window>)> = [
+            (1, (Some(3), None)),
+            (2, (None, Some(1))),
+            (3, (None, Some(2))),
+            (4, (None, None)),
+            (5, (None, Some(4))),
+            (6, (None, Some(7))),
+            (7, (None, Some(6))),
+            (8, (None, Some(99))),
+        ]
+        .into_iter()
+        .collect();
+        let owner = |w| owner_of(w, |x| links.get(&x).copied());
+        assert_eq!(owner(1), Some(1));
+        assert_eq!(owner(2), Some(1));
+        assert_eq!(owner(3), Some(1));
+        assert_eq!(owner(4), None);
+        assert_eq!(owner(5), None);
+        // A transient cycle or an unmanaged parent ends the walk.
+        assert_eq!(owner(6), None);
+        assert_eq!(owner(8), None);
+    }
+
+    #[test]
+    fn focus_flipping_thousands_of_times_a_second_is_noticed() {
+        let start = std::time::Instant::now();
+        let mut rate = FocusRate::default();
+        // A person: a few changes a second never trip it.
+        for i in 0..10u64 {
+            assert!(!rate.record(start + std::time::Duration::from_millis(i * 300)));
+        }
+        // A loop: 61 changes within a second do.
+        let mut rate = FocusRate::default();
+        let tripped = (0..=FocusRate::LIMIT as u64)
+            .map(|i| rate.record(start + std::time::Duration::from_micros(i * 100)))
+            .last()
+            .unwrap();
+        assert!(tripped);
+        // A second later the count starts over.
+        assert!(!rate.record(start + std::time::Duration::from_secs(2)));
     }
 
     #[test]

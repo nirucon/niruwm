@@ -1516,3 +1516,336 @@ fn scratchpads_never_resize_the_workspace_and_return_focus() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A window with a WM_CLASS, a transient parent, a window type and states,
+/// all set before it maps, the way a toolkit's dialog arrives.
+fn create_dialog(
+    c: &RustConnection,
+    root: Window,
+    class: &[u8],
+    parent: Window,
+    modal: bool,
+) -> Window {
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        40,
+        40,
+        200,
+        120,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        w,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        class,
+    )
+    .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        w,
+        AtomEnum::WM_TRANSIENT_FOR,
+        AtomEnum::WINDOW,
+        &[parent],
+    )
+    .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        w,
+        atom(c, "_NET_WM_WINDOW_TYPE"),
+        AtomEnum::ATOM,
+        &[atom(c, "_NET_WM_WINDOW_TYPE_DIALOG")],
+    )
+    .unwrap();
+    if modal {
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom(c, "_NET_WM_STATE"),
+            AtomEnum::ATOM,
+            &[atom(c, "_NET_WM_STATE_MODAL")],
+        )
+        .unwrap();
+    }
+    c.map_window(w).unwrap();
+    c.flush().unwrap();
+    w
+}
+
+/// Top-level windows from bottom to top.
+fn stacking(c: &RustConnection, root: Window) -> Vec<Window> {
+    c.query_tree(root).unwrap().reply().unwrap().children
+}
+
+fn above(c: &RustConnection, root: Window, upper: Window, lower: Window) -> bool {
+    let order = stacking(c, root);
+    let at = |w| order.iter().position(|x| *x == w);
+    matches!((at(upper), at(lower)), (Some(u), Some(l)) if u > l)
+}
+
+fn warp(c: &RustConnection, root: Window, x: i16, y: i16) {
+    c.warp_pointer(x11rb::NONE, root, 0, 0, 0, 0, x, y).unwrap();
+    c.flush().unwrap();
+}
+
+fn scratch_wm(dir: &std::path::Path, extra: &str) -> Process {
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        format!(
+            "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n\
+             [scratchpad]\ncommand = [\"xterm\", \"-class\", \"scratchpad\"]\n{extra}"
+        ),
+    )
+    .unwrap();
+    Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", dir)
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn scratchpad_dialogs_stay_above_it_follow_it_and_never_loop_focus() {
+    let dir = std::env::temp_dir().join(format!("niruwm-scratch-dialog-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let (sw, sh) = (
+        c.setup().roots[s].width_in_pixels as i16,
+        c.setup().roots[s].height_in_pixels as i16,
+    );
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let a = create(&c, root, b"term\0Term\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    let sp = create(&c, root, b"scratchpad\0scratchpad\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![sp]);
+
+    // Behave like Qt: whenever the scratchpad itself gets the focus while its
+    // modal dialog is open, ask for the dialog to be activated again. 0.17.4
+    // and this client then took turns about 9,000 times a second.
+    let dialog = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let echo = {
+        let (dialog, stop) = (dialog.clone(), stop.clone());
+        thread::spawn(move || {
+            let (q, qs) = x11rb::connect(None).unwrap();
+            let qroot = q.setup().roots[qs].root;
+            q.change_window_attributes(
+                sp,
+                &ChangeWindowAttributesAux::new().event_mask(EventMask::FOCUS_CHANGE),
+            )
+            .unwrap();
+            q.flush().unwrap();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                match q.poll_for_event().unwrap() {
+                    Some(x11rb::protocol::Event::FocusIn(_)) => {
+                        let d = dialog.load(std::sync::atomic::Ordering::Relaxed);
+                        if d != 0 {
+                            message(&q, qroot, d, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+                        }
+                    }
+                    Some(_) => {}
+                    None => thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        })
+    };
+
+    // The dialog has the scratchpad's class, as Qt dialogs do: it must not
+    // become a scratchpad itself, nor join the workspace's window list.
+    let d = create_dialog(&c, root, b"scratchpad\0scratchpad\0", sp, true);
+    dialog.store(d, std::sync::atomic::Ordering::Relaxed);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![d]);
+    wait(|| above(&c, root, d, sp));
+    assert_eq!(values(&c, root, "_NET_CLIENT_LIST"), vec![a]);
+    assert!(!text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("\t{d}\t")));
+
+    // Count focus changes while the pointer crosses the scratchpad, the
+    // dialog and back.
+    let watcher = x11rb::connect(None).unwrap().0;
+    watcher
+        .change_window_attributes(
+            root,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .unwrap();
+    watcher.flush().unwrap();
+    let active = atom(&watcher, "_NET_ACTIVE_WINDOW");
+    let gs = geometry(&c, sp);
+    let gd = geometry(&c, d);
+    for _ in 0..5 {
+        warp(&c, root, gs.0 + 5, gs.1 + 5);
+        thread::sleep(Duration::from_millis(60));
+        warp(&c, root, gd.0 + gd.2 as i16 / 2, gd.1 + gd.3 as i16 / 2);
+        thread::sleep(Duration::from_millis(60));
+    }
+    thread::sleep(Duration::from_millis(500));
+    let mut changes = 0;
+    while let Some(event) = watcher.poll_for_event().unwrap() {
+        if let x11rb::protocol::Event::PropertyNotify(p) = event {
+            if p.atom == active {
+                changes += 1;
+            }
+        }
+    }
+    assert!(changes < 40, "focus loop: {changes} focus changes");
+    assert!(
+        above(&c, root, d, sp),
+        "the dialog went under its scratchpad"
+    );
+    // The pointer over the scratchpad focuses its modal dialog.
+    assert_eq!(values(&c, root, "_NET_ACTIVE_WINDOW"), vec![d]);
+
+    // Hidden and shown with its scratchpad, above it again.
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 0, 0, 0]);
+    wait(|| !mapped(&c, sp) && !mapped(&c, d));
+    assert_eq!(values(&c, root, "_NET_CLIENT_LIST"), vec![a]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 0, 0, 0]);
+    wait(|| mapped(&c, sp) && mapped(&c, d));
+    wait(|| above(&c, root, d, sp));
+    // It follows the scratchpad to another workspace.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 2, 0, 0, 0]);
+    wait(|| !mapped(&c, a));
+    assert!(mapped(&c, sp) && mapped(&c, d));
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| mapped(&c, a));
+
+    // The pointer leaving onto another window gives that window the focus,
+    // but the scratchpad and its dialog stay on top (hide_on_focus_loss is
+    // off by default).
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    echo.join().unwrap();
+    c.destroy_window(d).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![sp]);
+    thread::sleep(Duration::from_millis(400));
+    warp(&c, root, sw / 2, sh / 2);
+    thread::sleep(Duration::from_millis(100));
+    warp(&c, root, 4, sh - 4);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    thread::sleep(Duration::from_millis(150));
+    assert!(mapped(&c, sp), "the scratchpad hid when the pointer left");
+    assert!(
+        above(&c, root, sp, a),
+        "a window went over the shown scratchpad"
+    );
+
+    c.destroy_window(sp).unwrap();
+    c.destroy_window(a).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn hide_on_focus_loss_hides_the_scratchpad_when_another_window_takes_focus() {
+    let dir = std::env::temp_dir().join(format!("niruwm-scratch-hide-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "hide_on_focus_loss = true\n");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let (sw, sh) = (
+        c.setup().roots[s].width_in_pixels as i16,
+        c.setup().roots[s].height_in_pixels as i16,
+    );
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let a = create(&c, root, b"term\0Term\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    warp(&c, root, sw / 2, sh / 2);
+    let sp = create(&c, root, b"scratchpad\0scratchpad\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![sp]);
+    // A dialog of the scratchpad is not a focus loss.
+    let d = create_dialog(&c, root, b"dlg\0Dlg\0", sp, false);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![d]);
+    thread::sleep(Duration::from_millis(400));
+    assert!(mapped(&c, sp));
+    c.destroy_window(d).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![sp]);
+    // The pointer moving onto the window outside it is.
+    warp(&c, root, 4, sh - 4);
+    wait(|| !mapped(&c, sp));
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    assert!(text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("0\thidden\t{sp}")));
+    c.destroy_window(sp).unwrap();
+    c.destroy_window(a).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_manager_started_again_after_a_crash_keeps_workspaces_and_scratchpads() {
+    let dir = std::env::temp_dir().join(format!("niruwm-restart-{}", std::process::id()));
+    let mut first = scratch_wm(&dir, "");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let a = create(&c, root, b"one\0One\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    let b = create(&c, root, b"two\0Two\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![a, b]);
+    // b goes to workspace 3, then a third window to scratchpad slot 4.
+    message(&c, root, b, "_NET_WM_DESKTOP", [2, 0, 0, 0, 0]);
+    wait(|| !mapped(&c, b));
+    let k = create(&c, root, b"three\0Three\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![k]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [16, 4, 0, 0, 0]);
+    wait(|| !mapped(&c, k));
+    let sp = create(&c, root, b"scratchpad\0scratchpad\0");
+    wait(|| text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("0\tshown\t{sp}")));
+
+    // The manager dies without cleaning up, as a crash would.
+    let _ = first.0.kill();
+    let _ = first.0.wait();
+    let mut second = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("NIRUWM_RESTARTED", "1")
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        let state = text(&c, root, "_NIRUWM_SCRATCHPADS");
+        state.contains(&format!("4\thidden\t{k}")) && state.contains(&format!("\t{sp}\t"))
+    });
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    let mut list = values(&c, root, "_NET_CLIENT_LIST");
+    list.sort_unstable();
+    let mut expected = vec![a, b];
+    expected.sort_unstable();
+    assert_eq!(list, expected, "scratchpads stay out of the window list");
+    wait(|| mapped(&c, a) && !mapped(&c, b) && !mapped(&c, k));
+    assert_eq!(
+        values(&c, b, "_NET_WM_DESKTOP"),
+        vec![2],
+        "b kept its workspace"
+    );
+    for w in [a, b, k, sp] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| second.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

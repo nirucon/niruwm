@@ -403,6 +403,11 @@ tray = true
 command = ["kitty", "--class", "scratchpad"]
 width = 0.6
 height = 0.6
+# A shown scratchpad stays on top until you hide it with its key, even when
+# the mouse moves onto another window (that window gets the keyboard focus,
+# the scratchpad stays visible above it). Set this to true to hide the
+# scratchpad instead as soon as another window gets the focus.
+hide_on_focus_loss = false
 
 # Numbered scratchpads need no settings: any window can be sent to any slot
 # with Super+Alt+Shift+N. Add a [[scratchpad.slot]] to give a slot a program
