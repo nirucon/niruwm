@@ -328,6 +328,22 @@ impl Wm {
             .get(monitor)
             .map(|m| m.name.clone())
             .unwrap_or_default();
+        // A dialog that names no parent but opens while the shown scratchpad
+        // (or one of its dialogs) has the focus is the scratchpad's: the
+        // portal's file chooser for a program in the scratchpad. Without
+        // this it opened below the scratchpad, which stays on top.
+        let is_dialog = types.contains(&self.atom("_NET_WM_WINDOW_TYPE_DIALOG"))
+            || self
+                .values(w, "_NET_WM_STATE")
+                .contains(&self.atom("_NET_WM_STATE_MODAL"));
+        let guest_of = if transient.is_none() && is_dialog && !is_scratchpad && !self.adopting {
+            self.scratch_shown.filter(|s| {
+                self.focus
+                    .is_some_and(|f| self.scratch_owner(f) == Some(*s))
+            })
+        } else {
+            None
+        };
         let size_hints = self.size_hints(w);
         // Toolkits may establish fullscreen before the first MapWindow. The
         // initial state must have the same meaning as a later ClientMessage;
@@ -360,6 +376,7 @@ impl Wm {
             class: class.clone(),
             scratch: None,
             scratch_floating: false,
+            guest_of,
         };
         if let Some(opacity) = rule.as_ref().and_then(|r| r.opacity) {
             let value = (u64::from(opacity.clamp(1, 100)) * u64::from(u32::MAX) / 100) as u32;
@@ -431,7 +448,11 @@ impl Wm {
         }
         // A dialog of a hidden scratchpad would open hidden with it. A dialog
         // asks for attention, so its scratchpad comes up with it.
-        let owner = transient.and_then(|_| self.scratch_owner(w));
+        let owner = if transient.is_some() || guest_of.is_some() {
+            self.scratch_owner(w)
+        } else {
+            None
+        };
         if let Some(owner) = owner {
             if self.scratch_shown != Some(owner) && focus_on_map && !self.adopting {
                 self.show_scratch(owner)?;
@@ -574,7 +595,7 @@ impl Wm {
             self.clients
                 .iter()
                 .find(|c| c.win == w)
-                .and_then(|c| c.parent)
+                .and_then(|c| c.owner_link())
                 .filter(|p| self.clients.iter().any(|c| c.win == *p) && !self.hidden.contains(p))
         } else {
             None
@@ -813,7 +834,7 @@ impl Wm {
     pub(crate) fn visible_descendants(&self, w: Window) -> Vec<Window> {
         self.clients
             .iter()
-            .filter(|c| c.win != w && c.parent.is_some())
+            .filter(|c| c.win != w && c.owner_link().is_some())
             .filter(|c| !self.hidden.contains(&c.win) && !self.withdrawn.contains(&c.win))
             .filter(|c| self.descends_from(c.win, w))
             .map(|c| c.win)
@@ -828,7 +849,7 @@ impl Wm {
                 .clients
                 .iter()
                 .find(|c| c.win == current)
-                .and_then(|c| c.parent)
+                .and_then(|c| c.owner_link())
             else {
                 return false;
             };
@@ -1948,6 +1969,7 @@ mod tests {
             class: String::new(),
             scratch: None,
             scratch_floating: false,
+            guest_of: None,
         }
     }
 

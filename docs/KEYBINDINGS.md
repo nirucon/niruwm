@@ -79,8 +79,11 @@ workspace indicators and the saved session.
   another window gets the focus (default: `false`).
 - **Its dialogs belong to it.** A dialog the scratchpad's program opens (Open,
   Save, a confirmation) stays above the scratchpad, is hidden and shown with
-  it and follows it to another workspace or screen. A dialog never takes a
-  scratchpad slot itself, even when it has the scratchpad's window class.
+  it and follows it to another workspace or screen. That includes a file
+  chooser from xdg-desktop-portal, which names no parent window: a dialog
+  that opens while the scratchpad has the focus is treated as its own. A
+  dialog never takes a scratchpad slot itself, even when it has the
+  scratchpad's window class.
 - **Any window can be one.** `Super+Alt+Shift+N` hides the focused window in
   slot N. If slot N already holds a window, that window comes back to the
   current workspace as a normal window (they swap places). Pressing

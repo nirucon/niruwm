@@ -195,7 +195,7 @@ impl Wm {
             self.clients
                 .iter()
                 .find(|c| c.win == x)
-                .map(|c| (c.scratch, c.parent))
+                .map(|c| (c.scratch, c.owner_link()))
         })
     }
 
@@ -203,7 +203,7 @@ impl Wm {
     pub(crate) fn scratch_children(&self, owner: Window) -> Vec<Window> {
         self.clients
             .iter()
-            .filter(|c| c.scratch.is_none() && c.parent.is_some())
+            .filter(|c| c.scratch.is_none() && c.owner_link().is_some())
             .filter(|c| self.scratch_owner(c.win) == Some(owner))
             .map(|c| c.win)
             .collect()

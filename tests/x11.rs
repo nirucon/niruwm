@@ -1549,14 +1549,16 @@ fn create_dialog(
         class,
     )
     .unwrap();
-    c.change_property32(
-        PropMode::REPLACE,
-        w,
-        AtomEnum::WM_TRANSIENT_FOR,
-        AtomEnum::WINDOW,
-        &[parent],
-    )
-    .unwrap();
+    if parent != 0 {
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            AtomEnum::WM_TRANSIENT_FOR,
+            AtomEnum::WINDOW,
+            &[parent],
+        )
+        .unwrap();
+    }
     c.change_property32(
         PropMode::REPLACE,
         w,
@@ -1730,6 +1732,27 @@ fn scratchpad_dialogs_stay_above_it_follow_it_and_never_loop_focus() {
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     echo.join().unwrap();
     c.destroy_window(d).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![sp]);
+
+    // A dialog that names no parent (the portal's file chooser) opening
+    // while the scratchpad has the focus belongs to it as well: above it,
+    // hidden and shown with it.
+    let g = create_dialog(
+        &c,
+        root,
+        b"xdg-desktop-portal-gtk\0Xdg-desktop-portal-gtk\0",
+        0,
+        true,
+    );
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![g]);
+    wait(|| above(&c, root, g, sp));
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 0, 0, 0]);
+    wait(|| !mapped(&c, sp) && !mapped(&c, g));
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 0, 0, 0, 0]);
+    wait(|| mapped(&c, sp) && mapped(&c, g));
+    wait(|| above(&c, root, g, sp));
+    c.destroy_window(g).unwrap();
     c.flush().unwrap();
     wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![sp]);
     thread::sleep(Duration::from_millis(400));

@@ -79,6 +79,19 @@ pub(crate) struct Client {
     /// Whether the window floated before it was sent to a scratchpad, so
     /// taking it back out restores it as it was.
     scratch_floating: bool,
+    /// A dialog without a transient parent that opened while the shown
+    /// scratchpad had the focus (a file chooser from xdg-desktop-portal is
+    /// a separate program and often names no parent). It belongs to that
+    /// scratchpad like a transient does.
+    guest_of: Option<Window>,
+}
+
+impl Client {
+    /// The window this one belongs to: its transient parent, or the
+    /// scratchpad it opened over.
+    pub(crate) fn owner_link(&self) -> Option<Window> {
+        self.parent.or(self.guest_of)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
