@@ -105,8 +105,8 @@ font_size = 15.0
 # At the top level, not under [bar]: NIRUWM reads this file too and refuses
 # fields it does not know, so a setting only the bar uses still has to be
 # somewhere both accept.
-weather_latitude = 58.22
-weather_longitude = 11.93
+weather_latitude = 59.33
+weather_longitude = 18.07
 
 # ── Wallpaper ───────────────────────────────────────────────────────────────
 # NIRUWM sets and rotates the wallpaper only when enabled = true. NIRUX
@@ -197,8 +197,8 @@ return_workspace = 1
 [nightlight]
 # Manual night light, applied by `niructl nightlight on` / Super+N.
 # 0,0 means no location; manual temperature still works.
-latitude = 58.22
-longitude = 11.93
+latitude = 59.33
+longitude = 18.07
 temperature = 3400
 # manual: Super+N / niructl nightlight on|off
 # fixed:  on/off local times every day

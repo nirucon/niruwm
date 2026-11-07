@@ -3,6 +3,9 @@
 //! Communication is a client message on the root window. It is deliberately
 //! the same mechanism `xdotool` and EWMH clients use, so no daemon, socket or
 //! dependency is required.
+#[path = "../stdout.rs"]
+#[macro_use]
+mod stdout;
 #[path = "../bindings.rs"]
 #[allow(dead_code)] // niructl only reads the shared config shape.
 mod bindings;
@@ -682,7 +685,9 @@ fn desktop(action: &str, args: &[String]) -> Result<()> {
         "lock" => lock_action(),
         "screensaver" => {
             let saver = program("niruscreensaver").ok_or("niruscreensaver is not installed")?;
-            spawn_action(&saver, &["--preview"])
+            // No argument: the screensaver itself, over every monitor.
+            // `--preview` (NIRUSCREENSAVER 0.13+) covers one monitor only.
+            spawn_action(&saver, &[])
         }
         "suspend" | "logout" | "reboot" | "shutdown" => power_action(action),
         "update-shutdown" | "update-reboot" => update_power_action(action, args),
@@ -9196,6 +9201,8 @@ fn example_text() -> Option<String> {
 }
 
 fn main() {
+    // `niructl keys | head` ends quietly instead of panicking.
+    stdout::exit_on_broken_pipe();
     if let Err(e) = run() {
         eprintln!("niructl: {e}");
         std::process::exit(1)
@@ -9756,7 +9763,8 @@ screensaver_timeout = 15
         };
 
         desktop("screensaver", &[]).unwrap();
-        wait_for("niruscreensaver --preview");
+        wait_for("niruscreensaver \n");
+        assert!(!calls_now().contains("--preview"));
         login_action("reboot").unwrap();
         wait_for("org.freedesktop.login1.Manager.Reboot boolean:true");
         desktop("shutdown", &[]).unwrap();

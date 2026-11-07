@@ -946,16 +946,15 @@ mod tests {
             Tool::Xsetroot.colour_args("1920x1080+0+0", "#141414"),
             vec!["-solid", "#141414"]
         );
+        // The image path depends on XDG_STATE_HOME/HOME, which other tests
+        // change while this one runs; only its file name is fixed.
+        let feh = Tool::Feh.colour_args("1920x1080+0+0", "#141414");
         assert_eq!(
-            Tool::Feh.colour_args("1920x1080+0+0", "#141414"),
-            vec![
-                "--no-fehbg".to_string(),
-                "--image-bg".to_string(),
-                "#141414".to_string(),
-                "--bg-fill".to_string(),
-                solid_image("#141414").display().to_string()
-            ]
+            feh[..4],
+            ["--no-fehbg", "--image-bg", "#141414", "--bg-fill"]
         );
+        assert_eq!(feh.len(), 5);
+        assert!(feh[4].ends_with("/niruwm/solid-141414.png"), "{feh:?}");
         for tool in TOOLS {
             let args = tool.colour_args("1920x1080+0+0", "#141414");
             assert!(

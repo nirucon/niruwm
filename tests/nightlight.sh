@@ -30,8 +30,8 @@ export HOME="$TEST/home" XDG_CONFIG_HOME="$TEST/home/.config"
 mkdir -p "$XDG_CONFIG_HOME/niruwm"
 cat > "$XDG_CONFIG_HOME/niruwm/config.toml" <<'EOF'
 [nightlight]
-latitude = 58.22
-longitude = 11.93
+latitude = 59.33
+longitude = 18.07
 temperature = 3400
 EOF
 

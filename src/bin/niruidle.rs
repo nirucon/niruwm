@@ -14,6 +14,9 @@
 //! place. This exists so the ladder works on a clean install with no
 //! `xidlehook`, `xprintidle` or shell glue.
 
+#[path = "../stdout.rs"]
+#[macro_use]
+mod stdout;
 use std::{
     process::{Child, Command, Stdio},
     thread,
