@@ -2048,11 +2048,17 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
     struct Restore(Vec<(u8, Vec<u32>)>, usize);
     impl Drop for Restore {
         fn drop(&mut self) {
-            if let Ok((c, _)) = x11rb::connect(None) {
-                for (code, syms) in &self.0 {
-                    let _ = c.change_keyboard_mapping(1, *code, self.1 as u8, syms);
+            match x11rb::connect(None) {
+                Ok((c, _)) => {
+                    for (code, syms) in &self.0 {
+                        let r = c
+                            .change_keyboard_mapping(1, *code, self.1 as u8, syms)
+                            .map(|cookie| cookie.check());
+                        eprintln!("se-keys: restore keycode {code}: {r:?}");
+                    }
+                    let _ = c.flush();
                 }
-                let _ = c.flush();
+                Err(e) => eprintln!("se-keys: restore: cannot connect: {e}"),
             }
         }
     }
@@ -2086,7 +2092,7 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
             .env("PATH", &path)
             .env("LAUNCHER_LOG", &log)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(dir.join("wm.log")).unwrap())
             .spawn()
             .unwrap(),
     );
@@ -2105,10 +2111,17 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
         while !f() {
             assert!(
                 Instant::now() < end,
-                "{what}: desktop {:?}, launcher {:?}, key row {:x?}",
+                "{what}: desktop {:?}, launcher {:?}, key row {:x?}, F1 row {:x?}, niruwm: {}",
                 values(&c, root, "_NET_CURRENT_DESKTOP"),
                 launched(),
-                probe()
+                probe(),
+                {
+                    let m = c.get_keyboard_mapping(min, count).unwrap().reply().unwrap();
+                    (min..=c.setup().max_keycode)
+                        .filter(|&k| m.keysyms[(k - min) as usize * per..][..per].contains(&0xffbe))
+                        .collect::<Vec<u8>>()
+                },
+                std::fs::read_to_string(dir.join("wm.log")).unwrap_or_default()
             );
             thread::sleep(Duration::from_millis(25));
         }
