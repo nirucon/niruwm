@@ -2043,6 +2043,20 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
         .chain(slash)
         .map(|k| (k, row(k)))
         .collect();
+    // Put the keyboard back even when an assertion fails, so the next test
+    // sees the normal map.
+    struct Restore(Vec<(u8, Vec<u32>)>, usize);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Ok((c, _)) = x11rb::connect(None) {
+                for (code, syms) in &self.0 {
+                    let _ = c.change_keyboard_mapping(1, *code, self.1 as u8, syms);
+                }
+                let _ = c.flush();
+            }
+        }
+    }
+    let _restore = Restore(saved, per);
     let set = |code: u8, syms: &[u32]| {
         let mut full = syms.to_vec();
         full.resize(per, 0);
@@ -2056,6 +2070,14 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
         set(k, &[0x2d, 0x5f, 0x2d, 0x5f]);
     }
     c.flush().unwrap();
+    let probe = || {
+        let m = c.get_keyboard_mapping(min, count).unwrap().reply().unwrap();
+        m.keysyms[(seven - min) as usize * per..][..per].to_vec()
+    };
+    eprintln!(
+        "se-keys: per={per} seven={seven} slash={slash:?} row={:x?}",
+        probe()
+    );
 
     let path = format!("{}:/usr/bin:/bin", dir.join("bin").display());
     let wm = Process(
@@ -2078,8 +2100,23 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
             .success());
     };
 
+    let until = |what: &str, f: &dyn Fn() -> bool| {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !f() {
+            assert!(
+                Instant::now() < end,
+                "{what}: desktop {:?}, launcher {:?}, key row {:x?}",
+                values(&c, root, "_NET_CURRENT_DESKTOP"),
+                launched(),
+                probe()
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+    };
     key("super+7");
-    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![6]);
+    until("Super+7 goes to workspace 7", &|| {
+        values(&c, root, "_NET_CURRENT_DESKTOP") == vec![6]
+    });
     thread::sleep(Duration::from_millis(300));
     assert!(
         !launched().contains("--keys"),
@@ -2087,14 +2124,14 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
         launched()
     );
     key("super+F1");
-    wait(|| launched().contains("--keys"));
+    until("Super+F1 opens the sheet", &|| {
+        launched().contains("--keys")
+    });
     key("super+1");
-    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    until("Super+1 goes back", &|| {
+        values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]
+    });
 
     drop(wm);
-    for (code, syms) in saved {
-        set(code, &syms);
-    }
-    c.flush().unwrap();
     std::fs::remove_dir_all(dir).unwrap();
 }
