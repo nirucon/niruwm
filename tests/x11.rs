@@ -2126,6 +2126,10 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
             thread::sleep(Duration::from_millis(25));
         }
     };
+    key("super+F1");
+    until("Super+F1 opens the sheet", &|| {
+        launched().contains("--keys")
+    });
     key("super+7");
     until("Super+7 goes to workspace 7", &|| {
         values(&c, root, "_NET_CURRENT_DESKTOP") == vec![6]
@@ -2136,10 +2140,6 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
         "Super+7 opened the cheat sheet: {}",
         launched()
     );
-    key("super+F1");
-    until("Super+F1 opens the sheet", &|| {
-        launched().contains("--keys")
-    });
     key("super+1");
     until("Super+1 goes back", &|| {
         values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]
