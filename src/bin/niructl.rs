@@ -14,6 +14,8 @@ mod bindings;
 mod config;
 #[path = "../display_auto.rs"]
 mod display_auto;
+#[path = "../keysheet.rs"]
+mod keysheet;
 #[path = "../layout.rs"]
 #[allow(dead_code)] // niructl prints the layout names
 mod layout;
@@ -5618,6 +5620,88 @@ fn fill_wallpaper_header(original: &str, rendered: &str) -> String {
 
 /// The X connection a change needs, or the offline answer for commands that
 /// only read files.
+/// `niructl keys`: the effective bindings as `keys<TAB>action` lines (the
+/// format NIRULAUNCHER 0.4 reads), `--json` for the cheat sheet, `--markdown`
+/// for the documentation, `run KEYS` to run what a key is bound to and
+/// `--update-doc FILE` to rewrite the generated part of KEYBINDINGS.md.
+fn keys_command(args: &[String]) -> Result<()> {
+    let defaults_only = args.iter().any(|a| a == "--defaults");
+    let defaults = bindings::Action::defaults();
+    let effective = if defaults_only {
+        defaults.clone()
+    } else {
+        Config::load()?.effective_keys()
+    };
+    let dir = (!defaults_only).then(keysheet::keys_dir);
+    match args.first().map(String::as_str) {
+        None | Some("--defaults") => {
+            for binding in effective {
+                if binding.action == "unbind" {
+                    continue;
+                }
+                println!("{}\t{}", binding.keys, binding.action);
+            }
+            Ok(())
+        }
+        Some("--json") => {
+            let sheet = keysheet::build(&effective, &defaults, dir.as_deref());
+            println!("{}", serde_json::to_string(&sheet)?);
+            Ok(())
+        }
+        Some("--markdown") => {
+            let sheet = keysheet::build(&effective, &defaults, dir.as_deref());
+            print!("{}", keysheet::markdown(&sheet.entries));
+            Ok(())
+        }
+        Some("--update-doc") => {
+            let path = args
+                .get(1)
+                .filter(|p| !p.starts_with("--"))
+                .ok_or("keys --update-doc needs the path of KEYBINDINGS.md")?;
+            let text = fs::read_to_string(path)?;
+            let start = text
+                .find(keysheet::BEGIN)
+                .ok_or("the file has no BEGIN GENERATED marker")?
+                + keysheet::BEGIN.len();
+            let end = text
+                .find(keysheet::END)
+                .ok_or("the file has no END GENERATED marker")?;
+            let sheet = keysheet::build(&defaults, &defaults, None);
+            let updated = format!(
+                "{}\n\n{}{}",
+                &text[..start],
+                keysheet::markdown(&sheet.entries),
+                &text[end..]
+            );
+            fs::write(path, updated)?;
+            Ok(())
+        }
+        Some("run") => {
+            let spec = args.get(1).ok_or("keys run needs a key, like super+t")?;
+            let (mods, key) = bindings::parse_keys(spec)?;
+            let sym = bindings::keysym_named(&key).ok_or_else(|| format!("unknown key {key}"))?;
+            let cfg = Config::load()?;
+            let bound = cfg.effective_keys().into_iter().any(|b| {
+                b.action != "unbind"
+                    && bindings::parse_keys(&b.keys)
+                        .is_ok_and(|(m, k)| m == mods && bindings::keysym_named(&k) == Some(sym))
+            });
+            if !bound {
+                return Err(format!("{spec} is not bound in NIRUWM").into());
+            }
+            let (c, root) = connect_for_change()?;
+            let atom = c.intern_atom(false, CMD_ATOM.as_bytes())?.reply()?.atom;
+            send(&c, root, atom, [19, mods, sym, 0, 0])?;
+            c.flush()?;
+            Ok(())
+        }
+        Some(other) => Err(format!(
+            "keys takes --json, --markdown, --defaults, run KEYS or --update-doc FILE, not {other}"
+        )
+        .into()),
+    }
+}
+
 fn connect_for_change() -> Result<(x11rb::rust_connection::RustConnection, Window)> {
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
@@ -7952,14 +8036,7 @@ fn offline(cmd: &str) -> Result<()> {
         return desktop(cmd, &std::env::args().skip(2).collect::<Vec<_>>());
     }
     if cmd == "keys" {
-        let cfg = Config::load()?;
-        for binding in cfg.effective_keys() {
-            if binding.action == "unbind" {
-                continue;
-            }
-            println!("{}\t{}", binding.keys, binding.action);
-        }
-        return Ok(());
+        return keys_command(&std::env::args().skip(2).collect::<Vec<_>>());
     }
     if cmd == "layout" {
         // `show` reports the stored layouts; there is nothing to ask a

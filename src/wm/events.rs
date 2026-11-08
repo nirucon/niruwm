@@ -440,6 +440,8 @@ impl Wm {
                     .filter(|n| (1..=9).contains(n))
                     .map(Action::ScratchpadSend),
                 17 => Some(Action::Unscratch),
+                // 19: run the binding on modifiers d[1] + keysym d[2].
+                19 => self.bound_action(d[1], d[2]),
                 18 => {
                     if let Ok(slot) = u8::try_from(d[1]) {
                         self.send_named_to_scratch(d[2], slot)?;

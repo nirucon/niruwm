@@ -22,6 +22,10 @@ pub enum Action {
     LauncherSearch,
     /// Open the local clipboard history.
     LauncherClipboard,
+    /// The keybinding cheat sheet (`nirulauncher --keys`).
+    LauncherKeys,
+    /// The emoji and symbol picker (`nirulauncher --emoji`).
+    LauncherEmoji,
     /// Lock the screen with the first available locker.
     Lock,
     /// Lock, wait for verified readiness, then suspend the machine.
@@ -161,6 +165,10 @@ pub struct Binding {
     /// Modifier mask, built from `mod` strings.
     pub mods: u32,
 
+    /// The X keysym the binding names, so a request to run "the binding on
+    /// Super+T" can find it without the keyboard mapping.
+    pub sym: u32,
+
     /// The keycode this symbol currently maps to.
     pub code: u8,
     pub action: Action,
@@ -171,6 +179,10 @@ pub struct Binding {
 pub struct RawBinding {
     pub keys: String,
     pub action: String,
+    /// What the binding does, in words, for the cheat sheet. Optional; the
+    /// built-in description of the action is used without it.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// Parsed modifiers.
@@ -252,6 +264,7 @@ impl Action {
             b.push(RawBinding {
                 keys: keys.into(),
                 action: action.into(),
+                description: None,
             })
         };
 
@@ -268,6 +281,10 @@ impl Action {
         // Type a phrase, Enter opens it in the instant-search engine.
         add("super+s", "launcher_search");
         add("super+v", "launcher_clipboard");
+        // The keybinding cheat sheet (Super+K is focus_prev) and the emoji
+        // and symbol picker.
+        add("super+slash", "launcher_keys");
+        add("super+period", "launcher_emoji");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
@@ -289,6 +306,8 @@ impl Action {
         add("super+Print", "shell nirushot --full");
         add("Print", "shell nirushot --region");
         add("super+shift+Print", "shell nirushot --window");
+        // Colour picker: a frozen frame with a loupe; the colour is copied.
+        add("super+ctrl+c", "shell nirushot pick");
 
         // ── Hardware media keys ──────────────────────────────────────────
         // Bound without a modifier, as they are on a laptop keyboard. They
@@ -340,8 +359,12 @@ impl Action {
         // ── Focus ───────────────────────────────────────────────────────────
         // Multi-monitor bindings are inert until
         // the second-screen milestone but stay bound so muscle memory holds.
+        // Super+. is the emoji picker since 0.18.0. With two screens
+        // Super+, reaches the other one either way (it wraps around);
+        // Super+Alt+, and Super+Alt+. keep both directions.
         add("super+comma", "focusmon -1");
-        add("super+period", "focusmon 1");
+        add("super+alt+comma", "focusmon -1");
+        add("super+alt+period", "focusmon 1");
         add("super+shift+comma", "tagmon -1");
         add("super+shift+period", "tagmon 1");
         add("super+j", "focus_next");
@@ -450,6 +473,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher_actions" => Action::LauncherActions,
         "launcher_search" => Action::LauncherSearch,
         "launcher_clipboard" => Action::LauncherClipboard,
+        "launcher_keys" => Action::LauncherKeys,
+        "launcher_emoji" => Action::LauncherEmoji,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,
         "window_switcher" => Action::WindowSwitcher,
@@ -539,6 +564,326 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
     })
 }
 
+/// The X keysym for a key name from [`parse_keys`].
+#[allow(dead_code)] // used by niructl, which shares this file
+pub fn keysym_named(name: &str) -> Option<u32> {
+    let v = match name {
+        "Return" => 0xff0d,
+        "Tab" => 0xff09,
+        "Escape" => 0xff1b,
+        "space" => 0x0020,
+        "grave" => 0x0060,
+        "minus" => 0x002d,
+        "equal" => 0x003d,
+        "comma" => 0x002c,
+        "period" => 0x002e,
+        "slash" => 0x002f,
+        "semicolon" => 0x003b,
+        "apostrophe" => 0x0027,
+        "bracketleft" => 0x005b,
+        "bracketright" => 0x005d,
+        "backslash" => 0x005c,
+        "Left" => 0xff51,
+        "Up" => 0xff52,
+        "Right" => 0xff53,
+        "Down" => 0xff54,
+        "Print" => 0xff61,
+        "BackSpace" => 0xff08,
+        "Delete" => 0xffff,
+        // Hardware keys, from XF86keysym.h. Without these the names resolved
+        // to None and every media key was skipped when the table was built,
+        // so the keys did nothing at all.
+        "XF86AudioMute" => 0x1008ff12,
+        "XF86AudioLowerVolume" => 0x1008ff11,
+        "XF86AudioRaiseVolume" => 0x1008ff13,
+        "XF86AudioPlay" => 0x1008ff14,
+        "XF86AudioStop" => 0x1008ff15,
+        "XF86AudioPrev" => 0x1008ff16,
+        "XF86AudioNext" => 0x1008ff17,
+        "XF86AudioPause" => 0x1008ff31,
+        "XF86AudioMicMute" => 0x1008ffb2,
+        "XF86MonBrightnessUp" => 0x1008ff02,
+        "XF86MonBrightnessDown" => 0x1008ff03,
+        "XF86Display" => 0x1008ff59,
+        _ => {
+            if name.chars().count() == 1 {
+                let c = name.chars().next()?;
+                // X keysyms for printable Latin-1 characters match the code point.
+                u32::from(c)
+            } else {
+                // F1..F35 are contiguous from 0xffbe.
+                let n: u32 = name.strip_prefix('F')?.parse().ok()?;
+                if !(1..=35).contains(&n) {
+                    return None;
+                }
+                0xffbe + (n - 1)
+            }
+        }
+    };
+    Some(v)
+}
+
+/// The cheat-sheet groups, in the order the sheet and KEYBINDINGS.md list
+/// them.
+#[allow(dead_code)] // used by niructl, which shares this file
+pub const GROUPS: &[&str] = &[
+    "Apps and launchers",
+    "Session",
+    "Layouts",
+    "Scratchpads",
+    "Focus and windows",
+    "Workspaces",
+    "Floating windows",
+    "Screenshots and color",
+    "Hardware keys",
+    "Other",
+];
+
+/// Descriptions of the shell commands the default table binds.
+#[allow(dead_code)] // used by niructl, which shares this file
+fn describe_shell(command: &str) -> Option<(&'static str, &'static str)> {
+    Some(match command.trim() {
+        "nirushot --full" => (
+            "Screenshots and color",
+            "Screenshot of the whole screen, then review",
+        ),
+        "nirushot --region" => (
+            "Screenshots and color",
+            "Screenshot of a region, then review",
+        ),
+        "nirushot --window" => (
+            "Screenshots and color",
+            "Screenshot of the active window, then review",
+        ),
+        "nirushot pick" => (
+            "Screenshots and color",
+            "Pick a color from the screen and copy it",
+        ),
+        _ => return None,
+    })
+}
+
+#[allow(dead_code)] // used by niructl, which shares this file
+fn layout_words(id: LayoutId) -> &'static str {
+    match id {
+        LayoutId::Tile => "Tile",
+        LayoutId::Left => "Left stack",
+        LayoutId::Monocle => "Monocle (one window at a time)",
+        LayoutId::Centered => "Centered master",
+        LayoutId::CenteredFloat => "Centered floating master",
+        LayoutId::Floating => "Floating",
+        LayoutId::Fibonacci => "Fibonacci spiral",
+        LayoutId::Scroll => "Scroll",
+    }
+}
+
+/// The cheat-sheet group and an English description of a binding's action.
+///
+/// Every action has one, so a sheet built from the live table never shows a
+/// bare action name. An unparsable action says so instead of failing.
+#[allow(dead_code)] // used by niructl, which shares this file
+pub fn describe_action(spec: &str) -> (&'static str, String) {
+    let action = match parse_action(spec) {
+        Ok(action) => action,
+        Err(e) => return ("Other", format!("Invalid action: {e}")),
+    };
+    let s = |g: &'static str, t: &str| (g, t.to_string());
+    let apps = "Apps and launchers";
+    let session = "Session";
+    let layouts = "Layouts";
+    let scratch = "Scratchpads";
+    let focus = "Focus and windows";
+    let tags = "Workspaces";
+    let float = "Floating windows";
+    let hardware = "Hardware keys";
+    match action {
+        Action::Unbind => s("Other", "Not bound (released default)"),
+        Action::Terminal => s(apps, "Open a terminal"),
+        Action::TerminalAlt => s(apps, "Open the alternative terminal"),
+        Action::Browser => s(apps, "Open the web browser"),
+        Action::Launcher => s(apps, "Application launcher"),
+        Action::LauncherUnified => s(
+            apps,
+            "Unified launcher: apps, windows, actions and settings",
+        ),
+        Action::LauncherActions => s(
+            apps,
+            "NIRU Actions: maintenance, diagnostics, contexts and OpenCode",
+        ),
+        Action::LauncherSearch => s(apps, "Web search: type a phrase, Enter opens it"),
+        Action::LauncherClipboard => s(apps, "Clipboard history"),
+        Action::LauncherKeys => s(apps, "Keybinding cheat sheet (this list)"),
+        Action::LauncherEmoji => s(apps, "Emoji and symbol picker"),
+        Action::WindowSwitcher => s(apps, "Window switcher"),
+        Action::Start(cmd) => {
+            if cmd.trim() == "pcmanfm" {
+                s(apps, "Open the file manager (pcmanfm)")
+            } else {
+                (apps, format!("Start {}", cmd.trim()))
+            }
+        }
+        Action::Shell(cmd) => match describe_shell(&cmd) {
+            Some((group, text)) => s(group, text),
+            None => (apps, format!("Run: {}", cmd.trim())),
+        },
+        Action::Lock => s(session, "Lock the screen"),
+        Action::Suspend => s(session, "Lock, then suspend the computer"),
+        Action::Quit => s(session, "Log out (end the session)"),
+        Action::Reload => s(session, "Reload the configuration"),
+        Action::SaveSession => s(session, "Save the open windows as the session"),
+        Action::ClearSession => s(session, "Forget the saved session"),
+        Action::Theme(name) => (session, format!("Switch to the {name} theme")),
+        Action::NightlightToggle => s(session, "Night light on or off"),
+        Action::DndToggle => s(session, "Do Not Disturb on or off"),
+        Action::IdleToggle => s(session, "Keep the screen awake on or off"),
+        Action::SetLayout(id) => (layouts, format!("Layout: {}", layout_words(id))),
+        Action::SetScrollColumns(c) => (
+            layouts,
+            format!(
+                "Scroll layout: {} visible column{}",
+                c.count(),
+                if c.count() == 1 { "" } else { "s" }
+            ),
+        ),
+        Action::ToggleScrollColumns => s(layouts, "Scroll layout: one or two visible columns"),
+        Action::LayoutNext => s(layouts, "Next layout"),
+        Action::LayoutPrev => s(layouts, "Previous layout"),
+        Action::IncMaster => s(layouts, "One more window in the master area"),
+        Action::DecMaster => s(layouts, "One window fewer in the master area"),
+        Action::IncMasterRatio => s(layouts, "Wider master area"),
+        Action::DecMasterRatio => s(layouts, "Narrower master area"),
+        Action::ToggleGaps => s(layouts, "Gaps between windows on or off"),
+        Action::BarTop => s(layouts, "Bar at the top"),
+        Action::BarBottom => s(layouts, "Bar at the bottom"),
+        Action::BarHide => s(layouts, "Hide the bar"),
+        Action::BarShow => s(layouts, "Show the bar"),
+        Action::BarToggle => s(layouts, "Show or hide the bar"),
+        Action::BarCycle => s(layouts, "Bar: top, bottom, hidden"),
+        Action::Scratchpad => s(scratch, "Show or hide the default scratchpad"),
+        Action::ScratchpadSlot(n) => (scratch, format!("Show or hide scratchpad {n}")),
+        Action::ScratchpadSend(n) => (
+            scratch,
+            format!("Send the window to scratchpad {n}, or take it back"),
+        ),
+        Action::Unscratch => s(scratch, "Make the scratchpad a normal window"),
+        Action::FocusNext => s(focus, "Focus the next window"),
+        Action::FocusPrev => s(focus, "Focus the previous window"),
+        Action::SwapNext => s(focus, "Move the window down the stack"),
+        Action::SwapPrev => s(focus, "Move the window up the stack"),
+        Action::ToggleFloat => s(focus, "Floating on or off"),
+        Action::ToggleFullscreen => s(focus, "Fullscreen on or off"),
+        Action::ToggleSticky => s(focus, "Sticky (on every workspace) on or off"),
+        Action::Close => s(focus, "Close the window"),
+        Action::FocusMonitor(d) => (
+            focus,
+            format!(
+                "Focus the {} screen",
+                if d < 0 { "previous" } else { "next" }
+            ),
+        ),
+        Action::TagMonitor(d) => (
+            focus,
+            format!(
+                "Move the window to the {} screen",
+                if d < 0 { "previous" } else { "next" }
+            ),
+        ),
+        Action::FocusTag(n) => (tags, format!("Go to workspace {n}")),
+        Action::NextTag(d) => (
+            tags,
+            format!("{} workspace", if d < 0 { "Previous" } else { "Next" }),
+        ),
+        Action::ToggleTag(n) => (tags, format!("Show workspace {n} too (toggle)")),
+        Action::MoveToTag(n) => (tags, format!("Move the window to workspace {n}")),
+        Action::ToggleMoveToTag(n) => (
+            tags,
+            format!("Put the window on workspace {n} too (toggle)"),
+        ),
+        Action::MoveFloat(dx, dy) => (float, format!("Move a floating window {}", arrow(dx, dy))),
+        Action::ResizeFloat(dx, dy) => (
+            float,
+            format!(
+                "{} a floating window {}",
+                if dx > 0 || dy > 0 { "Grow" } else { "Shrink" },
+                if dx != 0 {
+                    "horizontally"
+                } else {
+                    "vertically"
+                }
+            ),
+        ),
+        Action::MediaKey(name) => (
+            hardware,
+            match name.as_str() {
+                "XF86AudioRaiseVolume" => "Volume up".to_string(),
+                "XF86AudioLowerVolume" => "Volume down".to_string(),
+                "XF86AudioMute" => "Mute or unmute".to_string(),
+                "XF86AudioPlay" => "Play or pause".to_string(),
+                "XF86AudioPause" => "Pause".to_string(),
+                "XF86AudioNext" => "Next track".to_string(),
+                "XF86AudioPrev" => "Previous track".to_string(),
+                "XF86AudioStop" => "Stop playback".to_string(),
+                "XF86AudioMicMute" => "Mute or unmute the microphone".to_string(),
+                other => format!("Media key {other}"),
+            },
+        ),
+        Action::BrightnessStep(step) => (
+            hardware,
+            format!(
+                "Screen brightness {} ({} %)",
+                if step >= 0 { "up" } else { "down" },
+                step.unsigned_abs()
+            ),
+        ),
+    }
+}
+
+#[allow(dead_code)] // used by niructl, which shares this file
+fn arrow(dx: i16, dy: i16) -> &'static str {
+    match (dx.signum(), dy.signum()) {
+        (-1, 0) => "left",
+        (1, 0) => "right",
+        (0, -1) => "up",
+        (0, 1) => "down",
+        _ => "diagonally",
+    }
+}
+
+/// `super+shift+Return` as people write it: `Super+Shift+Enter`.
+#[allow(dead_code)] // used by niructl, which shares this file
+pub fn key_label(spec: &str) -> String {
+    let Ok((mods, key)) = parse_keys(spec) else {
+        return spec.to_string();
+    };
+    let mut out = String::new();
+    for (bit, name) in [
+        (1 << 6, "Super"),
+        (1 << 2, "Ctrl"),
+        (1 << 3, "Alt"),
+        (1 << 5, "Mod3"),
+        (1, "Shift"),
+    ] {
+        if mods & bit != 0 {
+            out.push_str(name);
+            out.push('+');
+        }
+    }
+    let key = match key.as_str() {
+        "Return" => "Enter".to_string(),
+        "space" => "Space".to_string(),
+        "grave" => "`".to_string(),
+        "comma" => ",".to_string(),
+        "period" => ".".to_string(),
+        "slash" => "/".to_string(),
+        "minus" => "-".to_string(),
+        "equal" => "=".to_string(),
+        k if k.chars().count() == 1 => k.to_uppercase(),
+        k => k.to_string(),
+    };
+    out.push_str(&key);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +961,42 @@ mod tests {
         assert!(parse_action("scratchpad 0").is_err());
         assert!(parse_action("scratchpad_send 10").is_err());
         assert!(parse_action("scratchpad_send").is_err());
+    }
+
+    #[test]
+    fn every_default_has_a_description_and_a_known_group() {
+        for raw in Action::defaults() {
+            let (group, text) = describe_action(&raw.action);
+            assert!(GROUPS.contains(&group), "{}: group {group}", raw.action);
+            assert!(
+                !text.is_empty() && !text.starts_with("Invalid"),
+                "{}",
+                raw.action
+            );
+            assert!(!text.contains('_'), "{}: {text}", raw.action);
+        }
+    }
+
+    #[test]
+    fn new_keys_are_bound_and_super_period_moved() {
+        let d = Action::defaults();
+        let find = |k: &str| d.iter().find(|r| r.keys == k).map(|r| r.action.as_str());
+        assert_eq!(find("super+slash"), Some("launcher_keys"));
+        assert_eq!(find("super+period"), Some("launcher_emoji"));
+        assert_eq!(find("super+ctrl+c"), Some("shell nirushot pick"));
+        assert_eq!(find("super+alt+period"), Some("focusmon 1"));
+        assert_eq!(find("super+comma"), Some("focusmon -1"));
+        assert_eq!(parse_action("launcher_keys"), Ok(Action::LauncherKeys));
+        assert_eq!(parse_action("launcher_emoji"), Ok(Action::LauncherEmoji));
+    }
+
+    #[test]
+    fn key_labels_read_like_the_keyboard() {
+        assert_eq!(key_label("super+shift+Return"), "Super+Shift+Enter");
+        assert_eq!(key_label("super+slash"), "Super+/");
+        assert_eq!(key_label("super+ctrl+c"), "Super+Ctrl+C");
+        assert_eq!(key_label("XF86AudioMute"), "XF86AudioMute");
+        assert_eq!(key_label("alt+Tab"), "Alt+Tab");
     }
 
     #[test]

@@ -946,6 +946,7 @@ impl Config {
             table.push(RawBinding {
                 keys: user.keys.clone(),
                 action: user.action.clone(),
+                description: user.description.clone(),
             });
         }
         table
@@ -2275,6 +2276,7 @@ mod tests {
             keys: vec![crate::bindings::RawBinding {
                 keys: "super+Tab".into(),
                 action: "shell echo hi".into(),
+                description: None,
             }],
             ..Config::default()
         };
@@ -2293,6 +2295,7 @@ mod tests {
             keys: vec![crate::bindings::RawBinding {
                 keys: "super+x".into(),
                 action: "focus_next".into(),
+                description: None,
             }],
             ..Config::default()
         };

@@ -115,6 +115,9 @@ The most important keys (the full list is in
 | `Super+Shift+P` | Unified launcher: applications, windows, actions and settings |
 | `Super+A` | NIRU Actions |
 | `Super+V` | Clipboard history |
+| `Super+/` | Keybinding cheat sheet: search, run, Ctrl+R asks what a key does |
+| `Super+.` | Emoji and symbol picker |
+| `Super+Ctrl+C` | Pick a color from the screen (`nirushot pick`) |
 | `Alt+Tab` / `Super+grave` | Window switcher / workspace overview |
 | `Super+1…9`, `Super+0` | Select workspace 1…10 |
 | `Super+Shift+1…9`, `Super+Shift+0` | Move window to workspace 1…10 |
@@ -133,6 +136,8 @@ The most important keys (the full list is in
 
 ```sh
 niructl reload                       # reload WM, bar and theme
+niructl keys --json                  # every key in effect, with words (the cheat sheet)
+niructl keys run super+t             # run what a key is bound to
 niructl theme niru-nord              # switch theme
 niructl layout monocle               # this workspace only
 niructl scratchpad 2 toggle
@@ -176,7 +181,7 @@ previous settings in effect.
 | `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
 | `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
 | `[[rules]]` | Window rules: `class`, `workspace`, `floating`, `center`, `sticky`, opacity |
-| `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one |
+| `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one; an optional `description` is shown in the cheat sheet |
 
 ### Scratchpads and focus
 
@@ -212,6 +217,7 @@ Session options (keyboard layout, notification provider, picom, idle) live in
 | `~/.config/niruwm/session.conf` | Session options (shell syntax) |
 | `~/.config/niruwm/displays.toml` | Saved display profiles |
 | `~/.config/niruwm/themes/` | Bundled copies and user themes |
+| `~/.local/share/niru/keys.d/<app>.toml` | Keys other programs grab themselves, for the cheat sheet (see [KEYBINDINGS.md](docs/KEYBINDINGS.md#keys-of-other-programs-keysd)) |
 | `~/.local/bin/niruwm`, `niructl`, `niruidle`, `niruwm-session`, `niruclipboard`, `nirugestured` | Programs |
 | `~/.local/state/niruwm/session.log` | Session and WM log, capped at 8 MB; older lines in `session.log.1`…`.3` |
 | `~/.local/state/niruwm/manifest.tsv` | Files installed by the standalone installer |

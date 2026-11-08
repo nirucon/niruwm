@@ -253,7 +253,7 @@ pub fn build(mut outputs: Vec<(String, Rect, bool)>, cfg: &MonitorConfig) -> (Ve
     if outputs.is_empty() {
         return (Vec::new(), false);
     }
-    // Left-to-right, top-to-bottom, so `Super+,` and `Super+.` move in the
+    // Left-to-right, top-to-bottom, so `Super+,` and `Super+Alt+.` move in the
     // order people see.
     outputs.sort_by_key(|(_, r, _)| (r.y, r.x));
     let count = cfg.workspaces.max(1);

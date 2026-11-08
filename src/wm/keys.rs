@@ -60,7 +60,12 @@ impl Wm {
                 }
                 continue;
             };
-            list.push(Binding { mods, action, code });
+            list.push(Binding {
+                mods,
+                sym,
+                action,
+                code,
+            });
         }
         self.bindings = list;
         Ok(())
@@ -109,6 +114,29 @@ impl Wm {
         self.dispatch(b.action)
     }
 
+    /// The action bound to `mods` + `sym`, to run as if the key were
+    /// pressed (`_NIRUWM_COMMAND` 19, from the cheat sheet's Enter). Only a
+    /// binding in the live table can run this way, so the channel cannot
+    /// start anything the user has not bound, and nothing runs while a lock
+    /// screen holds the keyboard.
+    pub(super) fn bound_action(&self, mods: u32, sym: u32) -> Option<Action> {
+        const MEANINGFUL: u32 = 0x1 | 0x4 | 0x8 | 0x20 | 0x40;
+        if self.keys_released {
+            return None;
+        }
+        let action = self
+            .bindings
+            .iter()
+            .find(|b| b.sym == sym && (b.mods & MEANINGFUL) == (mods & MEANINGFUL))
+            .map(|b| b.action.clone())?;
+        if matches!(action, Action::Quit) {
+            eprintln!(
+                "niruwm: quit requested through _NIRUWM_COMMAND 19 (a bound key run from the cheat sheet); the session ends"
+            );
+        }
+        Some(action)
+    }
+
     pub(super) fn dispatch(&mut self, action: Action) -> Result<bool> {
         let focused = self.focus;
         match action {
@@ -145,6 +173,16 @@ impl Wm {
             Action::LauncherClipboard => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--clipboard".into()]);
+                }
+            }
+            Action::LauncherKeys => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--keys".into()]);
+                }
+            }
+            Action::LauncherEmoji => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--emoji".into()]);
                 }
             }
             Action::LauncherUnified => {
@@ -780,62 +818,7 @@ pub(crate) fn which(name: &str) -> bool {
 
 /// X keysym values for named keys. Only names that cannot be derived from the
 /// keysym table are listed; printable characters use their Latin-1 value.
-pub fn keysym_named(name: &str) -> Option<u32> {
-    let v = match name {
-        "Return" => 0xff0d,
-        "Tab" => 0xff09,
-        "Escape" => 0xff1b,
-        "space" => 0x0020,
-        "grave" => 0x0060,
-        "minus" => 0x002d,
-        "equal" => 0x003d,
-        "comma" => 0x002c,
-        "period" => 0x002e,
-        "slash" => 0x002f,
-        "semicolon" => 0x003b,
-        "apostrophe" => 0x0027,
-        "bracketleft" => 0x005b,
-        "bracketright" => 0x005d,
-        "backslash" => 0x005c,
-        "Left" => 0xff51,
-        "Up" => 0xff52,
-        "Right" => 0xff53,
-        "Down" => 0xff54,
-        "Print" => 0xff61,
-        "BackSpace" => 0xff08,
-        "Delete" => 0xffff,
-        // Hardware keys, from XF86keysym.h. Without these the names resolved
-        // to None and every media key was skipped when the table was built,
-        // so the keys did nothing at all.
-        "XF86AudioMute" => 0x1008ff12,
-        "XF86AudioLowerVolume" => 0x1008ff11,
-        "XF86AudioRaiseVolume" => 0x1008ff13,
-        "XF86AudioPlay" => 0x1008ff14,
-        "XF86AudioStop" => 0x1008ff15,
-        "XF86AudioPrev" => 0x1008ff16,
-        "XF86AudioNext" => 0x1008ff17,
-        "XF86AudioPause" => 0x1008ff31,
-        "XF86AudioMicMute" => 0x1008ffb2,
-        "XF86MonBrightnessUp" => 0x1008ff02,
-        "XF86MonBrightnessDown" => 0x1008ff03,
-        "XF86Display" => 0x1008ff59,
-        _ => {
-            if name.chars().count() == 1 {
-                let c = name.chars().next()?;
-                // X keysyms for printable Latin-1 characters match the code point.
-                u32::from(c)
-            } else {
-                // F1..F35 are contiguous from 0xffbe.
-                let n: u32 = name.strip_prefix('F')?.parse().ok()?;
-                if !(1..=35).contains(&n) {
-                    return None;
-                }
-                0xffbe + (n - 1)
-            }
-        }
-    };
-    Some(v)
-}
+pub use crate::bindings::keysym_named;
 
 /// Compare a saved command with a running process command line.
 ///

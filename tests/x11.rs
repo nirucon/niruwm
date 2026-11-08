@@ -980,7 +980,7 @@ fn niructl_tag_and_root_pointer_motion_follow_the_focused_screen() {
     };
 
     // Focus the right screen, then ask for local workspace 2.
-    run(&["key", "--clearmodifiers", "super+period"]);
+    run(&["key", "--clearmodifiers", "super+alt+period"]);
     wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![10]);
     let output = Command::new(env!("CARGO_BIN_EXE_niructl"))
         .env("XDG_CONFIG_HOME", &dir)
@@ -1902,5 +1902,102 @@ fn a_manager_started_again_after_a_crash_keeps_workspaces_and_scratchpads() {
     c.flush().unwrap();
     message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
     wait(|| second.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server and xdotool"]
+fn cheat_sheet_keys_open_the_launcher_and_run_bound_actions_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("niruwm-keysheet-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n\n[[keys]]\nkeys = \"super+x\"\naction = \"layout monocle\"\ndescription = \"My monocle\"\n",
+    )
+    .unwrap();
+    let log = dir.join("launcher.log");
+    let stub = dir.join("bin/nirulauncher");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LAUNCHER_LOG\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:/usr/bin:/bin", dir.join("bin").display());
+    let _wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", &path)
+            .env("LAUNCHER_LOG", &log)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !text(&c, root, "_NIRUWM_LAYOUT").is_empty());
+    let niructl = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_DATA_HOME", dir.join("data"))
+            .env("PATH", &path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let launched = || std::fs::read_to_string(&log).unwrap_or_default();
+
+    // The new default keys start the launcher views.
+    assert!(Command::new("xdotool")
+        .args(["key", "--clearmodifiers", "super+slash"])
+        .status()
+        .unwrap()
+        .success());
+    wait(|| launched().contains("--keys"));
+    assert!(Command::new("xdotool")
+        .args(["key", "--clearmodifiers", "super+period"])
+        .status()
+        .unwrap()
+        .success());
+    wait(|| launched().contains("--emoji"));
+
+    // Enter in the sheet: run what a key is bound to.
+    let out = niructl(&["keys", "run", "super+x"]);
+    assert!(out.status.success(), "{out:?}");
+    wait(|| text(&c, root, "_NIRUWM_LAYOUT").starts_with("monocle"));
+    let out = niructl(&["keys", "run", "super+t"]);
+    assert!(out.status.success(), "{out:?}");
+    wait(|| text(&c, root, "_NIRUWM_LAYOUT").starts_with("tile"));
+
+    // A key that is not bound is refused by niructl, and the manager ignores
+    // a raw command 19 for it.
+    assert!(!niructl(&["keys", "run", "super+z"]).status.success());
+    message(&c, root, root, "_NIRUWM_COMMAND", [19, 1 << 6, 0x7a, 0, 0]);
+
+    // While a lock screen holds the keyboard nothing runs through 19.
+    message(&c, root, root, "_NIRUWM_LOCK", [1, 0, 0, 0, 0]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [19, 1 << 6, 0x78, 0, 0]);
+    thread::sleep(Duration::from_millis(300));
+    assert!(text(&c, root, "_NIRUWM_LAYOUT").starts_with("tile"));
+    message(&c, root, root, "_NIRUWM_LOCK", [0, 0, 0, 0, 0]);
+    message(&c, root, root, "_NIRUWM_COMMAND", [19, 1 << 6, 0x78, 0, 0]);
+    wait(|| text(&c, root, "_NIRUWM_LAYOUT").starts_with("monocle"));
+
+    // The sheet carries the user's words and marks the entry as config.
+    let out = niructl(&["keys", "--json"]);
+    assert!(out.status.success());
+    let sheet: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let mine = sheet["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["keys"] == "super+x")
+        .unwrap();
+    assert_eq!(mine["description"], "My monocle");
+    assert_eq!(mine["source"], "config");
     std::fs::remove_dir_all(dir).unwrap();
 }
