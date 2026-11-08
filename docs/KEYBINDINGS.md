@@ -27,7 +27,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+A` | NIRU Actions: maintenance, diagnostics, contexts and OpenCode |
 | `Super+S` | Web search: type a phrase, Enter opens it |
 | `Super+V` | Clipboard history |
-| `Super+/` | Keybinding cheat sheet (this list) |
+| `Super+/` / `Super+F1` | Keybinding cheat sheet (this list) |
 | `Super+.` | Emoji and symbol picker |
 | `Super+W` / `Alt+Tab` / `` Super+` `` | Window switcher |
 | `Super+Shift+F` | Open the file manager (pcmanfm) |

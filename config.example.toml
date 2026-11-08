@@ -502,6 +502,12 @@ action = "launcher_search"
 keys = "super+slash"
 action = "launcher_keys"
 
+# The same sheet on a key every layout has. Where "/" is Shift+7 (Swedish,
+# German, …) Super+/ is the workspace 7 key and stays workspace 7.
+[[keys]]
+keys = "super+F1"
+action = "launcher_keys"
+
 # Emoji and symbols (©, →, °, €, typographic quotes). Enter pastes into the
 # window you were using; Shift+Enter only copies.
 [[keys]]

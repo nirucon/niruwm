@@ -442,7 +442,7 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("`Super+J` / `Super+Right` / `Super+Down` | Focus the next window"));
-        assert!(md.contains("| `Super+/` | Keybinding cheat sheet (this list) |"));
+        assert!(md.contains("| `Super+/` / `Super+F1` | Keybinding cheat sheet (this list) |"));
         assert!(md.contains("| `Super+.` | Emoji and symbol picker |"));
         assert!(md.contains("| `Super+Ctrl+C` | Pick a color from the screen and copy it |"));
         assert!(md.find("### Apps and launchers").unwrap() < md.find("### Layouts").unwrap());

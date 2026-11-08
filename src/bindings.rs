@@ -5,6 +5,7 @@
 //! `config.toml` can add or replace any of them without recompiling.
 
 use serde::Deserialize;
+use std::collections::HashMap;
 
 /// What a binding does. Parsed once at load time; the WM matches on this.
 #[derive(Clone, Debug, PartialEq)]
@@ -284,6 +285,10 @@ impl Action {
         // The keybinding cheat sheet (Super+K is focus_prev) and the emoji
         // and symbol picker.
         add("super+slash", "launcher_keys");
+        // The same sheet on a key every layout has: on Swedish, German and
+        // other layouts "/" is Shift+7, so Super+/ is the workspace 7 key and
+        // that one wins (see resolve_codes).
+        add("super+F1", "launcher_keys");
         add("super+period", "launcher_emoji");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
@@ -884,8 +889,93 @@ pub fn key_label(spec: &str) -> String {
     out
 }
 
+#[allow(dead_code)] // used by niruwm, not by niructl, which shares this file
+/// Map each keysym to the key that types it, preferring the lowest shift
+/// level: `7` is level 0 of its key and `slash` level 1 of the same key on a
+/// Swedish layout. `rows` is one keysym list per keycode, from `min_keycode`.
+pub fn keysym_codes(min_keycode: u8, rows: &[&[u32]]) -> HashMap<u32, (u8, usize)> {
+    let mut by_sym: HashMap<u32, (u8, usize)> = HashMap::new();
+    for (i, syms) in rows.iter().enumerate() {
+        let code = (min_keycode as usize + i) as u8;
+        for (level, s) in syms.iter().enumerate() {
+            if *s == 0 {
+                continue;
+            }
+            match by_sym.get(s) {
+                Some(&(_, l)) if l <= level => {}
+                _ => {
+                    by_sym.insert(*s, (code, level));
+                }
+            }
+        }
+    }
+    by_sym
+}
+
+#[allow(dead_code)] // used by niruwm, not by niructl, which shares this file
+/// Bindings are grabbed by keycode, so two keysyms on one key (`7` and
+/// `slash` on a Swedish layout) with the same modifiers are one physical
+/// combination. Keep the binding whose keysym the key types without Shift or
+/// AltGr; on a tie the earlier one. Returns the kept indexes and, for each
+/// dropped one, `(dropped, kept)`.
+pub fn shadowed(resolved: &[(u8, u32, usize)]) -> (Vec<usize>, Vec<(usize, usize)>) {
+    let mut keep: Vec<usize> = Vec::new();
+    let mut dropped = Vec::new();
+    for (i, &(code, mods, level)) in resolved.iter().enumerate() {
+        match keep
+            .iter()
+            .position(|&k| resolved[k].0 == code && resolved[k].1 == mods)
+        {
+            None => keep.push(i),
+            Some(pos) => {
+                let other = keep[pos];
+                if level < resolved[other].2 {
+                    dropped.push((other, i));
+                    keep[pos] = i;
+                } else {
+                    dropped.push((i, other));
+                }
+            }
+        }
+    }
+    keep.sort_unstable();
+    (keep, dropped)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shifted_keysym_never_shadows_the_key_itself() {
+        // Swedish: keycode 16 types 7, Shift+7 types slash; keycode 61 types
+        // minus. US: keycode 16 types 7/ampersand, 61 slash/question.
+        let se: [&[u32]; 2] = [&[0x37, 0x2f, 0x37, 0x2f, 0x7b], &[0x2d, 0x5f]];
+        let codes = keysym_codes(16, &se);
+        assert_eq!(codes[&0x37], (16, 0));
+        assert_eq!(codes[&0x2f], (16, 1));
+        // super+slash (launcher_keys) comes first in the defaults, super+7
+        // later; on Swedish the key must stay workspace 7.
+        let super_ = 1 << 6;
+        let resolved = [(16u8, super_, 1usize), (16, super_, 0), (16, super_ | 1, 0)];
+        let (keep, dropped) = shadowed(&resolved);
+        assert_eq!(keep, vec![1, 2]);
+        assert_eq!(dropped, vec![(0, 1)]);
+        // Same level: the earlier binding wins, as before.
+        let (keep, dropped) = shadowed(&[(20, super_, 0), (20, super_, 0)]);
+        assert_eq!(keep, vec![0]);
+        assert_eq!(dropped, vec![(1, 0)]);
+        // A keysym found on two keys uses the one that types it unshifted.
+        let rows: [&[u32]; 3] = [&[0x31, 0x2f], &[0, 0], &[0x2f, 0x3f]];
+        assert_eq!(keysym_codes(10, &rows)[&0x2f], (12, 0));
+    }
+
+    #[test]
+    fn the_cheat_sheet_has_a_layout_independent_key() {
+        let d = Action::defaults();
+        let find = |k: &str| d.iter().find(|b| b.keys == k).map(|b| b.action.as_str());
+        assert_eq!(find("super+slash"), Some("launcher_keys"));
+        assert_eq!(find("super+F1"), Some("launcher_keys"));
+    }
+
     use super::*;
 
     #[test]

@@ -2001,3 +2001,100 @@ fn cheat_sheet_keys_open_the_launcher_and_run_bound_actions_only() {
     assert_eq!(mine["source"], "config");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore]
+fn a_shifted_symbol_never_takes_over_the_workspace_key() {
+    // Swedish layout: the 7 key types 7, and "/" with Shift. Super+/ was
+    // grabbed on that key without Shift and turned Super+7 into the cheat
+    // sheet. The workspace key must win; Super+F1 opens the sheet anywhere.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("niruwm-se-keys-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::create_dir_all(dir.join("bin")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let log = dir.join("launcher.log");
+    let stub = dir.join("bin/nirulauncher");
+    std::fs::write(
+        &stub,
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$LAUNCHER_LOG\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let min = c.setup().min_keycode;
+    let count = c.setup().max_keycode - min + 1;
+    let map = c.get_keyboard_mapping(min, count).unwrap().reply().unwrap();
+    let per = map.keysyms_per_keycode as usize;
+    let row = |code: u8| map.keysyms[(code - min) as usize * per..][..per].to_vec();
+    // The key that types 7 now, and one with "/" that must not be used.
+    let seven = (min..=c.setup().max_keycode)
+        .find(|&k| row(k).first() == Some(&0x37))
+        .unwrap();
+    let slash = (min..=c.setup().max_keycode).find(|&k| row(k).contains(&0x2f));
+    let saved: Vec<(u8, Vec<u32>)> = std::iter::once(seven)
+        .chain(slash)
+        .map(|k| (k, row(k)))
+        .collect();
+    let set = |code: u8, syms: &[u32]| {
+        let mut full = syms.to_vec();
+        full.resize(per, 0);
+        c.change_keyboard_mapping(1, code, per as u8, &full)
+            .unwrap()
+            .check()
+            .unwrap();
+    };
+    set(seven, &[0x37, 0x2f, 0x37, 0x2f]);
+    if let Some(k) = slash.filter(|&k| k != seven) {
+        set(k, &[0x2d, 0x5f, 0x2d, 0x5f]);
+    }
+    c.flush().unwrap();
+
+    let path = format!("{}:/usr/bin:/bin", dir.join("bin").display());
+    let wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", &path)
+            .env("LAUNCHER_LOG", &log)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| !text(&c, root, "_NIRUWM_LAYOUT").is_empty());
+    let launched = || std::fs::read_to_string(&log).unwrap_or_default();
+    let key = |k: &str| {
+        assert!(Command::new("xdotool")
+            .args(["key", "--clearmodifiers", k])
+            .status()
+            .unwrap()
+            .success());
+    };
+
+    key("super+7");
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![6]);
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        !launched().contains("--keys"),
+        "Super+7 opened the cheat sheet: {}",
+        launched()
+    );
+    key("super+F1");
+    wait(|| launched().contains("--keys"));
+    key("super+1");
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+
+    drop(wm);
+    for (code, syms) in saved {
+        set(code, &syms);
+    }
+    c.flush().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}

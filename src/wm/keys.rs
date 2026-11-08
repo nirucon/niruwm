@@ -15,20 +15,16 @@ impl Wm {
             .reply()?;
         let per = map.keysyms_per_keycode as usize;
 
-        // Build keysym -> keycode using every level of every key.
-        let mut by_sym: HashMap<u32, u8> = HashMap::new();
-        for (i, syms) in map.keysyms.chunks(per).enumerate() {
-            let code = (setup.min_keycode as usize + i) as u8;
-            for s in syms {
-                if *s != 0 {
-                    by_sym.entry(*s).or_insert(code);
-                }
-            }
-        }
+        // Build keysym -> keycode using every level of every key, preferring
+        // the key that types the keysym without Shift or AltGr.
+        let rows: Vec<&[u32]> = map.keysyms.chunks(per.max(1)).collect();
+        let by_sym = bindings::keysym_codes(setup.min_keycode, &rows);
 
         let raw: Vec<RawBinding> = self.cfg.effective_keys();
 
         let mut list = Vec::with_capacity(raw.len());
+        let mut names = Vec::with_capacity(raw.len());
+        let mut levels = Vec::with_capacity(raw.len());
         for r in raw {
             let (mods, key) = match bindings::parse_keys(&r.keys) {
                 Ok(v) => v,
@@ -51,7 +47,7 @@ impl Wm {
                 eprintln!("niruwm: unknown keysym {key:?}");
                 continue;
             };
-            let Some(code) = by_sym.get(&sym).copied() else {
+            let Some((code, level)) = by_sym.get(&sym).copied() else {
                 // Not on this keyboard layout; skip instead of failing the WM.
                 // Media keys are worth naming: when they are missing the user
                 // presses them and nothing happens, with nothing to explain it.
@@ -66,7 +62,25 @@ impl Wm {
                 action,
                 code,
             });
+            names.push(r.keys);
+            levels.push(level);
         }
+        // Two keysyms on one key with the same modifiers are one grab. The
+        // binding for what the key types unshifted wins, so on a Swedish
+        // layout Super+7 stays workspace 7 rather than becoming Super+/.
+        let resolved: Vec<(u8, u32, usize)> = list
+            .iter()
+            .zip(&levels)
+            .map(|(b, &l)| (b.code, b.mods, l))
+            .collect();
+        let (keep, dropped) = bindings::shadowed(&resolved);
+        for (d, k) in dropped {
+            eprintln!(
+                "niruwm: {} is the same key as {} on this keyboard layout; {} is used",
+                names[d], names[k], names[k]
+            );
+        }
+        let list: Vec<Binding> = keep.into_iter().map(|i| list[i].clone()).collect();
         self.bindings = list;
         Ok(())
     }
