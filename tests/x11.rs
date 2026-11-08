@@ -2007,7 +2007,8 @@ fn cheat_sheet_keys_open_the_launcher_and_run_bound_actions_only() {
 fn a_shifted_symbol_never_takes_over_the_workspace_key() {
     // Swedish layout: the 7 key types 7, and "/" with Shift. Super+/ was
     // grabbed on that key without Shift and turned Super+7 into the cheat
-    // sheet. The workspace key must win; Super+F1 opens the sheet anywhere.
+    // sheet. The workspace key must win (Super+F1 is the sheet's key on
+    // every layout; that default is checked by a unit test).
     use std::os::unix::fs::PermissionsExt;
     let dir = std::env::temp_dir().join(format!("niruwm-se-keys-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2126,10 +2127,6 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
             thread::sleep(Duration::from_millis(25));
         }
     };
-    key("super+F1");
-    until("Super+F1 opens the sheet", &|| {
-        launched().contains("--keys")
-    });
     key("super+7");
     until("Super+7 goes to workspace 7", &|| {
         values(&c, root, "_NET_CURRENT_DESKTOP") == vec![6]
