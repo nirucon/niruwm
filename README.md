@@ -51,10 +51,16 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - Studio mode for recording (`niructl studio`): no screen saver, lock or
   popups, picom off and the performance profile while it is on, everything
   put back as it was afterwards; optionally on while REAPER is open.
-- Calendar events in the bar: the bundled NIRUBAR (0.21) shows read-only
+- Calendar events in the bar: the bundled NIRUBAR (0.22) shows read-only
   ICS feeds, such as Google Calendar's secret iCal address, in the clock's
   calendar (day markers, an agenda, click to open the day in the browser).
+  An edited `calendars.toml` takes effect by itself within seconds, or at
+  once with `niructl reload`.
   See the [NIRUBAR docs](https://github.com/nirucon/nirubar/blob/main/docs/CONFIGURATION.md#calendar-events).
+- Bar panels you read (calendar, weather, tasks, pulse, notifications) stay
+  open until dismissed; quick panels keep `popup_timeout_seconds`. Per-panel
+  overrides go in `[popup_timeout]` in `~/.config/nirubar/config.toml`, not in
+  this config ([NIRUBAR docs](https://github.com/nirucon/nirubar/blob/main/docs/CONFIGURATION.md#display-and-panels)).
 - Display profiles that follow screens by EDID identity, with optional
   automatic switching on hotplug and lid events.
 - Shared NIRU themes (ten built in, plus user themes), theme wallpapers per

@@ -370,7 +370,11 @@ separator = "|"
 icons = true
 # Clicking a module opens a small panel with more detail.
 popups = true
-# Seconds before an open panel closes itself. 0 waits for a click or Escape.
+# Seconds before a quick-glance panel (volume, network, battery, ...) closes
+# itself. 0 waits for a click or Escape. Reading panels (clock calendar,
+# weather, tasks, pulse, notifications) always wait for a click or Escape.
+# Per-panel overrides go in NIRUBAR's own ~/.config/nirubar/config.toml,
+# never here:  [popup_timeout]  calendar = 0  volume = 2
 popup_timeout_seconds = 4
 # Characters kept from the media title before an ellipsis.
 media_width = 32
