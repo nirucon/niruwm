@@ -2475,12 +2475,23 @@ fn studio_stubs(dir: &std::path::Path) -> std::path::PathBuf {
             dir = dir.display()
         ),
     );
-    let sleep = ["/usr/bin/sleep", "/bin/sleep"]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .unwrap();
-    std::fs::copy(sleep, bin.join("picom")).unwrap();
+    // This test program itself, called picom: `sleep` can be a coreutils
+    // multi-call binary that refuses another name.
+    std::fs::copy(std::env::current_exe().unwrap(), bin.join("picom")).unwrap();
     bin
+}
+
+/// Arguments that make a copy of this test program named `picom` wait like
+/// a compositor (see `picom_stand_in`).
+const PICOM_ARGS: [&str; 4] = ["picom_stand_in", "--ignored", "--exact", "--quiet"];
+
+#[test]
+#[ignore = "a stand-in process for the studio test; returns at once otherwise"]
+fn picom_stand_in() {
+    let me = std::env::args().next().unwrap_or_default();
+    if me.ends_with("/picom") {
+        thread::sleep(Duration::from_secs(3600));
+    }
 }
 
 /// "picom" processes on this test's display, with their command lines.
@@ -2582,7 +2593,7 @@ fn studio_mode_pauses_and_restores_exactly_and_survives_a_restart() {
     set("power", "balanced");
     let picom = Process(
         Command::new(bin.join("picom"))
-            .arg("3600")
+            .args(PICOM_ARGS)
             .stdout(Stdio::null())
             .spawn()
             .unwrap(),
