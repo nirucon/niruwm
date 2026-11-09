@@ -1257,8 +1257,21 @@ impl Wm {
 
     /// Start an owned program and return its pid, for session matching.
     pub(crate) fn spawn_owned_pid(&mut self, program: &[String]) -> Option<u32> {
+        self.spawn_owned_env(program, &[])
+    }
+
+    /// [`Self::spawn_owned_pid`] with extra environment variables.
+    pub(crate) fn spawn_owned_env(
+        &mut self,
+        program: &[String],
+        env: &[(&str, &str)],
+    ) -> Option<u32> {
         let (cmd, args) = program.split_first()?;
-        match Command::new(cmd).args(args).spawn() {
+        match Command::new(cmd)
+            .args(args)
+            .envs(env.iter().copied())
+            .spawn()
+        {
             Ok(child) => {
                 let pid = child.id();
                 self.children.push(child);

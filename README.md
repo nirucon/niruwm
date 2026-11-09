@@ -161,7 +161,21 @@ niructl display save Desk            # save the current screen layout
 niructl display apply Desk
 niructl timing set screensaver_timeout 20
 niructl explain                      # what is going on with this session
+niructl lock                         # lock: manual in a terminal, silent from scripts/SSH
+niructl lock --silent                # lock without NIRULOCK pause music (rollouts, scripts)
+niructl lock --manual                # lock as if by hand (pause music may play)
 ```
+
+NIRULOCK (0.25+) plays its optional pause music only for a manual lock.
+Each caller tells it why it locks, through `NIRULOCK_REASON` (an older
+NIRULOCK ignores it and locks as before): `Super+Escape` and the launcher's
+lock actions are `manual`; NIRUIDLE is `idle`; the lock before suspend,
+`Super+Shift+Escape` and `niructl suspend` are `suspend`. Plain `niructl lock`
+is `manual` when typed in a terminal (stdin is a TTY) and `script` otherwise,
+so an SSH command, cron job or script never starts music; `--manual`,
+`--silent` (`script`) and `--reason manual|idle|suspend|script|session` say it
+explicitly. A wrong option never prevents the lock: niructl warns and locks
+silently.
 
 The program itself has a few diagnostic options:
 

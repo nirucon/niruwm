@@ -730,6 +730,11 @@ impl Wm {
     ///
     /// Never fails silently: if nothing is installed the user gets a message
     /// instead of a key that appears broken.
+    ///
+    /// A key binding is a manual lock, so NIRULOCK may play its pause music.
+    /// The reason goes in `NIRULOCK_REASON` rather than `--reason`: an older
+    /// NIRULOCK rejects unknown arguments and would not lock at all, while it
+    /// simply ignores the variable (and slock does too).
     fn lock_screen(&mut self) {
         // Absolute paths first. A session started by a display manager does
         // not always have `~/.local/bin` in PATH, and a bare name then fell
@@ -743,7 +748,10 @@ impl Wm {
                 self.command_present(&candidate)
             };
             if present {
-                self.start(std::slice::from_ref(&candidate));
+                self.spawn_owned_env(
+                    std::slice::from_ref(&candidate),
+                    &[(LOCK_REASON_ENV, "manual")],
+                );
                 return;
             }
         }
@@ -762,6 +770,9 @@ impl Wm {
         which(name)
     }
 }
+
+/// Tells NIRULOCK (0.25+) why it was started; see its `--reason`.
+pub(crate) const LOCK_REASON_ENV: &str = "NIRULOCK_REASON";
 
 /// Map a binding's tag number to a zero-based workspace index.
 ///

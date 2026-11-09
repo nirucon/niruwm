@@ -90,7 +90,11 @@ visible for three seconds, verifies that the same lock window is still there
 and only then requests suspend through the login1 API. Repeated presses are
 coalesced, and unlocking during the delay cancels the request. The existing
 lid/sleep inhibitor path in the session keeps its own lock-before-sleep
-behaviour. A legacy
+behaviour (`niructl lock --reason suspend`). Every lock tells NIRULOCK why it
+was started (`NIRULOCK_REASON`: `manual` for `Super+Escape`, `idle` for
+NIRUIDLE, `suspend` before sleep, `script` for `niructl lock --silent` or a
+non-interactive `niructl lock`), and NIRULOCK's pause music plays only for a
+manual lock by default. A legacy
 `~/.config/niruui/screensaver.toml` is still read for any value `[idle]` does
 not set, so an older installation keeps its timing. Notifications use
 NIRUNOTIFY when installed, with Dunst fallback.

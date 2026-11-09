@@ -64,7 +64,7 @@ layout show|save | \
 scratchpad [N] [toggle|show|hide]|send N|unscratch|list [--json] | \
 urgent [list|--json|focus] | swallow on|off|toggle|status | studio on|off|toggle|status | \
 powerprofile status|list|set NAME|next | \
-lock | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
+lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
@@ -530,6 +530,17 @@ fn spawn_action(program: &str, args: &[&str]) -> Result<()> {
         .map_err(|e| format!("cannot start {program}: {e}").into())
 }
 
+/// Start NIRULOCK with its lock reason. The reason goes in `NIRULOCK_REASON`,
+/// not `--reason`: NIRULOCK before 0.25 rejects unknown arguments and would
+/// not lock at all, but ignores the variable.
+fn spawn_locker(program: &str, reason: &str) -> Result<()> {
+    std::process::Command::new(program)
+        .env("NIRULOCK_REASON", reason)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("cannot start {program}: {e}").into())
+}
+
 /// Open the system update action in a real terminal. Package managers need a
 /// TTY for sudo and for conffile prompts, so this intentionally does not run in
 /// the WM process or through a hidden pkexec helper.
@@ -687,7 +698,10 @@ fn power_action(action: &str) -> Result<()> {
 
 fn desktop(action: &str, args: &[String]) -> Result<()> {
     match action {
-        "lock" => lock_action(),
+        "lock" => {
+            let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin());
+            lock_action(lock_reason(args, interactive))
+        }
         "screensaver" => {
             let saver = program("niruscreensaver").ok_or("niruscreensaver is not installed")?;
             // No argument: the screensaver itself, over every monitor.
@@ -897,18 +911,52 @@ fn updated_timing(text: &str, key: &str, minutes: u32) -> Result<String> {
     Ok(rendered)
 }
 
+/// Why `niructl lock` locks, for NIRULOCK's pause music (only `manual`
+/// plays by default).
+const LOCK_REASONS: [&str; 5] = ["manual", "idle", "suspend", "script", "session"];
+
+/// The reason from `niructl lock [--manual | --silent | --reason NAME]`.
+///
+/// Without an option the lock is manual when typed in a terminal and
+/// `script` otherwise (an SSH command, cron, another program), so no
+/// automated lock starts music by accident. A wrong option never prevents
+/// the lock: it is reported and the lock is silent.
+fn lock_reason(args: &[String], interactive: bool) -> &'static str {
+    let mut reason = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let named = match arg.as_str() {
+            "--manual" => Some("manual"),
+            "--silent" => Some("script"),
+            "--reason" => rest.next().map(String::as_str),
+            other => other.strip_prefix("--reason="),
+        };
+        match named.and_then(|n| LOCK_REASONS.into_iter().find(|r| *r == n)) {
+            Some(r) => reason = Some(r),
+            None => {
+                eprintln!(
+                    "niructl: lock: ignoring {arg:?} (use --manual, --silent or --reason {}); locking silently",
+                    LOCK_REASONS.join("|")
+                );
+                return "script";
+            }
+        }
+    }
+    reason.unwrap_or(if interactive { "manual" } else { "script" })
+}
+
 /// Lock and, for NIRULOCK, wait for verified readiness before returning.
 ///
 /// `slock` has no readiness contract, so it is still usable interactively but
 /// cannot be used as proof that a suspend is safe.
-fn lock_action() -> Result<()> {
+fn lock_action(reason: &str) -> Result<()> {
     let (c, s) = x11rb::connect(None)?;
     let root = c.setup().roots[s].root;
     if ready_lock(&c, root).is_some() {
         return Ok(());
     }
     if let Some(locker) = program("nirulock") {
-        spawn_action(&locker, &[])?;
+        spawn_locker(&locker, reason)?;
         wait_ready_lock(&c, root)?;
         return Ok(());
     }
@@ -963,7 +1011,7 @@ fn ensure_lock_ready() -> Result<(x11rb::rust_connection::RustConnection, Window
     }
     let locker = program("nirulock")
         .ok_or("cannot lock before suspend: install nirulock (slock cannot confirm readiness)")?;
-    spawn_action(&locker, &[])?;
+    spawn_locker(&locker, "suspend")?;
     let window = wait_ready_lock(&c, root)?;
     Ok((c, root, window))
 }
@@ -10145,6 +10193,43 @@ screensaver_timeout = 15
 #[cfg(test)]
 mod action_tests {
     use super::{human_bytes, scan_size, InputConfig, KeyboardInput, PointerInput};
+
+    fn lock_args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn a_lock_typed_in_a_terminal_is_manual_and_a_scripted_one_is_silent() {
+        assert_eq!(super::lock_reason(&[], true), "manual");
+        assert_eq!(super::lock_reason(&[], false), "script");
+    }
+
+    #[test]
+    fn lock_options_name_the_reason() {
+        use super::lock_reason;
+        assert_eq!(lock_reason(&lock_args(&["--manual"]), false), "manual");
+        assert_eq!(lock_reason(&lock_args(&["--silent"]), true), "script");
+        assert_eq!(lock_reason(&lock_args(&["--reason", "idle"]), true), "idle");
+        assert_eq!(
+            lock_reason(&lock_args(&["--reason=suspend"]), true),
+            "suspend"
+        );
+        assert_eq!(
+            lock_reason(&lock_args(&["--manual", "--silent"]), true),
+            "script"
+        );
+    }
+
+    #[test]
+    fn a_wrong_lock_option_still_locks_silently() {
+        use super::lock_reason;
+        assert_eq!(
+            lock_reason(&lock_args(&["--reason", "party"]), true),
+            "script"
+        );
+        assert_eq!(lock_reason(&lock_args(&["--reason"]), true), "script");
+        assert_eq!(lock_reason(&lock_args(&["--loud"]), true), "script");
+    }
     use std::fs;
 
     #[test]

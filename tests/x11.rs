@@ -363,6 +363,87 @@ fn window_lifecycle_tags_fullscreen_and_ownership() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The lock key is a manual lock; `niructl lock` from a script is silent
+/// unless it says `--manual`. A stand-in NIRULOCK records NIRULOCK_REASON.
+#[test]
+#[ignore = "requires isolated X server and xdotool"]
+fn lock_reasons_reach_the_locker() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("niruwm-lock-reason-{}", std::process::id()));
+    let bin = dir.join("home/.local/bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(dir.join("config/niruwm")).unwrap();
+    std::fs::write(
+        dir.join("config/niruwm/config.toml"),
+        "[bar]\nenabled = false\n",
+    )
+    .unwrap();
+    let log = dir.join("reasons");
+    std::fs::write(
+        bin.join("nirulock"),
+        format!(
+            "#!/bin/sh\nprintf '%s %s\\n' \"${{NIRULOCK_REASON:-none}}\" \"$*\" >> '{}'\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(bin.join("nirulock"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let reasons = || std::fs::read_to_string(&log).unwrap_or_default();
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let _wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("HOME", dir.join("home"))
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("PATH", &path)
+            .env_remove("NIRULOCK_REASON")
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    assert!(Command::new("xdotool")
+        .args(["key", "super+Escape"])
+        .status()
+        .unwrap()
+        .success());
+    wait(|| reasons().lines().count() == 1);
+    // The reason travels in the environment: an older NIRULOCK rejects
+    // unknown arguments, so none are passed.
+    assert_eq!(reasons(), "manual \n");
+    // The stand-in never publishes readiness, so each niructl call ends with
+    // an error after its wait; only the recorded reason matters here.
+    for (args, want) in [
+        (&["lock"][..], "script"),
+        (&["lock", "--silent"][..], "script"),
+        (&["lock", "--manual"][..], "manual"),
+        (&["lock", "--reason", "session"][..], "session"),
+    ] {
+        let before = reasons().lines().count();
+        let _ = Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .args(args)
+            .env("HOME", dir.join("home"))
+            .env("PATH", &path)
+            .env_remove("NIRULOCK_REASON")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        let lines = reasons();
+        assert_eq!(lines.lines().count(), before + 1, "{args:?}");
+        assert_eq!(
+            lines.lines().last(),
+            Some(format!("{want} ").as_str()),
+            "{args:?}"
+        );
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 #[ignore = "requires isolated X server and xdotool"]
 fn partial_key_overrides_preserve_defaults_and_helpers_are_reaped() {

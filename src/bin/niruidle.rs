@@ -182,6 +182,19 @@ fn spawn(program: &str) -> Option<Child> {
         .ok()
 }
 
+/// The idle lock: NIRULOCK must not start its pause music for it. The reason
+/// is passed in the environment, which an older NIRULOCK and slock ignore,
+/// instead of `--reason`, which an older NIRULOCK would refuse.
+fn spawn_locker(program: &str) -> Option<Child> {
+    Command::new(program)
+        .env("NIRULOCK_REASON", "idle")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| eprintln!("niruidle: cannot start {program}: {e}"))
+        .ok()
+}
+
 fn stop_saver(child: &mut Option<Child>) {
     if let Some(mut child) = child.take() {
         let _ = child.kill();
@@ -497,7 +510,7 @@ fn main() {
             stop_saver(&mut saver_child);
             if let Some(l) = &locker {
                 eprintln!("niruidle: idle {idle}s: lock");
-                locker_child = spawn(l);
+                locker_child = spawn_locker(l);
                 retry_lock_at = Instant::now() + POLL;
             }
         }
@@ -517,6 +530,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_idle_lock_tells_nirulock_it_is_not_manual() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("niruidle-reason-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("reason");
+        let locker = dir.join("nirulock");
+        std::fs::write(
+            &locker,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$NIRULOCK_REASON\" > '{}'\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&locker, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut child = spawn_locker(locker.to_str().unwrap()).unwrap();
+        assert!(child.wait().unwrap().success());
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "idle");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn saver_is_waited_and_cannot_leave_a_zombie() {
