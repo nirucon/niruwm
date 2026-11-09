@@ -126,6 +126,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Print` | Screenshot of a region, then review |
 | `Super+Shift+Print` | Screenshot of the active window, then review |
 | `Super+Ctrl+C` | Pick a color from the screen and copy it |
+| `Super+Ctrl+O` | Copy the text in a screen region (OCR) |
 
 ### Hardware keys
 

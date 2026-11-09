@@ -129,6 +129,7 @@ The most important keys (the full list is in
 | `Super+.` | Emoji and symbol picker |
 | `Super+O` | Find files in the home folder |
 | `Super+Ctrl+C` | Pick a color from the screen (`nirushot pick`) |
+| `Super+Ctrl+O` | Copy the text in a screen region (`nirushot ocr`) |
 | `Alt+Tab` / `Super+grave` | Window switcher / workspace overview |
 | `Super+1…9`, `Super+0` | Select workspace 1…10 |
 | `Super+Shift+1…9`, `Super+Shift+0` | Move window to workspace 1…10 |

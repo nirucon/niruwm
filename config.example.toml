@@ -561,6 +561,11 @@ action = "launcher_files"
 keys = "super+ctrl+c"
 action = "shell nirushot pick"
 
+# Copy the text in a screen region (OCR with tesseract, Swedish and English).
+[[keys]]
+keys = "super+ctrl+o"
+action = "shell nirushot ocr"
+
 # Remember every open window (workspace, screen, floating) so the next login
 # can start them again. Logging out saves too. Needs `restore_session = true`
 # at the top of the file to bring them back.

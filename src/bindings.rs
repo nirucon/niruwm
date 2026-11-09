@@ -324,6 +324,8 @@ impl Action {
         add("super+shift+Print", "shell nirushot --window");
         // Colour picker: a frozen frame with a loupe; the colour is copied.
         add("super+ctrl+c", "shell nirushot pick");
+        // Text from a screen region (OCR, NIRUSHOT 0.7); the text is copied.
+        add("super+ctrl+o", "shell nirushot ocr");
 
         // ── Hardware media keys ──────────────────────────────────────────
         // Bound without a modifier, as they are on a laptop keyboard. They
@@ -681,6 +683,10 @@ fn describe_shell(command: &str) -> Option<(&'static str, &'static str)> {
         "nirushot pick" => (
             "Screenshots and color",
             "Pick a color from the screen and copy it",
+        ),
+        "nirushot ocr" => (
+            "Screenshots and color",
+            "Copy the text in a screen region (OCR)",
         ),
         _ => return None,
     })
@@ -1102,6 +1108,7 @@ mod tests {
         assert_eq!(find("super+slash"), Some("launcher_keys"));
         assert_eq!(find("super+period"), Some("launcher_emoji"));
         assert_eq!(find("super+ctrl+c"), Some("shell nirushot pick"));
+        assert_eq!(find("super+ctrl+o"), Some("shell nirushot ocr"));
         assert_eq!(find("super+alt+period"), Some("focusmon 1"));
         assert_eq!(find("super+comma"), Some("focusmon -1"));
         assert_eq!(parse_action("launcher_keys"), Ok(Action::LauncherKeys));
