@@ -130,6 +130,7 @@ The most important keys (the full list is in
 | `Super+A` | NIRU Actions |
 | `Super+V` | Clipboard history |
 | `Super+/` or `Super+F1` | Keybinding cheat sheet: search, run, Ctrl+R asks what a key does. On layouts where "/" is Shift+7 (Swedish, German, …) Super+/ is the workspace 7 key, so use Super+F1 there |
+| `Super+Shift+F1` | The NIRUX manual: search chapters and headings, Enter opens the section |
 | `Super+.` | Emoji and symbol picker |
 | `Super+O` | Find files in the home folder |
 | `Super+Ctrl+C` | Pick a color from the screen (`nirushot pick`) |

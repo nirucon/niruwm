@@ -29,6 +29,8 @@ pub enum Action {
     LauncherEmoji,
     /// File search (`nirulauncher --files`).
     LauncherFiles,
+    /// The NIRUX manual (`nirulauncher --manual`, NIRU Launcher 0.10).
+    LauncherManual,
     /// Lock the screen with the first available locker.
     Lock,
     /// Lock, wait for verified readiness, then suspend the machine.
@@ -298,6 +300,9 @@ impl Action {
         // other layouts "/" is Shift+7, so Super+/ is the workspace 7 key and
         // that one wins (see resolve_codes).
         add("super+F1", "launcher_keys");
+        // The NIRUX manual, next to the cheat sheet (Super+Shift+/ is
+        // Super+Shift+7 on Swedish and other layouts).
+        add("super+shift+F1", "launcher_manual");
         add("super+period", "launcher_emoji");
         // File search: Super+O as in "open"; free by default.
         add("super+o", "launcher_files");
@@ -497,6 +502,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher_keys" => Action::LauncherKeys,
         "launcher_emoji" => Action::LauncherEmoji,
         "launcher_files" => Action::LauncherFiles,
+        "launcher_manual" => Action::LauncherManual,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,
         "window_switcher" => Action::WindowSwitcher,
@@ -744,6 +750,7 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::LauncherKeys => s(apps, "Keybinding cheat sheet (this list)"),
         Action::LauncherEmoji => s(apps, "Emoji and symbol picker"),
         Action::LauncherFiles => s(apps, "Find files in the home folder"),
+        Action::LauncherManual => s(apps, "The NIRUX manual (search and read)"),
         Action::WindowSwitcher => s(apps, "Window switcher"),
         Action::Start(cmd) => {
             if cmd.trim() == "pcmanfm" {
@@ -832,11 +839,11 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
             tags,
             format!("{} workspace", if d < 0 { "Previous" } else { "Next" }),
         ),
-        Action::ToggleTag(n) => (tags, format!("Show workspace {n} too (toggle)")),
+        Action::ToggleTag(n) => (tags, format!("Go to workspace {n}")),
         Action::MoveToTag(n) => (tags, format!("Move the window to workspace {n}")),
         Action::ToggleMoveToTag(n) => (
             tags,
-            format!("Put the window on workspace {n} too (toggle)"),
+            format!("Move the window to workspace {n} and follow it"),
         ),
         Action::MoveFloat(dx, dy) => (float, format!("Move a floating window {}", arrow(dx, dy))),
         Action::ResizeFloat(dx, dy) => (
@@ -1115,6 +1122,8 @@ mod tests {
         assert_eq!(parse_action("launcher_emoji"), Ok(Action::LauncherEmoji));
         assert_eq!(find("super+o"), Some("launcher_files"));
         assert_eq!(parse_action("launcher_files"), Ok(Action::LauncherFiles));
+        assert_eq!(find("super+shift+F1"), Some("launcher_manual"));
+        assert_eq!(parse_action("launcher_manual"), Ok(Action::LauncherManual));
     }
 
     #[test]

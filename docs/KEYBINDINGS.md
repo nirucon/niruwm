@@ -28,6 +28,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+S` | Web search: type a phrase, Enter opens it |
 | `Super+V` | Clipboard history |
 | `Super+/` / `Super+F1` | Keybinding cheat sheet (this list) |
+| `Super+Shift+F1` | The NIRUX manual (search and read) |
 | `Super+.` | Emoji and symbol picker |
 | `Super+O` | Find files in the home folder |
 | `Super+W` / `Alt+Tab` / `` Super+` `` | Window switcher |
@@ -102,8 +103,8 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Shift+Tab` | Previous workspace |
 | `Super+1…9` / `Super+0` | Go to workspace 1…9 / 10 |
 | `Super+Shift+1…9` / `Super+Shift+0` | Move the window to workspace 1…9 / 10 |
-| `Super+Ctrl+1…9` / `Super+Ctrl+0` | Show workspace 1…9 / 10 too (toggle) |
-| `Super+Ctrl+Shift+1…9` / `Super+Ctrl+Shift+0` | Put the window on workspace 1…9 / 10 too (toggle) |
+| `Super+Ctrl+1…9` / `Super+Ctrl+0` | Go to workspace 1…9 / 10 |
+| `Super+Ctrl+Shift+1…9` / `Super+Ctrl+Shift+0` | Move the window to workspace 1…9 / 10 and follow it |
 
 ### Floating windows
 

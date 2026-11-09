@@ -483,7 +483,7 @@ hide_on_focus_loss = false
 #   terminal, terminal_alt, browser, launcher, launcher_unified,
 #   launcher_actions, launcher_search, launcher_clipboard,
 #   launcher_keys (cheat sheet), launcher_emoji (emoji and symbols),
-#   launcher_files (file search),
+#   launcher_files (file search), launcher_manual (the NIRUX manual),
 #   window_switcher, lock, start CMD, shell CMD,
 #   focus_next, focus_prev, move_next, move_prev,
 #   tag N, movetotag N, toggletag N, togglemovetotag N, tag_next, tag_prev,
