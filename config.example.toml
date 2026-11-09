@@ -466,6 +466,7 @@ hide_on_focus_loss = false
 #   terminal, terminal_alt, browser, launcher, launcher_unified,
 #   launcher_actions, launcher_search, launcher_clipboard,
 #   launcher_keys (cheat sheet), launcher_emoji (emoji and symbols),
+#   launcher_files (file search),
 #   window_switcher, lock, start CMD, shell CMD,
 #   focus_next, focus_prev, move_next, move_prev,
 #   tag N, movetotag N, toggletag N, togglemovetotag N, tag_next, tag_prev,
@@ -530,6 +531,12 @@ action = "launcher_keys"
 [[keys]]
 keys = "super+period"
 action = "launcher_emoji"
+
+# Find files in the home folder (recent files first). Enter opens the file,
+# Ctrl+Enter its folder. Also "/" in the launcher.
+[[keys]]
+keys = "super+o"
+action = "launcher_files"
 
 # Pick a color from the screen; the color is copied as hex.
 [[keys]]

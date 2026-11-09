@@ -29,6 +29,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+V` | Clipboard history |
 | `Super+/` / `Super+F1` | Keybinding cheat sheet (this list) |
 | `Super+.` | Emoji and symbol picker |
+| `Super+O` | Find files in the home folder |
 | `Super+W` / `Alt+Tab` / `` Super+` `` | Window switcher |
 | `Super+Shift+F` | Open the file manager (pcmanfm) |
 

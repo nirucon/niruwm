@@ -27,6 +27,8 @@ pub enum Action {
     LauncherKeys,
     /// The emoji and symbol picker (`nirulauncher --emoji`).
     LauncherEmoji,
+    /// File search (`nirulauncher --files`).
+    LauncherFiles,
     /// Lock the screen with the first available locker.
     Lock,
     /// Lock, wait for verified readiness, then suspend the machine.
@@ -295,6 +297,8 @@ impl Action {
         // that one wins (see resolve_codes).
         add("super+F1", "launcher_keys");
         add("super+period", "launcher_emoji");
+        // File search: Super+O as in "open"; free by default.
+        add("super+o", "launcher_files");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
@@ -488,6 +492,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher_clipboard" => Action::LauncherClipboard,
         "launcher_keys" => Action::LauncherKeys,
         "launcher_emoji" => Action::LauncherEmoji,
+        "launcher_files" => Action::LauncherFiles,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,
         "window_switcher" => Action::WindowSwitcher,
@@ -729,6 +734,7 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::LauncherClipboard => s(apps, "Clipboard history"),
         Action::LauncherKeys => s(apps, "Keybinding cheat sheet (this list)"),
         Action::LauncherEmoji => s(apps, "Emoji and symbol picker"),
+        Action::LauncherFiles => s(apps, "Find files in the home folder"),
         Action::WindowSwitcher => s(apps, "Window switcher"),
         Action::Start(cmd) => {
             if cmd.trim() == "pcmanfm" {
@@ -1093,6 +1099,8 @@ mod tests {
         assert_eq!(find("super+comma"), Some("focusmon -1"));
         assert_eq!(parse_action("launcher_keys"), Ok(Action::LauncherKeys));
         assert_eq!(parse_action("launcher_emoji"), Ok(Action::LauncherEmoji));
+        assert_eq!(find("super+o"), Some("launcher_files"));
+        assert_eq!(parse_action("launcher_files"), Ok(Action::LauncherFiles));
     }
 
     #[test]

@@ -124,6 +124,7 @@ The most important keys (the full list is in
 | `Super+V` | Clipboard history |
 | `Super+/` or `Super+F1` | Keybinding cheat sheet: search, run, Ctrl+R asks what a key does. On layouts where "/" is Shift+7 (Swedish, German, …) Super+/ is the workspace 7 key, so use Super+F1 there |
 | `Super+.` | Emoji and symbol picker |
+| `Super+O` | Find files in the home folder |
 | `Super+Ctrl+C` | Pick a color from the screen (`nirushot pick`) |
 | `Alt+Tab` / `Super+grave` | Window switcher / workspace overview |
 | `Super+1…9`, `Super+0` | Select workspace 1…10 |

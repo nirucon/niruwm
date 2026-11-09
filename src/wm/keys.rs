@@ -199,6 +199,11 @@ impl Wm {
                     self.start(&["nirulauncher".into(), "--emoji".into()]);
                 }
             }
+            Action::LauncherFiles => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--files".into()]);
+                }
+            }
             Action::LauncherUnified => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--actions".into()]);

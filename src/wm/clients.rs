@@ -776,10 +776,29 @@ impl Wm {
         // window, which takes the focus, and then the scratchpad goes up
         // again, which is a crossing back. That loop ran on othala between a
         // terminal and the nirunote scratchpad.
-        let mut group = vec![w];
-        group.extend(self.visible_descendants(w));
+        //
+        // A tiled window stays in the tiled layer. Raising it to the very top
+        // put it over floating windows: a NIRUSHOT review window or an
+        // Open/Save dialog of another window that overlapped two tiles ended
+        // up half under the tile the pointer crossed into and half over the
+        // other one. The tile goes directly below the lowest floating window
+        // instead, and only its own dialogs go to the top.
+        let dialogs = self.visible_descendants(w);
         let ceiling = self.scratch_ceiling(w);
-        self.stack_group(&group, ceiling)?;
+        let tiled = self
+            .clients
+            .iter()
+            .find(|c| c.win == w)
+            .is_some_and(|c| !c.floating && !c.fullscreen);
+        if tiled {
+            let floor = self.lowest_floating(w, &dialogs)?;
+            self.stack_group(&[w], floor.or(ceiling))?;
+            self.stack_group(&dialogs, ceiling)?;
+        } else {
+            let mut group = vec![w];
+            group.extend(dialogs);
+            self.stack_group(&group, ceiling)?;
+        }
         if take_focus {
             // ICCCM: the client asked for focus messages and may keep
             // input focus itself (e.g. Java, some input methods).
@@ -863,6 +882,24 @@ impl Wm {
             return None;
         }
         Some(shown)
+    }
+
+    /// The bottom-most managed floating or fullscreen window in the real X
+    /// stacking order, leaving out `w` and `skip` (its own dialogs). A tile
+    /// that takes the focus goes directly below it, so every floating window
+    /// stays above the tiles, as `arrange()` stacks them. Unmapped windows
+    /// count too: stacking below a sibling is valid whether it is mapped or
+    /// not, and the next `arrange()` orders them again when they are shown.
+    fn lowest_floating(&self, w: Window, skip: &[Window]) -> Result<Option<Window>> {
+        let children = self.c.query_tree(self.root)?.reply()?.children;
+        Ok(children.into_iter().find(|&child| {
+            child != w
+                && !skip.contains(&child)
+                && self
+                    .clients
+                    .iter()
+                    .any(|c| c.win == child && (c.floating || c.fullscreen))
+        }))
     }
 
     /// Put `group` on top of the stack in this order (the last one topmost)

@@ -2374,3 +2374,62 @@ fn urgent_windows_are_marked_and_the_attention_key_goes_to_them() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn focusing_a_tile_keeps_floating_windows_and_dialogs_above_it() {
+    // A tile that took the focus (here under the pointer) used to go to the
+    // very top, over a floating window spanning two tiles (NIRUSHOT's review
+    // window) and over another window's Open/Save dialog: half under one
+    // tile, half over the other.
+    let dir = std::env::temp_dir().join(format!("niruwm-tile-stack-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "[[rules]]\nclass = \"floaty\"\nfloating = true\n");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let a = create(&c, root, b"tile-a\0Tile\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    let b = create(&c, root, b"tile-b\0Tile\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    let f = create(&c, root, b"floaty\0Floaty\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![f]);
+    let d = create_dialog(&c, root, b"tile-a\0Tile\0", a, false);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![d]);
+    wait(|| above(&c, root, f, a) && above(&c, root, f, b) && above(&c, root, d, a));
+
+    // A point near the bottom of a tile, away from the floating window and
+    // the dialog in the top-left area.
+    let spot = |w| {
+        let g = geometry(&c, w);
+        (g.0 + g.2 as i16 / 2, g.1 + g.3 as i16 - 12)
+    };
+    for _ in 0..3 {
+        // b first: the pointer may already be inside a, and moving within a
+        // window is no crossing. A tile with an open dialog may hand the
+        // focus to that dialog; either way the tile itself must stay below.
+        for t in [b, a] {
+            let (x, y) = spot(t);
+            warp(&c, root, x, y);
+            wait(|| {
+                let active = values(&c, root, "_NET_ACTIVE_WINDOW");
+                active == vec![t] || (t == a && active == vec![d])
+            });
+            thread::sleep(Duration::from_millis(80));
+            assert!(
+                above(&c, root, f, t),
+                "the focused tile went over the floating window"
+            );
+            assert!(above(&c, root, d, t), "the focused tile went over a dialog");
+        }
+    }
+    // The tile's own dialog stays above it.
+    assert!(above(&c, root, d, a));
+
+    for w in [d, f, b, a] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
