@@ -48,6 +48,9 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - Window rules for floating, centering, workspace, sticky and compositor opacity.
 - Session save/restore, autostart, workspace recipes and focus/presentation
   modes through `niructl`.
+- Studio mode for recording (`niructl studio`): no screen saver, lock or
+  popups, picom off and the performance profile while it is on, everything
+  put back as it was afterwards; optionally on while REAPER is open.
 - Display profiles that follow screens by EDID identity, with optional
   automatic switching on hotplug and lid events.
 - Shared NIRU themes (ten built in, plus user themes), theme wallpapers per
@@ -152,6 +155,7 @@ niructl layout monocle               # this workspace only
 niructl scratchpad 2 toggle
 niructl urgent                       # windows that asked for attention; `urgent focus` goes there
 niructl swallow off                  # window swallowing for this session (on|off|toggle|status)
+niructl studio on                    # studio mode: no saver/lock/popups, picom off, performance
 niructl bar bottom
 niructl display save Desk            # save the current screen layout
 niructl display apply Desk
@@ -192,6 +196,7 @@ previous settings in effect.
 | `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
 | `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
 | `[swallow]` | Window swallowing: `enabled` (default `true`), `terminals`, `exclude` |
+| `[studio]` | Studio mode: `idle`, `dnd`, `compositor` (default `true`), `power_profile` (`performance`), `auto_enable` (`false`), `daw_classes` (`["REAPER"]`) |
 | `[[rules]]` | Window rules: `class`, `workspace`, `floating`, `center`, `sticky`, opacity |
 | `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one; an optional `description` is shown in the cheat sheet |
 
@@ -237,6 +242,26 @@ border and its workspace cell in NIRUBAR take the theme's attention colour.
 switching screen and workspace or showing its scratchpad; the focus clears
 the mark. Activation requests (`_NET_ACTIVE_WINDOW`) from pagers, window
 switchers and notifications are always honoured, so they never need a mark.
+
+### Studio mode
+
+One switch for recording sessions: `niructl studio on|off|toggle|status`, the
+`studio_toggle` key action, or *Studio mode* in the launcher. While it is on
+the screen saver, idle lock and display-off wait (for this session only),
+Do Not Disturb is on, picom is stopped and the power profile is
+`performance`; NIRUBAR shows *studio*. Off puts back exactly what it changed:
+DND that was already on stays on, a compositor that was not running is not
+started, a power profile you changed meanwhile is kept. The state lives on the
+X root window, so it survives a window manager restart and ends with the
+session; a logout can never leave the machine without its idle lock.
+`[studio]` chooses the items, the profile, and whether a DAW window (REAPER)
+turns it on by itself (`auto_enable`, default off).
+
+```toml
+[studio]
+power_profile = "performance"   # "keep" leaves it alone
+auto_enable = false             # true: REAPER opening turns it on
+```
 
 The default workspace labels are numbers 1–10; to use icons or names, edit
 `[bar] tags` using the presets commented in the example. After editing, press

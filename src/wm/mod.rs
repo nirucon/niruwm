@@ -179,6 +179,9 @@ pub(crate) struct PendingWindow {
 /// Starting one child per event lets a key storm fill the process table. The
 /// pool keeps at most `limit` helpers, and a key already running is not started
 /// twice; the next press works as soon as the first helper returns.
+/// How long auto studio mode waits after the last DAW window closed.
+pub(crate) const STUDIO_AUTO_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+
 pub(crate) struct HelperPool {
     running: HashMap<String, Child>,
     limit: usize,
@@ -316,6 +319,15 @@ pub(crate) struct Wm {
     /// Terminals found swallowed while windows are adopted after a restart:
     /// (terminal, the window that swallowed it).
     pub(crate) swallow_adopted: Vec<(Window, Window)>,
+    /// Managed DAW windows (`[studio] daw_classes`) while `auto_enable` is
+    /// on: the first one turns studio mode on, the last one off.
+    pub(crate) studio_daws: HashSet<Window>,
+    /// A DAW window asked for studio mode (`niructl studio on --auto`).
+    pub(crate) studio_auto: bool,
+    /// When to turn auto studio mode off: the last DAW window closed, and
+    /// none came back for `STUDIO_AUTO_GRACE` (a splash screen that closes
+    /// before the main window opens must not flip it off and on).
+    pub(crate) studio_off_at: Option<std::time::Instant>,
     /// Window to focus once restore has settled, with its saved screen/workspace.
     pub(crate) restore_focus: Option<(Window, usize, u32)>,
     /// Entries still waiting for a mapped window.
@@ -442,6 +454,7 @@ impl Wm {
             "_NIRUWM_URGENT",
             "_NIRUWM_SWALLOW",
             "_NIRUWM_SWALLOWED_BY",
+            "_NIRUWM_STUDIO",
             "_NET_WM_STATE_MODAL",
             "_NET_WM_WINDOW_OPACITY",
             "_NIRUWM_WALLPAPER_STATE",
@@ -500,6 +513,9 @@ impl Wm {
             urgent_counter: 0,
             swallow_enabled: true,
             swallow_adopted: Vec::new(),
+            studio_daws: HashSet::new(),
+            studio_auto: false,
+            studio_off_at: None,
             restore_focus: None,
             restore_remaining: 0,
             restore_deadline: None,
@@ -518,6 +534,7 @@ impl Wm {
             wm.cfg.swallow.enabled
         };
         wm.announce()?;
+        wm.publish_studio_support();
         wm.resolve_bindings()?;
         wm.grab()?;
         let existing = wm.c.query_tree(root)?.reply()?.children;
@@ -1281,6 +1298,93 @@ impl Wm {
                 Ok(child) => self.children.push(child),
                 Err(e) => eprintln!("niruwm: cannot start {cmd}: {e}"),
             }
+        }
+    }
+
+    /// `_NIRUWM_STUDIO` on the root says this session has studio mode. It is
+    /// published "off" when absent; a value already there (a manager started
+    /// again after a crash) is kept, so studio mode survives the restart.
+    /// `niructl studio` owns the value from then on.
+    pub(crate) fn publish_studio_support(&self) {
+        let atom = self.atom("_NIRUWM_STUDIO");
+        let present = self
+            .c
+            .get_property(false, self.root, atom, AtomEnum::ANY, 0, 4)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| reply.type_ != 0);
+        if !present {
+            let _ = self.c.change_property8(
+                PropMode::REPLACE,
+                self.root,
+                atom,
+                self.atom("UTF8_STRING"),
+                b"off",
+            );
+        }
+    }
+
+    /// A managed window appeared: the first DAW window turns studio mode on
+    /// when `[studio] auto_enable` is set. Windows adopted after a restart
+    /// are counted but do not turn it on again; closing them still turns an
+    /// automatic studio mode off (niructl only does that when a DAW window
+    /// turned it on).
+    pub(crate) fn studio_window_added(&mut self, w: Window, class: &str) {
+        if !self.cfg.studio.auto_enable || !self.cfg.studio.is_daw(class) {
+            return;
+        }
+        if !self.studio_daws.insert(w) {
+            return;
+        }
+        self.studio_off_at = None;
+        if self.studio_auto {
+            return;
+        }
+        self.studio_auto = true;
+        if !self.adopting {
+            self.spawn_helper(
+                "studio-auto-on",
+                &[
+                    "niructl".into(),
+                    "studio".into(),
+                    "on".into(),
+                    "--auto".into(),
+                    "--quiet".into(),
+                ],
+            );
+        }
+    }
+
+    /// A managed window went away: once the last DAW window has been gone
+    /// for `STUDIO_AUTO_GRACE`, `studio_tick` turns auto studio mode off.
+    pub(crate) fn studio_window_removed(&mut self, w: Window) {
+        if self.studio_daws.remove(&w) && self.studio_daws.is_empty() && self.studio_auto {
+            self.studio_off_at = Some(std::time::Instant::now() + STUDIO_AUTO_GRACE);
+        }
+    }
+
+    /// Called once a second from the event loop.
+    pub(crate) fn studio_tick(&mut self) {
+        let Some(at) = self.studio_off_at else {
+            return;
+        };
+        if std::time::Instant::now() < at || !self.studio_daws.is_empty() {
+            return;
+        }
+        let started = self.spawn_helper(
+            "studio-auto-off",
+            &[
+                "niructl".into(),
+                "studio".into(),
+                "off".into(),
+                "--auto".into(),
+                "--quiet".into(),
+            ],
+        );
+        // A busy helper pool tries again on the next tick.
+        if started {
+            self.studio_off_at = None;
+            self.studio_auto = false;
         }
     }
 

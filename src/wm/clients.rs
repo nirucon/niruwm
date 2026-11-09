@@ -577,6 +577,7 @@ impl Wm {
             self.set_focus(w)?;
         }
         self.arrange()?;
+        self.studio_window_added(w, &class);
         // A window may ask for attention before it maps (or, adopted after a
         // restart, still carry the request).
         self.note_attention(w)?;
@@ -599,6 +600,7 @@ impl Wm {
     }
 
     pub(crate) fn unmanage(&mut self, w: Window) {
+        self.studio_window_removed(w);
         self.withdrawn.remove(&w);
         self.hidden.remove(&w);
         self.docks.remove(&w);

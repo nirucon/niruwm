@@ -2433,3 +2433,347 @@ fn focusing_a_tile_keeps_floating_windows_and_dialogs_above_it() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// Stubs for studio mode: a notification daemon and power-profiles-daemon
+/// that keep their state in files, and a "picom" (a copy of `sleep`, so the
+/// process is really called picom and can be started again from its command
+/// line). Nothing reaches the real session.
+fn studio_stubs(dir: &std::path::Path) -> std::path::PathBuf {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let write = |name: &str, body: &str| {
+        use std::os::unix::fs::PermissionsExt;
+        let path = bin.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    // Every niructl run, the window manager's included, is logged.
+    write(
+        "niructl",
+        &format!(
+            "#!/bin/sh\necho \"start $*\" >> {dir}/niructl.log\n{exe} \"$@\"\nrc=$?\necho \"end $* rc=$rc\" >> {dir}/niructl.log\nexit $rc\n",
+            dir = dir.display(),
+            exe = env!("CARGO_BIN_EXE_niructl")
+        ),
+    );
+    write(
+        "nirunotify",
+        &format!(
+            "#!/bin/sh\nPATH=/usr/bin:/bin\nS={dir}/dnd\necho \"nirunotify $*\" >> {dir}/calls\n\
+             [ \"$1\" = --dnd ] || exit 1\n\
+             case \"$2\" in on|off) echo \"$2\" > \"$S\";; status) echo \"dnd $(cat \"$S\")\";; *) exit 1;; esac\n",
+            dir = dir.display()
+        ),
+    );
+    write(
+        "powerprofilesctl",
+        &format!(
+            "#!/bin/sh\nPATH=/usr/bin:/bin\nS={dir}/power\necho \"powerprofilesctl $*\" >> {dir}/calls\n\
+             case \"$1\" in get) cat \"$S\";; list) a=$(cat \"$S\"); for p in performance balanced power-saver; do \
+             if [ \"$p\" = \"$a\" ]; then echo \"* $p:\"; else echo \"  $p:\"; fi; done;; \
+             set) echo \"$2\" > \"$S\";; *) exit 1;; esac\n",
+            dir = dir.display()
+        ),
+    );
+    let sleep = ["/usr/bin/sleep", "/bin/sleep"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .unwrap();
+    std::fs::copy(sleep, bin.join("picom")).unwrap();
+    bin
+}
+
+/// "picom" processes on this test's display, with their command lines.
+fn test_picoms() -> Vec<(u32, String)> {
+    let display = std::env::var("DISPLAY").unwrap();
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
+        let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+        let zombie = stat
+            .rsplit_once(')')
+            .is_some_and(|(_, r)| r.trim_start().starts_with('Z'));
+        let env = std::fs::read(entry.path().join("environ")).unwrap_or_default();
+        let ours = env
+            .split(|b| *b == 0)
+            .any(|e| e == format!("DISPLAY={display}").as_bytes());
+        if comm.trim() == "picom" && ours && !zombie {
+            let cmd = std::fs::read(entry.path().join("cmdline")).unwrap_or_default();
+            out.push((pid, String::from_utf8_lossy(&cmd).replace('\0', " ")));
+        }
+    }
+    out
+}
+
+fn studio_ctl(dir: &std::path::Path, bin: &std::path::Path, args: &[&str]) -> String {
+    let out = Command::new(bin.join("niructl"))
+        .args(args)
+        .env("PATH", bin)
+        .env("HOME", dir)
+        .env("XDG_CONFIG_HOME", dir)
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("XDG_RUNTIME_DIR", dir)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success(),
+        "niructl {args:?}: {text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    text
+}
+
+fn studio_wm(dir: &std::path::Path, bin: &std::path::Path, restarted: bool) -> Process {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_niruwm"));
+    cmd.env("XDG_CONFIG_HOME", dir)
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("XDG_RUNTIME_DIR", dir)
+        .env("HOME", dir)
+        .env("PATH", bin)
+        .stdout(Stdio::null());
+    if restarted {
+        cmd.env("NIRUWM_RESTARTED", "1");
+    }
+    Process(cmd.spawn().unwrap())
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn studio_mode_pauses_and_restores_exactly_and_survives_a_restart() {
+    let dir = std::env::temp_dir().join(format!("niruwm-studio-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let bin = studio_stubs(&dir);
+    let read = |name: &str| {
+        std::fs::read_to_string(dir.join(name))
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let set =
+        |name: &str, value: &str| std::fs::write(dir.join(name), format!("{value}\n")).unwrap();
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n\
+         [studio]\nauto_enable = true\ndaw_classes = [\"REAPER\"]\n",
+    )
+    .unwrap();
+    let mut first = studio_wm(&dir, &bin, false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    // NIRUWM 0.20 says the session has studio mode.
+    wait(|| text(&c, root, "_NIRUWM_STUDIO") == "off");
+    assert_eq!(
+        studio_ctl(&dir, &bin, &["studio", "status"]),
+        "studio off\n"
+    );
+
+    // Before: DND off, balanced, picom running with its own arguments.
+    set("dnd", "off");
+    set("power", "balanced");
+    let picom = Process(
+        Command::new(bin.join("picom"))
+            .arg("3600")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| test_picoms().len() == 1);
+    let picom_cmd = test_picoms()[0].1.clone();
+
+    let out = studio_ctl(&dir, &bin, &["studio", "on"]);
+    assert!(out.starts_with("studio on\n"), "{out}");
+    assert_eq!(text(&c, root, "_NIRUWM_STUDIO"), "on");
+    assert_eq!(text(&c, root, "_NIRU_IDLE_INHIBIT"), "studio");
+    assert_eq!(read("dnd"), "on", "{out}");
+    assert_eq!(read("power"), "performance", "{out} {}", read("calls"));
+    wait(|| test_picoms().is_empty());
+    drop(picom);
+
+    // The manager crashes and is started again: studio mode stays on.
+    let _ = first.0.kill();
+    let _ = first.0.wait();
+    let mut second = studio_wm(&dir, &bin, true);
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(text(&c, root, "_NIRUWM_STUDIO"), "on");
+    let status = studio_ctl(&dir, &bin, &["studio", "status"]);
+    assert!(
+        status.starts_with("studio on\n") && status.contains("was balanced"),
+        "{status}"
+    );
+
+    // Off puts back exactly what was there.
+    let out = studio_ctl(&dir, &bin, &["studio", "toggle"]);
+    assert!(out.starts_with("studio off\n"), "{out}");
+    assert_eq!(text(&c, root, "_NIRUWM_STUDIO"), "off");
+    assert_eq!(text(&c, root, "_NIRU_IDLE_INHIBIT"), "");
+    assert_eq!(text(&c, root, "_NIRUWM_STUDIO_SAVED"), "");
+    assert_eq!(read("dnd"), "off");
+    assert_eq!(read("power"), "balanced");
+    wait(|| test_picoms().len() == 1);
+    assert_eq!(
+        test_picoms()[0].1,
+        picom_cmd,
+        "picom runs again as it ran before"
+    );
+    let restarted_picom = test_picoms()[0].0;
+
+    // Already DND, already performance, no compositor: nothing to undo.
+    unsafe_kill(restarted_picom);
+    wait(|| test_picoms().is_empty());
+    set("dnd", "on");
+    set("power", "performance");
+    let _ = std::fs::remove_file(dir.join("calls"));
+    studio_ctl(&dir, &bin, &["studio", "on"]);
+    studio_ctl(&dir, &bin, &["studio", "off"]);
+    assert_eq!(read("dnd"), "on", "DND that was on stays on");
+    assert_eq!(read("power"), "performance");
+    assert!(
+        test_picoms().is_empty(),
+        "no compositor is started that was not running"
+    );
+    assert!(!read("calls").contains("--dnd off") && !read("calls").contains("set "));
+
+    // A change made while it is on is left alone.
+    set("dnd", "off");
+    set("power", "balanced");
+    studio_ctl(&dir, &bin, &["studio", "on"]);
+    set("power", "power-saver");
+    set("dnd", "off");
+    let out = studio_ctl(&dir, &bin, &["studio", "off"]);
+    assert_eq!(read("power"), "power-saver", "{out}");
+    assert_eq!(read("dnd"), "off");
+
+    // A DAW window turns it on and closing the last one turns it off, after
+    // a grace period: a splash screen closing before the main window opens
+    // must not flip the mode off and on.
+    let _ = std::fs::remove_file(dir.join("calls"));
+    let splash = create(&c, root, b"reaper\0REAPER\0");
+    wait(|| text(&c, root, "_NIRUWM_STUDIO") == "on");
+    c.destroy_window(splash).unwrap();
+    c.flush().unwrap();
+    thread::sleep(Duration::from_millis(600));
+    let daw = create(&c, root, b"reaper\0REAPER\0");
+    let plugin = create(&c, root, b"reaper\0REAPER\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    thread::sleep(Duration::from_millis(9500));
+    assert_eq!(
+        text(&c, root, "_NIRUWM_STUDIO"),
+        "on",
+        "no flip for a splash"
+    );
+    assert_eq!(
+        read("calls").matches("--dnd on").count(),
+        1,
+        "calls {:?} saved {:?} log {}",
+        read("calls"),
+        text(&c, root, "_NIRUWM_STUDIO_SAVED"),
+        read("niructl.log")
+    );
+    c.destroy_window(daw).unwrap();
+    c.flush().unwrap();
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        text(&c, root, "_NIRUWM_STUDIO"),
+        "on",
+        "one DAW window is still open"
+    );
+    c.destroy_window(plugin).unwrap();
+    c.flush().unwrap();
+    let end = Instant::now() + Duration::from_secs(15);
+    while text(&c, root, "_NIRUWM_STUDIO") != "off" {
+        assert!(
+            Instant::now() < end,
+            "auto off: calls {:?} saved {:?}",
+            read("calls"),
+            text(&c, root, "_NIRUWM_STUDIO_SAVED")
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(read("power"), "power-saver");
+    // Turned on by hand, it stays on when the DAW closes.
+    studio_ctl(&dir, &bin, &["studio", "on"]);
+    let daw = create(&c, root, b"reaper\0REAPER\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&daw));
+    c.destroy_window(daw).unwrap();
+    c.flush().unwrap();
+    thread::sleep(Duration::from_millis(10_000));
+    assert_eq!(text(&c, root, "_NIRUWM_STUDIO"), "on");
+    // The session end restores DND and power without starting picom.
+    studio_ctl(&dir, &bin, &["studio", "off", "--session-end"]);
+    assert_eq!(text(&c, root, "_NIRUWM_STUDIO"), "off");
+    assert_eq!(read("power"), "power-saver");
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| second.0.try_wait().unwrap().is_some());
+    for (pid, _) in test_picoms() {
+        unsafe_kill(pid);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn unsafe_kill(pid: u32) {
+    let _ = Command::new("kill").arg(pid.to_string()).status();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn niruidle_honours_the_session_inhibition() {
+    let dir = std::env::temp_dir().join(format!("niruwm-idle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = std::fs::File::create(dir.join("log")).unwrap();
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let mut idle = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruidle"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stderr(log)
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| text(&c, root, "_NIRUIDLE_FEATURES") == "session-inhibit");
+    c.change_property8(
+        PropMode::REPLACE,
+        root,
+        atom(&c, "_NIRU_IDLE_INHIBIT"),
+        atom(&c, "UTF8_STRING"),
+        b"studio",
+    )
+    .unwrap();
+    c.flush().unwrap();
+    let logged = |needle: &str| {
+        std::fs::read_to_string(dir.join("log"))
+            .unwrap_or_default()
+            .contains(needle)
+    };
+    let end = Instant::now() + Duration::from_secs(12);
+    while !logged("idle inhibition on (session)") {
+        assert!(Instant::now() < end, "niruidle did not see the inhibition");
+        thread::sleep(Duration::from_millis(100));
+    }
+    c.delete_property(root, atom(&c, "_NIRU_IDLE_INHIBIT"))
+        .unwrap();
+    c.flush().unwrap();
+    let end = Instant::now() + Duration::from_secs(12);
+    while !logged("idle inhibition off") {
+        assert!(Instant::now() < end, "niruidle did not see the end");
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = idle.0.kill();
+    let _ = idle.0.wait();
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -253,6 +253,12 @@ impl Wm {
             Action::IdleToggle => {
                 self.spawn_helper("idle", &["niructl".into(), "idle".into(), "toggle".into()]);
             }
+            Action::StudioToggle => {
+                self.spawn_helper(
+                    "studio",
+                    &["niructl".into(), "studio".into(), "toggle".into()],
+                );
+            }
             Action::MediaKey(name) => {
                 // `media_key` knows which command each key needs. The previous
                 // version guessed a program from the key name first and dropped

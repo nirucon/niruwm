@@ -51,6 +51,9 @@ pub struct Config {
     /// Window swallowing: a program started from a terminal takes the
     /// terminal's place until it closes. On when the table is absent.
     pub swallow: SwallowConfig,
+    /// Studio mode (`niructl studio`): what it pauses while recording, and
+    /// whether a DAW window turns it on. Every key is optional.
+    pub studio: StudioConfig,
     /// Window rules, applied when a window is first managed.
     pub rules: Vec<Rule>,
     /// Manual night-light settings shared by `niructl` and the WM.
@@ -372,6 +375,55 @@ impl SwallowConfig {
     /// Whether a `WM_CLASS` value is on the never-swallow list.
     pub fn is_excluded(&self, class: &str) -> bool {
         class_listed(class, &self.exclude, SWALLOW_EXCLUDE)
+    }
+}
+
+/// `[studio]`: studio (DAW) mode, `niructl studio on|off|toggle|status`.
+/// While it is on it pauses the screen saver and idle lock for this session
+/// only, turns on Do Not Disturb, stops the compositor and selects a power
+/// profile; turning it off puts back what it changed. Every key is optional.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct StudioConfig {
+    /// Pause the screen saver, idle lock and display-off while it is on.
+    pub idle: bool,
+    /// Do Not Disturb (no notification popups or sounds).
+    pub dnd: bool,
+    /// Stop picom while it is on and start it again afterwards.
+    pub compositor: bool,
+    /// The power profile while it is on; "" or "keep" leaves it alone.
+    pub power_profile: String,
+    /// Turn studio mode on when a DAW window (`daw_classes`) appears, and
+    /// off again when the last one closes if it was turned on that way.
+    pub auto_enable: bool,
+    /// Window classes (either part of WM_CLASS, any case) that are DAWs.
+    pub daw_classes: Vec<String>,
+}
+
+impl Default for StudioConfig {
+    fn default() -> Self {
+        Self {
+            idle: true,
+            dnd: true,
+            compositor: true,
+            power_profile: "performance".into(),
+            auto_enable: false,
+            daw_classes: vec!["REAPER".into()],
+        }
+    }
+}
+
+impl StudioConfig {
+    /// The profile to select, or `None` to leave the power profile alone.
+    pub fn power_profile(&self) -> Option<&str> {
+        let p = self.power_profile.trim();
+        (!p.is_empty() && p != "keep").then_some(p)
+    }
+
+    /// Whether a `WM_CLASS` value ("instance\0class\0") is a DAW window.
+    #[allow(dead_code)] // the WM reads it; niructl shares this file
+    pub fn is_daw(&self, class: &str) -> bool {
+        !self.daw_classes.is_empty() && class_listed(class, &self.daw_classes, &[])
     }
 }
 
@@ -866,6 +918,7 @@ impl Default for Config {
             brightness: BrightnessConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             swallow: SwallowConfig::default(),
+            studio: StudioConfig::default(),
             rules: Vec::new(),
             weather_latitude: 0.0,
             weather_longitude: 0.0,

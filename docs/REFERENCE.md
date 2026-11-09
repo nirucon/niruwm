@@ -33,6 +33,7 @@ niructl windows rescue --dry-run
 niructl urgent [--json]        # windows that asked for attention, newest last
 niructl urgent focus           # go to the newest one (Super+Shift+U)
 niructl swallow on|off|toggle|status
+niructl studio on|off|toggle|status   # studio (DAW) mode for this session
 ```
 
 `niructl urgent` reads `_NIRUWM_URGENT` (a WINDOW list on the root window,
@@ -41,6 +42,25 @@ oldest request first); a window in a scratchpad is listed as `scratchpad`.
 reports the state the window manager publishes in `_NIRUWM_SWALLOW`;
 `[swallow] enabled` in config.toml is the setting for every login. A window
 manager started again after a crash keeps the session's switch.
+
+`niructl studio on` (studio or DAW mode, `[studio]` in config.toml, action
+`studio_toggle`) applies, item by item and as configured: a session-scoped
+idle inhibition (`_NIRU_IDLE_INHIBIT` on the root window, which NIRUIDLE 0.20
+honours; the screen saver, the idle lock and display-off wait), DND through
+`niructl dnd`'s provider, stopping this display's picom (its command line is
+kept), and `powerprofile set performance`. What it changed is kept in
+`_NIRUWM_STUDIO_SAVED`, the switch in `_NIRUWM_STUDIO`; both live on the root
+window, so a window manager restarted after a crash keeps the mode and the X
+server's end takes it away: the idle lock can never stay off after a logout.
+`niructl studio off` puts back only what it changed and only where nothing
+else changed it since: DND it turned on goes off, picom starts again with the
+same command line unless one runs already, the previous power profile returns
+unless you picked another one meanwhile. The keep-awake switch
+(`niructl idle`) is separate and never touched. The session runs
+`niructl studio off --session-end` at logout. With `[studio] auto_enable =
+true` the first window of a `daw_classes` class (REAPER by default) turns the
+mode on and closing the last one turns it off, unless you turned it on by
+hand. `~/.config/picom.conf` is never edited.
 
 `niruthemeselector` is the graphical front end for themes: it previews
 wallpaper and palette, applies through the same path and manages user imports

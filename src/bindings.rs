@@ -107,6 +107,8 @@ pub enum Action {
     FocusUrgent,
     /// Window swallowing on or off for this session.
     SwallowToggle,
+    /// Studio (DAW) mode on or off for this session (`niructl studio`).
+    StudioToggle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -570,6 +572,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "idle_toggle" => Action::IdleToggle,
         "focus_urgent" => Action::FocusUrgent,
         "swallow_toggle" => Action::SwallowToggle,
+        "studio_toggle" => Action::StudioToggle,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {
@@ -760,6 +763,10 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::SwallowToggle => s(
             session,
             "Window swallowing on or off (a program started from a terminal takes its place)",
+        ),
+        Action::StudioToggle => s(
+            session,
+            "Studio mode on or off (no screen saver, lock or popups; compositor off; performance)",
         ),
         Action::SetLayout(id) => (layouts, format!("Layout: {}", layout_words(id))),
         Action::SetScrollColumns(c) => (

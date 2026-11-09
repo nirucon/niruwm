@@ -442,6 +442,23 @@ hide_on_focus_loss = false
 # exclude = ["xev", "firefox", "chromium", "brave-browser", "helium",
 #            "nirulauncher", "nirunotify", "nirulock", "nirushot", "niruclip"]
 
+# ── Studio mode ─────────────────────────────────────────────────────────────
+# `niructl studio on|off|toggle|status` (or a [[keys]] entry with action =
+# "studio_toggle", or Studio mode in the launcher) is one switch for
+# recording: the screen saver, idle lock and display-off wait, Do Not Disturb
+# is on, the compositor (picom) is stopped and the power profile is set.
+# Turning it off puts back exactly what it changed. It lasts for this session
+# only: logging out ends it, and the idle lock is never left off. Every key
+# is optional; these are the defaults:
+#
+# [studio]
+# idle = true                    # pause screen saver, lock and display-off
+# dnd = true                     # Do Not Disturb (no popups, no sounds)
+# compositor = true              # stop picom while on, start it again after
+# power_profile = "performance"  # "" or "keep" leaves the profile alone
+# auto_enable = false            # turn on when a DAW window appears
+# daw_classes = ["REAPER"]       # what counts as a DAW window (WM_CLASS)
+
 # ── Window rules ────────────────────────────────────────────────────────────
 # [[rules]]
 # class = "localsend"
@@ -478,6 +495,7 @@ hide_on_focus_loss = false
 #   move_float left|right|up|down, resize_float dx dy,
 #   media_key NAME, brightness_step N, nightlight_toggle, dnd_toggle, idle_toggle,
 #   focus_urgent (the window that asked for attention), swallow_toggle,
+#   studio_toggle (studio mode, see [studio]),
 #   close, quit, reload, toggle_gaps, theme NAME,
 #   scratchpad (the default), scratchpad N, scratchpad_send N, unscratch   (N = 1-9),
 #   focusmon N, tagmon N   (relative monitor step: -1 or 1)

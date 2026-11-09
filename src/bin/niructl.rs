@@ -25,6 +25,8 @@ mod monitor;
 #[path = "../session_state.rs"]
 #[allow(dead_code)] // niructl reads the list, it never writes one
 mod session_state;
+#[path = "../studio.rs"]
+mod studio;
 #[path = "../wallpaper.rs"]
 #[allow(dead_code)] // status resolves assets without applying a wallpaper.
 mod wallpaper;
@@ -60,7 +62,7 @@ display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-js
 action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD NEW|pin NAME|unpin NAME | \
 layout show|save | \
 scratchpad [N] [toggle|show|hide]|send N|unscratch|list [--json] | \
-urgent [list|--json|focus] | swallow on|off|toggle|status | \
+urgent [list|--json|focus] | swallow on|off|toggle|status | studio on|off|toggle|status | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
@@ -6404,6 +6406,36 @@ fn recipe(
     Ok(())
 }
 
+/// Studio mode's effects through niructl's own DND and power helpers.
+struct StudioEffects;
+
+impl studio::Effects for StudioEffects {
+    fn dnd_is_on(&mut self) -> Option<bool> {
+        dnd_is_on()
+    }
+    fn dnd_apply(&mut self, on: bool) -> Result<()> {
+        dnd_apply(on)
+    }
+    fn power(&mut self) -> std::result::Result<(String, Vec<String>), String> {
+        if program("powerprofilesctl").is_none() {
+            return Err("powerprofilesctl (power-profiles-daemon) is not installed".into());
+        }
+        power_profile_state()
+            .map(|state| (state.active, state.profiles))
+            .map_err(|e| e.to_string())
+    }
+    fn set_power(&mut self, profile: &str) -> Result<()> {
+        powerprofilesctl(&["set", profile])?;
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(125));
+            if power_profile_state().is_ok_and(|s| s.active == profile) {
+                return Ok(());
+            }
+        }
+        Err(format!("power profile {profile} did not become active").into())
+    }
+}
+
 fn dnd_is_on() -> Option<bool> {
     if let Some(notifier) = program("nirunotify") {
         if let Ok(out) = command(&notifier, &["--dnd".into(), "status".into()]) {
@@ -8394,6 +8426,10 @@ fn run() -> Result<()> {
 
     if cmd == "swallow" {
         return swallow_command(&c, root, &atom, &args[1..]);
+    }
+
+    if cmd == "studio" {
+        return studio::command(&c, root, &args[1..], &mut StudioEffects);
     }
 
     if cmd == "restart-bar" {

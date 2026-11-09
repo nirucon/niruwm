@@ -26,6 +26,7 @@ use x11rb::{
     connection::{Connection, RequestConnection as _},
     protocol::{screensaver::ConnectionExt as _, xproto::*},
     rust_connection::RustConnection,
+    wrapper::ConnectionExt as _,
 };
 
 #[allow(dead_code)]
@@ -250,6 +251,22 @@ fn inhibit_active_from(path: &std::path::Path, now: u64) -> bool {
     until == 0 || until > now
 }
 
+/// Session-scoped inhibition: `_NIRU_IDLE_INHIBIT` on the root window with
+/// any text (the holder, e.g. `studio`). Unlike the state file it vanishes
+/// with the X server, so it can never outlive the session that set it.
+fn session_inhibit_active(conn: &RustConnection, root: Window, atom: Atom) -> bool {
+    atom != 0
+        && conn
+            .get_property(false, root, atom, AtomEnum::ANY, 0, 16)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| session_inhibit_value(&reply.value))
+}
+
+fn session_inhibit_value(value: &[u8]) -> bool {
+    !String::from_utf8_lossy(value).trim().is_empty()
+}
+
 fn xset_saver(force: &str, dpms: &str) {
     let _ = Command::new("xset")
         .args(["s", force, dpms])
@@ -340,6 +357,25 @@ fn main() {
     let mut retry_lock_at = Instant::now();
     let inhibit = inhibit_path();
     let mut inhibited = false;
+    // Whether the state file (`niructl idle`, which also turned the X saver
+    // and DPMS off) took part, so its end restores them; the session
+    // property alone changed neither.
+    let mut file_inhibited = false;
+    let intern = |name: &[u8]| {
+        conn.intern_atom(false, name)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| reply.atom)
+            .unwrap_or(0)
+    };
+    let session_inhibit = intern(b"_NIRU_IDLE_INHIBIT");
+    // Tell `niructl studio` that this daemon honours the session property.
+    let features = intern(b"_NIRUIDLE_FEATURES");
+    let utf8 = intern(b"UTF8_STRING");
+    if features != 0 && utf8 != 0 {
+        let _ = conn.change_property8(PropMode::REPLACE, root, features, utf8, b"session-inhibit");
+        let _ = conn.flush();
+    }
     let mut external_locked = false;
 
     loop {
@@ -378,9 +414,14 @@ fn main() {
         // Explicit inhibition state, never a guessed process id. While it is
         // active, reset the X idle clock so no saver or locker fires, and undo
         // any display-off state niruidle itself set.
-        if inhibit_active_from(&inhibit, now_secs()) {
+        let by_file = inhibit_active_from(&inhibit, now_secs());
+        if by_file || session_inhibit_active(&conn, root, session_inhibit) {
+            file_inhibited |= by_file;
             if !inhibited {
-                eprintln!("niruidle: idle inhibition on");
+                eprintln!(
+                    "niruidle: idle inhibition on{}",
+                    if by_file { "" } else { " (session)" }
+                );
                 stop_saver(&mut saver_child);
                 if display_off {
                     xset_dpms("on");
@@ -395,8 +436,11 @@ fn main() {
         }
         if inhibited {
             eprintln!("niruidle: idle inhibition off");
-            xset_saver("default", "+dpms");
+            if file_inhibited {
+                xset_saver("default", "+dpms");
+            }
             inhibited = false;
+            file_inhibited = false;
         }
 
         let idle = idle_seconds(&conn, root).unwrap_or(0);
@@ -498,6 +542,13 @@ mod tests {
         std::fs::write(&path, "garbage\n").unwrap();
         assert!(!inhibit_active_from(&path, 100));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn any_holder_text_is_a_session_inhibition() {
+        assert!(session_inhibit_value(b"studio"));
+        assert!(!session_inhibit_value(b""));
+        assert!(!session_inhibit_value(b"  "));
     }
 
     #[test]
