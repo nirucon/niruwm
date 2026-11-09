@@ -1,8 +1,10 @@
+mod attention;
 mod clients;
 mod events;
 mod keys;
 mod mouse;
 mod scratch;
+mod swallow;
 pub(crate) use scratch::ScratchOp;
 
 /// Exposed for `--doctor`, which reports which keys the layout can deliver.
@@ -84,6 +86,16 @@ pub(crate) struct Client {
     /// a separate program and often names no parent). It belongs to that
     /// scratchpad like a transient does.
     guest_of: Option<Window>,
+    /// The window asked for attention (ICCCM urgency hint or
+    /// `_NET_WM_STATE_DEMANDS_ATTENTION`) and has not had the focus since.
+    urgent: bool,
+    /// When it last became urgent, as a running count, so the attention key
+    /// goes to the most recent request first.
+    urgent_serial: u64,
+    /// Set on a terminal that a window started from it has swallowed: the
+    /// terminal is hidden, belongs to no workspace and is not focusable until
+    /// that window closes. See `swallow.rs`.
+    swallowed_by: Option<Window>,
 }
 
 impl Client {
@@ -296,6 +308,14 @@ pub(crate) struct Wm {
     pub(crate) last_bar_start: std::time::Instant,
     /// Commands started by session restore whose windows have not all mapped.
     pub(crate) pending_restore: Vec<PendingRestore>,
+    /// Running count behind `Client::urgent_serial`.
+    pub(crate) urgent_counter: u64,
+    /// Swallowing is on: `[swallow] enabled`, or what `niructl swallow`
+    /// set since.
+    pub(crate) swallow_enabled: bool,
+    /// Terminals found swallowed while windows are adopted after a restart:
+    /// (terminal, the window that swallowed it).
+    pub(crate) swallow_adopted: Vec<(Window, Window)>,
     /// Window to focus once restore has settled, with its saved screen/workspace.
     pub(crate) restore_focus: Option<(Window, usize, u32)>,
     /// Entries still waiting for a mapped window.
@@ -397,6 +417,7 @@ impl Wm {
             "_NET_WM_STATE_HIDDEN",
             "_NET_WM_STATE_ABOVE",
             "_NET_WM_STATE_STICKY",
+            "_NET_WM_STATE_DEMANDS_ATTENTION",
             "_NET_WM_STRUT_PARTIAL",
             "_NET_WM_STRUT",
             "_NET_WM_PID",
@@ -418,6 +439,9 @@ impl Wm {
             "_NIRUWM_MONITORS",
             "_NIRUWM_SCRATCHPADS",
             "_NIRUWM_SCRATCH_SLOT",
+            "_NIRUWM_URGENT",
+            "_NIRUWM_SWALLOW",
+            "_NIRUWM_SWALLOWED_BY",
             "_NET_WM_STATE_MODAL",
             "_NET_WM_WINDOW_OPACITY",
             "_NIRUWM_WALLPAPER_STATE",
@@ -473,6 +497,9 @@ impl Wm {
             keys_released: false,
             last_bar_start: std::time::Instant::now(),
             pending_restore: Vec::new(),
+            urgent_counter: 0,
+            swallow_enabled: true,
+            swallow_adopted: Vec::new(),
             restore_focus: None,
             restore_remaining: 0,
             restore_deadline: None,
@@ -482,6 +509,14 @@ impl Wm {
         wm.focused_monitor = crate::monitor::primary(&monitors, &wm.monitor_cfg);
         wm.monitors = monitors;
         wm.multi_monitor = multi;
+        // A manager started again after a crash keeps the switch the user
+        // set with `niructl swallow`, which the root window still carries.
+        let restarted = std::env::var_os("NIRUWM_RESTARTED").is_some_and(|v| v == "1");
+        wm.swallow_enabled = if restarted {
+            swallow::published_switch(&wm).unwrap_or(wm.cfg.swallow.enabled)
+        } else {
+            wm.cfg.swallow.enabled
+        };
         wm.announce()?;
         wm.resolve_bindings()?;
         wm.grab()?;
@@ -507,6 +542,7 @@ impl Wm {
             }
         }
         wm.adopting = false;
+        wm.relink_swallowed();
         wm.arrange()?;
         wm.start_bar();
         // Set the wallpaper once the WM owns the display; a failure here must
@@ -519,7 +555,6 @@ impl Wm {
         // failure here costs comfort, never the session.
         // A restart after a crash must not start the saved programs a second
         // time: they are still running.
-        let restarted = std::env::var_os("NIRUWM_RESTARTED").is_some_and(|v| v == "1");
         if restarted {
             eprintln!("niruwm: started again after a crash; keeping the open windows");
         }
@@ -611,6 +646,7 @@ impl Wm {
         )?;
         self.publish_theme()?;
         self.publish_layout_readonly()?;
+        self.publish_swallow();
         Ok(())
     }
 
@@ -875,10 +911,9 @@ impl Wm {
             .get(self.focused_monitor)
             .map(|m| m.active as u32)
             .unwrap_or(0);
-        let target = self
-            .clients
-            .iter()
-            .find(|c| c.monitor == self.focused_monitor && c.tag == active);
+        let target = self.clients.iter().find(|c| {
+            c.monitor == self.focused_monitor && c.tag == active && c.swallowed_by.is_none()
+        });
         if let Some(c) = target {
             let w = c.win;
             self.set_focus(w)?;
@@ -1139,7 +1174,13 @@ impl Wm {
         let old_position = self.cfg.bar.position.clone();
         let old_monitors = self.monitor_cfg.clone();
         let old_theme = self.cfg.theme.clone();
+        let old_swallow = self.cfg.swallow.enabled;
         self.cfg = cfg;
+        // A changed `[swallow] enabled` wins over the runtime switch; an
+        // unchanged file keeps what `niructl swallow` set.
+        if self.cfg.swallow.enabled != old_swallow {
+            self.set_swallow(self.cfg.swallow.enabled);
+        }
         self.theme = theme;
         self.publish_theme()?;
         self.monitor_cfg = monitor_config(&self.cfg);

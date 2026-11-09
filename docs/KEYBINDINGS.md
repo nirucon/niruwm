@@ -84,6 +84,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Alt+S` | Sticky (on every workspace) on or off |
 | `Super+Shift+J` / `Super+Shift+Right` / `Super+Shift+Down` | Move the window down the stack |
 | `Super+Shift+K` / `Super+Shift+Left` / `Super+Shift+Up` | Move the window up the stack |
+| `Super+Shift+U` | Go to the window that asked for attention (urgent) |
 | `Super+,` / `Super+Alt+,` | Focus the previous screen |
 | `Super+Alt+.` | Focus the next screen |
 | `Super+Shift+,` | Move the window to the previous screen |

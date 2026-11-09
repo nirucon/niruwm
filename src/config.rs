@@ -48,6 +48,9 @@ pub struct Config {
     pub recipes: Vec<Recipe>,
     pub monitors: MonitorsConfig,
     pub scratchpad: ScratchpadConfig,
+    /// Window swallowing: a program started from a terminal takes the
+    /// terminal's place until it closes. On when the table is absent.
+    pub swallow: SwallowConfig,
     /// Window rules, applied when a window is first managed.
     pub rules: Vec<Rule>,
     /// Manual night-light settings shared by `niructl` and the WM.
@@ -279,6 +282,108 @@ impl ScratchpadConfig {
             classes.push(class);
         }
         Ok(())
+    }
+}
+
+/// `[swallow]`: a window opened by a program that was started from a terminal
+/// takes the terminal's place (workspace, tiling position, floating size)
+/// and the terminal is hidden until that window closes, as in dwm's swallow
+/// patch. Every key is optional: a file without the table has it on.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SwallowConfig {
+    pub enabled: bool,
+    /// Window classes (either part of WM_CLASS, any case) that are
+    /// terminals. A listed value replaces the default list.
+    pub terminals: Vec<String>,
+    /// Window classes that never swallow a terminal. A listed value replaces
+    /// the default list.
+    pub exclude: Vec<String>,
+}
+
+/// Terminals NIRUX ships (kitty) and the common others.
+pub const SWALLOW_TERMINALS: &[&str] = &[
+    "kitty",
+    "Alacritty",
+    "st",
+    "st-256color",
+    "XTerm",
+    "UXTerm",
+    "foot",
+    "footclient",
+    "wezterm",
+    "org.wezfurlong.wezterm",
+    "URxvt",
+    "urxvt",
+    "ghostty",
+    "com.mitchellh.ghostty",
+    "konsole",
+    "gnome-terminal",
+    "gnome-terminal-server",
+    "xfce4-terminal",
+    "terminator",
+    "tilix",
+    "sakura",
+    "lxterminal",
+];
+
+/// Windows that never swallow: event testers, the NIRU suite's own overlays,
+/// and browsers, which hand the window to a running instance and leave the
+/// terminal anyway.
+pub const SWALLOW_EXCLUDE: &[&str] = &[
+    "xev",
+    "nirulauncher",
+    "nirunotify",
+    "nirulock",
+    "niruscreensaver",
+    "nirushot",
+    "niruclip",
+    "nirudictate",
+    "niru-agent",
+    "firefox",
+    "firefox-esr",
+    "librewolf",
+    "chromium",
+    "chromium-browser",
+    "google-chrome",
+    "brave-browser",
+    "brave",
+    "helium",
+    "vivaldi-stable",
+    "zen",
+];
+
+impl Default for SwallowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            terminals: Vec::new(),
+            exclude: Vec::new(),
+        }
+    }
+}
+
+impl SwallowConfig {
+    /// Whether a `WM_CLASS` value ("instance\0class\0") names a terminal.
+    pub fn is_terminal(&self, class: &str) -> bool {
+        class_listed(class, &self.terminals, SWALLOW_TERMINALS)
+    }
+
+    /// Whether a `WM_CLASS` value is on the never-swallow list.
+    pub fn is_excluded(&self, class: &str) -> bool {
+        class_listed(class, &self.exclude, SWALLOW_EXCLUDE)
+    }
+}
+
+/// Either part of `class` equals (ignoring case) an entry of `configured`, or
+/// of `defaults` when nothing is configured.
+fn class_listed(class: &str, configured: &[String], defaults: &[&str]) -> bool {
+    let parts: Vec<&str> = class.split('\0').filter(|p| !p.is_empty()).collect();
+    let hit = |name: &str| parts.iter().any(|p| p.eq_ignore_ascii_case(name.trim()));
+    if configured.is_empty() {
+        defaults.iter().any(|name| hit(name))
+    } else {
+        configured.iter().any(|name| hit(name))
     }
 }
 
@@ -760,6 +865,7 @@ impl Default for Config {
             idle: IdleConfig::default(),
             brightness: BrightnessConfig::default(),
             scratchpad: ScratchpadConfig::default(),
+            swallow: SwallowConfig::default(),
             rules: Vec::new(),
             weather_latitude: 0.0,
             weather_longitude: 0.0,
@@ -1294,9 +1400,75 @@ pub struct Theme {
     pub muted: String,
     pub border: String,
     pub focus: String,
+    /// The attention colour (a window that asked for attention, its
+    /// workspace cell in the bar). Optional: the built-in themes keep theirs
+    /// in `builtin_urgent`, so a theme file without it stays valid for every
+    /// program that reads the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub urgent: Option<String>,
+}
+
+/// The attention colour of each built-in theme. Kept in code rather than in
+/// the theme files: those are also read by programs that refuse unknown keys.
+pub fn builtin_urgent(theme: &str) -> Option<&'static str> {
+    Some(match theme {
+        "niru-noir" => "d7b36a",
+        "niru-nord" => "ebcb8b",
+        "niru-satie" => "d4a35a",
+        "niru-carl-larsson" => "b7791f",
+        "niru-forest-vigil" => "d9a441",
+        "niru-blood-of-urdr" => "e0a84e",
+        "niru-root-and-stone" => "d9822b",
+        "niru-blue-horizon" => "e5b567",
+        "niru-the-norns" => "d6a55c",
+        "niru-winter-nights" => "e09a5f",
+        _ => return None,
+    })
+}
+
+/// An amber that reads on `background`, for a user theme without its own
+/// attention colour: darker on light themes, softer on dark ones.
+pub fn derived_urgent(background: u32) -> u32 {
+    let (r, g, b) = (
+        (background >> 16) & 0xff,
+        (background >> 8) & 0xff,
+        background & 0xff,
+    );
+    let luminance = (2126 * r + 7152 * g + 722 * b) / 10_000;
+    if luminance > 140 {
+        0xb7791f
+    } else {
+        0xd7b36a
+    }
 }
 
 impl Theme {
+    /// The attention colour for theme `id`: the theme file's own `urgent`,
+    /// then `[colors] urgent` or `warning` in appearance.toml (built-in
+    /// themes only, like every other appearance colour), then the built-in
+    /// value, then an amber derived from the background.
+    pub fn urgent_pixel(&self, id: &str) -> u32 {
+        if let Some(pixel) = self.urgent.as_deref().and_then(|c| Self::pixel(c).ok()) {
+            return pixel;
+        }
+        let user_file = directory().join("themes").join(format!("{id}.toml"));
+        if !user_file.exists() {
+            if let Some(appearance) = appearance_value() {
+                for key in ["urgent", "warning"] {
+                    if let Some(pixel) =
+                        appearance_colour(&appearance, key).and_then(|c| Self::pixel(&c).ok())
+                    {
+                        return pixel;
+                    }
+                }
+            }
+        }
+        if let Some(pixel) = builtin_urgent(id).and_then(|c| Self::pixel(c).ok()) {
+            return pixel;
+        }
+        derived_urgent(Self::pixel(&self.background).unwrap_or(0))
+    }
+
     pub fn load(name: &str) -> Result<Self> {
         if name.is_empty()
             || !name
@@ -1359,6 +1531,9 @@ impl Theme {
             &theme.focus,
         ] {
             Self::pixel(s)?;
+        }
+        if let Some(urgent) = &theme.urgent {
+            Self::pixel(urgent)?;
         }
         Ok(theme)
     }

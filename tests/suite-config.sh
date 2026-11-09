@@ -53,6 +53,15 @@ for prog in niruwm nirubar; do
   fi
 done
 
+# 2c. Window swallowing (NIRUWM 0.19.0, NIRUBAR 0.19.0): the table is
+#     optional, accepted by both programs, and a misspelt key is refused.
+printf '[swallow]\nenabled = false\nterminals = ["kitty", "XTerm"]\nexclude = ["mpv"]\n' > "$CONF"
+check_ok "a [swallow] table"
+printf '[swallow]\nenable = false\n' > "$CONF"
+if "$BIN/niruwm" --check-config >/dev/null 2>&1; then
+  fail "niruwm accepted a misspelt [swallow] key"
+fi
+
 # 3. An out-of-range NUMBER is a value error and falls back safely; a wrong
 #    TYPE is a typo and must be reported rather than guessed.
 for bad in \

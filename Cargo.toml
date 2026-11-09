@@ -1,13 +1,13 @@
 [package]
 name = "niruwm"
-version = "0.18.3"
+version = "0.19.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
 description = "Minimal NIRU X11 desktop component"
 
 [dependencies]
-x11rb = { version = "0.13", features = ["randr", "screensaver"] }
+x11rb = { version = "0.13", features = ["randr", "res", "screensaver"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 toml_edit = "0.22"

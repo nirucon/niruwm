@@ -426,6 +426,22 @@ hide_on_focus_loss = false
 # width = 0.4
 # height = 0.5
 
+# ── Window swallowing ──────────────────────────────────────────────────────
+# A program started from a terminal (mpv, zathura, feh, …) takes the
+# terminal's place: same workspace, same tile, the terminal's size when it
+# floats. The terminal comes back in place, with the focus, when the program's
+# window closes. On when this table is absent; `niructl swallow off` turns it
+# off until the next login. Classes match either part of WM_CLASS, in any
+# case, and a list replaces the built-in one. Dialogs, scratchpads, other
+# terminals and windows a rule sends to a workspace never swallow.
+#
+# [swallow]
+# enabled = true
+# terminals = ["kitty", "Alacritty", "st", "XTerm", "UXTerm", "foot", "wezterm",
+#              "URxvt", "ghostty", "konsole", "gnome-terminal", "xfce4-terminal"]
+# exclude = ["xev", "firefox", "chromium", "brave-browser", "helium",
+#            "nirulauncher", "nirunotify", "nirulock", "nirushot", "niruclip"]
+
 # ── Window rules ────────────────────────────────────────────────────────────
 # [[rules]]
 # class = "localsend"
@@ -460,6 +476,7 @@ hide_on_focus_loss = false
 #   toggle_float, toggle_fullscreen, swap_next, swap_prev,
 #   move_float left|right|up|down, resize_float dx dy,
 #   media_key NAME, brightness_step N, nightlight_toggle, dnd_toggle, idle_toggle,
+#   focus_urgent (the window that asked for attention), swallow_toggle,
 #   close, quit, reload, toggle_gaps, theme NAME,
 #   scratchpad (the default), scratchpad N, scratchpad_send N, unscratch   (N = 1-9),
 #   focusmon N, tagmon N   (relative monitor step: -1 or 1)
@@ -674,6 +691,12 @@ action = "move_next"
 [[keys]]
 keys = "super+shift+Left"
 action = "move_prev"
+
+# The window that asked for attention most recently (dwm "urgent"): its
+# screen and workspace, or its scratchpad. Super+U is a layout.
+[[keys]]
+keys = "super+shift+u"
+action = "focus_urgent"
 
 # Layouts.
 #   tile          master left, stack right

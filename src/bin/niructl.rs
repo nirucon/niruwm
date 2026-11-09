@@ -60,6 +60,7 @@ display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-js
 action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD NEW|pin NAME|unpin NAME | \
 layout show|save | \
 scratchpad [N] [toggle|show|hide]|send N|unscratch|list [--json] | \
+urgent [list|--json|focus] | swallow on|off|toggle|status | \
 powerprofile status|list|set NAME|next | \
 lock | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
@@ -8387,6 +8388,14 @@ fn run() -> Result<()> {
         return scratchpad_command(&c, root, &atom, &args[1..]);
     }
 
+    if cmd == "urgent" {
+        return urgent_command(&c, root, &atom, &args[1..]);
+    }
+
+    if cmd == "swallow" {
+        return swallow_command(&c, root, &atom, &args[1..]);
+    }
+
     if cmd == "restart-bar" {
         let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
             .ok_or("no window manager is running")?;
@@ -8716,6 +8725,162 @@ fn scratchpad_command(
     send(c, root, atom(CMD_ATOM)?, data)?;
     c.flush()?;
     Ok(())
+}
+
+/// `niructl urgent`: the windows that asked for attention (newest last), or
+/// go to the newest one, like Super+Shift+U.
+fn urgent_command(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    args: &[String],
+) -> Result<()> {
+    const HELP: &str = "Usage: niructl urgent [list|--json|focus]";
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    // A manager from before 0.19.0 never publishes the property at all.
+    let supported = {
+        let supported = atom("_NET_SUPPORTED")?;
+        let wanted = atom("_NET_WM_STATE_DEMANDS_ATTENTION")?;
+        c.get_property(false, root, supported, AtomEnum::ATOM, 0, 1024)?
+            .reply()?
+            .value32()
+            .is_some_and(|mut v| v.any(|a| a == wanted))
+    };
+    if !supported {
+        return Err(
+            "the running window manager does not track urgent windows; log out/in to activate NIRUWM 0.19"
+                .into(),
+        );
+    }
+    match words.as_slice() {
+        ["focus"] => {
+            send(c, root, atom(CMD_ATOM)?, [20, 0, 0, 0, 0])?;
+            c.flush()?;
+            Ok(())
+        }
+        [] | ["list"] | ["status"] | ["--json"] | ["list", "--json"] => {
+            let windows: Vec<u32> = c
+                .get_property(
+                    false,
+                    root,
+                    atom("_NIRUWM_URGENT")?,
+                    AtomEnum::WINDOW,
+                    0,
+                    1024,
+                )?
+                .reply()?
+                .value32()
+                .map(|v| v.collect())
+                .unwrap_or_default();
+            let desktop_atom = atom("_NET_WM_DESKTOP")?;
+            let name_atom = atom("_NET_WM_NAME")?;
+            let rows: Vec<(u32, Option<u32>, String, String)> = windows
+                .iter()
+                .map(|&w| {
+                    let desktop = property_u32(c, w, desktop_atom);
+                    let class = c
+                        .get_property(false, w, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)
+                        .ok()
+                        .and_then(|cookie| cookie.reply().ok())
+                        .map(|r| {
+                            String::from_utf8_lossy(&r.value)
+                                .split('\0')
+                                .rfind(|p| !p.is_empty())
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    let title = property_string(c, w, name_atom)
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default();
+                    (w, desktop, class, title)
+                })
+                .collect();
+            // 0xFFFFFFFF is a scratchpad; the rest are global desktops.
+            let place = |desktop: Option<u32>| -> String {
+                match desktop {
+                    Some(0xFFFF_FFFF) => "scratchpad".into(),
+                    Some(d) => format!("workspace {}", d + 1),
+                    None => "unknown".into(),
+                }
+            };
+            if words.contains(&"--json") {
+                let list: Vec<serde_json::Value> = rows
+                    .iter()
+                    .map(|(w, desktop, class, title)| {
+                        serde_json::json!({
+                            "window": format!("{w:#x}"),
+                            "desktop": desktop.filter(|d| *d != 0xFFFF_FFFF),
+                            "scratchpad": *desktop == Some(0xFFFF_FFFF),
+                            "class": class,
+                            "title": title,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({ "urgent": list }))?
+                );
+            } else if rows.is_empty() {
+                println!("no window asks for attention");
+            } else {
+                for (w, desktop, class, title) in &rows {
+                    println!("{w:#x}\t{}\t{class}\t{title}", place(*desktop));
+                }
+            }
+            Ok(())
+        }
+        _ => Err(HELP.into()),
+    }
+}
+
+/// `niructl swallow`: window swallowing for the running session. The file
+/// setting is `[swallow] enabled`; this switch lasts until the next login.
+fn swallow_command(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    atom: &dyn Fn(&str) -> Result<Atom>,
+    args: &[String],
+) -> Result<()> {
+    const HELP: &str = "Usage: niructl swallow on|off|toggle|status";
+    let state = || -> Result<String> {
+        let text = property_string(c, root, atom("_NIRUWM_SWALLOW")?)?.unwrap_or_default();
+        if text.is_empty() {
+            return Err(
+                "the running window manager cannot swallow windows; log out/in to activate NIRUWM 0.19"
+                    .into(),
+            );
+        }
+        Ok(text)
+    };
+    let mode = args.first().map(String::as_str).unwrap_or("status");
+    let code = match mode {
+        "status" => {
+            println!("swallow {}", state()?);
+            return Ok(());
+        }
+        "toggle" => 0,
+        "on" => 1,
+        "off" => 2,
+        _ => return Err(HELP.into()),
+    };
+    let before = state()?;
+    let expected = match code {
+        1 => "on".to_string(),
+        2 => "off".to_string(),
+        _ => if before == "on" { "off" } else { "on" }.to_string(),
+    };
+    send(c, root, atom(CMD_ATOM)?, [21, code, 0, 0, 0])?;
+    c.flush()?;
+    for _ in 0..100 {
+        if state()? == expected {
+            println!("swallow {expected}");
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Err("the window manager did not confirm the swallow change".into())
 }
 
 fn op_code(op: &str) -> u32 {

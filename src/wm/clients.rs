@@ -10,6 +10,7 @@ pub(crate) fn tiles(c: &Client, monitor: usize, active: u32, withdrawn: &HashSet
         && !c.floating
         && !c.fullscreen
         && c.scratch.is_none()
+        && c.swallowed_by.is_none()
         && !withdrawn.contains(&c.win)
 }
 
@@ -323,6 +324,37 @@ impl Wm {
                 },
             },
         };
+        // A program started from a terminal takes the terminal's place.
+        // Only an ordinary top-level window that nothing else places swallows:
+        // not a dialog or helper, not a scratchpad, not a restored window, not
+        // one a rule or `_NET_WM_DESKTOP` sends to a workspace.
+        let may_swallow = !self.adopting
+            && restored.is_none()
+            && transient.is_none()
+            && !dialog_floating
+            && focus_on_map
+            && !is_scratchpad
+            && !suite_settings
+            && !agent_window
+            && requested.is_none()
+            && !sticky
+            && rule
+                .as_ref()
+                .map_or(true, |r| r.workspace.is_none() && r.sticky != Some(true));
+        let swallowed = if may_swallow {
+            self.swallow_target(&class, self.window_pid(w))
+                .and_then(|t| {
+                    let index = self.clients.iter().position(|c| c.win == t)?;
+                    let c = &self.clients[index];
+                    Some((t, index, c.monitor, c.tag, c.floating, c.geom))
+                })
+        } else {
+            None
+        };
+        let (monitor, tag) = swallowed
+            .map(|(_, _, monitor, tag, _, _)| (monitor, tag))
+            .unwrap_or((monitor, tag));
+        let floating = floating || swallowed.is_some_and(|(_, _, _, _, f, _)| f);
         let monitor_name = self
             .monitors
             .get(monitor)
@@ -377,7 +409,15 @@ impl Wm {
             scratch: None,
             scratch_floating: false,
             guest_of,
+            urgent: false,
+            urgent_serial: 0,
+            swallowed_by: None,
         };
+        let mut client = client;
+        if let Some((_, _, _, _, true, geom)) = swallowed {
+            // A floating terminal hands over its rectangle.
+            client.geom = geom;
+        }
         if let Some(opacity) = rule.as_ref().and_then(|r| r.opacity) {
             let value = (u64::from(opacity.clamp(1, 100)) * u64::from(u32::MAX) / 100) as u32;
             self.prop(
@@ -392,7 +432,11 @@ impl Wm {
             .get(monitor)
             .and_then(|m| m.states.get(tag as usize))
             .is_some_and(|state| state.layout == Layout::Scroll);
-        let insert_at = if scroll && !floating {
+        let insert_at = if let Some((_, index, _, _, _, _)) = swallowed {
+            // The terminal's place in the tiling order; the terminal stays
+            // right after it, hidden.
+            index
+        } else if scroll && !floating {
             self.focus
                 .and_then(|focused| {
                     self.clients.iter().position(|c| {
@@ -409,6 +453,24 @@ impl Wm {
             self.clients.len()
         };
         self.clients.insert(insert_at, client);
+        if let Some((t, ..)) = swallowed {
+            self.swallow(w, t);
+            eprintln!(
+                "niruwm: window {w:#x} ({}) swallowed terminal {t:#x}",
+                class.replace('\0', " ").trim()
+            );
+        }
+        // After a restart, a terminal that was swallowed says by which window.
+        if self.adopting {
+            if let Some(owner) = self
+                .values(w, "_NIRUWM_SWALLOWED_BY")
+                .first()
+                .copied()
+                .filter(|o| *o != 0)
+            {
+                self.swallow_adopted.push((w, owner));
+            }
+        }
         if restored.as_ref().is_some_and(|r| r.focused) {
             // Remember the window that had focus last time; switching to its
             // workspace waits until the other restored windows have mapped.
@@ -421,7 +483,7 @@ impl Wm {
                 || rule.as_ref().and_then(|r| r.center).unwrap_or(false))
         {
             let screen = self.monitor_area(monitor, self.work_area());
-            if let Some(c) = self.clients.last_mut() {
+            if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
                 c.geom.w = c.geom.w.min(screen.w.saturating_sub(border * 2).max(1));
                 c.geom.h = c.geom.h.min(screen.h.saturating_sub(border * 2).max(1));
                 c.geom.x = screen.x + (screen.w as i16 - c.geom.w as i16 - (border * 2) as i16) / 2;
@@ -486,9 +548,9 @@ impl Wm {
         self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
         // Keep floating windows centred if the client asked for a 1x1 size
         // (common for dialogs that size themselves after mapping).
-        if floating && !is_scratchpad && (g.width <= 1 || g.height <= 1) {
+        if floating && !is_scratchpad && swallowed.is_none() && (g.width <= 1 || g.height <= 1) {
             let area = self.work_area();
-            if let Some(c) = self.clients.last_mut() {
+            if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
                 c.geom = Rect {
                     x: area.x + (area.w as i16 - 480) / 2,
                     y: area.y + (area.h as i16 - 320) / 2,
@@ -515,6 +577,9 @@ impl Wm {
             self.set_focus(w)?;
         }
         self.arrange()?;
+        // A window may ask for attention before it maps (or, adopted after a
+        // restart, still carry the request).
+        self.note_attention(w)?;
         if self.restore_remaining == 0 && self.restore_deadline.is_some() {
             self.finish_restore()?;
         }
@@ -547,6 +612,9 @@ impl Wm {
         if self.scratch_return == Some(w) {
             self.scratch_return = None;
         }
+        // A window that swallowed a terminal gives the terminal its place back.
+        let terminal_back = self.unswallow_for_closed(w);
+        let urgent_gone = self.clients.iter().any(|c| c.win == w && c.urgent);
         // Closing a scratchpad frees its slot: the slot is a property of the
         // client, so removing the client below is all it takes. Focus goes
         // back to where it was before the scratchpad was shown.
@@ -577,7 +645,11 @@ impl Wm {
                         .clients
                         .iter()
                         .filter(|c| {
-                            c.monitor == monitor && c.tag == tag && !c.floating && !c.fullscreen
+                            c.monitor == monitor
+                                && c.tag == tag
+                                && !c.floating
+                                && !c.fullscreen
+                                && c.swallowed_by.is_none()
                         })
                         .map(|c| c.win)
                         .collect();
@@ -604,10 +676,14 @@ impl Wm {
             self.clients.remove(pos);
         }
         self.hidden.remove(&w);
-        if self.focus == Some(w) {
-            let next = scratch_back.or(parent_back).or(neighbor);
+        if self.focus == Some(w) || (terminal_back.is_some() && self.focus.is_none()) {
+            // The terminal it swallowed comes back with the focus.
+            let next = terminal_back.or(scratch_back).or(parent_back).or(neighbor);
             self.focus = next;
             self.focus_dirty = next.is_some();
+        }
+        if urgent_gone {
+            let _ = self.publish_urgent();
         }
     }
 
@@ -678,6 +754,8 @@ impl Wm {
     /// Focus a client, with fallbacks that survive the common race where the
     /// window disappears between the event and the call.
     pub(crate) fn set_focus(&mut self, w: Window) -> Result<()> {
+        // A swallowed terminal is hidden; the window in its place has the focus.
+        let w = self.swallower_of(w).unwrap_or(w);
         if !self.clients.iter().any(|c| c.win == w) {
             return Ok(());
         }
@@ -729,6 +807,7 @@ impl Wm {
             AtomEnum::WINDOW.into(),
             &[w],
         )?;
+        self.clear_urgent_on_focus(w)?;
         self.update_borders()?;
         if previous != Some(w) {
             self.note_focus_change(w);
@@ -891,12 +970,21 @@ impl Wm {
     }
 
     pub(crate) fn update_borders(&self) -> Result<()> {
+        // Looked up only while a window asks for attention: it may read
+        // appearance.toml.
+        let urgent = self
+            .clients
+            .iter()
+            .any(|c| c.urgent)
+            .then(|| self.theme.urgent_pixel(&self.cfg.theme));
         for c in &self.clients {
-            if c.fullscreen {
+            if c.fullscreen || c.swallowed_by.is_some() {
                 continue;
             }
             let colour = if Some(c.win) == self.focus {
                 Theme::pixel(&self.theme.focus)?
+            } else if let (true, Some(pixel)) = (c.urgent, urgent) {
+                pixel
             } else {
                 Theme::pixel(&self.theme.border)?
             };
@@ -956,7 +1044,12 @@ impl Wm {
         let win = self
             .clients
             .iter()
-            .find(|c| c.monitor == target && c.tag == active && self.scratch_owner(c.win).is_none())
+            .find(|c| {
+                c.monitor == target
+                    && c.tag == active
+                    && c.swallowed_by.is_none()
+                    && self.scratch_owner(c.win).is_none()
+            })
             .map(|c| c.win);
         match win {
             Some(w) => self.set_focus(w),
@@ -1063,6 +1156,7 @@ impl Wm {
     pub(crate) fn arrange(&mut self) -> Result<()> {
         let area = self.work_area();
         self.settle_scratch();
+        self.settle_swallowed();
 
         // Tile each screen separately. A window is visible when its tag is the
         // active tag on its own screen, so two screens can show two different
@@ -1092,6 +1186,7 @@ impl Wm {
                     && c.tag == active
                     && c.fullscreen
                     && c.scratch.is_none()
+                    && c.swallowed_by.is_none()
                     && !self.withdrawn.contains(&c.win)
             });
             let (scroll_start, scroll_columns) = if layout == Layout::Scroll {
@@ -1157,6 +1252,11 @@ impl Wm {
                 // not a member of this workspace until it maps again. Skip it
                 // entirely so it consumes neither a tile box nor visible state.
                 if self.withdrawn.contains(&c.win) {
+                    continue;
+                }
+                // A swallowed terminal is not on any workspace until the
+                // window in its place closes.
+                if c.swallowed_by.is_some() {
                     continue;
                 }
                 // A hidden scratchpad is not on any workspace: no tile, no
@@ -1422,7 +1522,12 @@ impl Wm {
     /// Publish the desktop state in a way panels understand with several
     /// screens: one flat list of workspaces, with the focused screen's
     /// workspace selected.
-    fn publish_root32(&mut self, name: &'static str, ty: Atom, values: &[u32]) -> Result<()> {
+    pub(crate) fn publish_root32(
+        &mut self,
+        name: &'static str,
+        ty: Atom,
+        values: &[u32],
+    ) -> Result<()> {
         let bytes: Vec<u8> = values
             .iter()
             .flat_map(|value| value.to_ne_bytes())
@@ -1461,16 +1566,17 @@ impl Wm {
         self.publish_root32("_NET_CURRENT_DESKTOP", AtomEnum::CARDINAL.into(), &[active])?;
         // Scratchpads are not workspace members, so window lists and workspace
         // indicators never count them; `_NIRUWM_SCRATCHPADS` describes them.
+        // A swallowed terminal is hidden behind its window and listed nowhere.
         let list: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| self.scratch_owner(c.win).is_none())
+            .filter(|c| self.scratch_owner(c.win).is_none() && c.swallowed_by.is_none())
             .map(|c| c.win)
             .collect();
         let placements: Vec<(Window, u32)> = self
             .clients
             .iter()
-            .filter(|c| self.scratch_owner(c.win).is_none())
+            .filter(|c| self.scratch_owner(c.win).is_none() && c.swallowed_by.is_none())
             .map(|client| {
                 (
                     client.win,
@@ -1531,6 +1637,7 @@ impl Wm {
         // observing it sees the updated desktop assignments immediately.
         self.publish_root32("_NET_CLIENT_LIST", AtomEnum::WINDOW.into(), &list)?;
         self.publish_scratchpads()?;
+        self.publish_urgent()?;
         // The monitor layout contract lets one bar per output describe its own
         // workspace range without guessing from the focused monitor.
         //
@@ -1712,7 +1819,10 @@ impl Wm {
             .clients
             .iter()
             .filter(|c| {
-                c.monitor == self.focused_monitor && c.tag == self.active_tag() && !c.floating
+                c.monitor == self.focused_monitor
+                    && c.tag == self.active_tag()
+                    && !c.floating
+                    && c.swallowed_by.is_none()
             })
             .map(|c| c.win)
             .collect();
@@ -1773,7 +1883,12 @@ impl Wm {
         let visible: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| c.monitor == monitor && c.tag == tag && !self.scratch_hidden(c))
+            .filter(|c| {
+                c.monitor == monitor
+                    && c.tag == tag
+                    && c.swallowed_by.is_none()
+                    && !self.scratch_hidden(c)
+            })
             .map(|c| c.win)
             .collect();
         if visible.is_empty() {
@@ -1840,7 +1955,10 @@ impl Wm {
             self.clients
                 .iter()
                 .find(|c| {
-                    c.monitor == next && c.tag == active && self.scratch_owner(c.win).is_none()
+                    c.monitor == next
+                        && c.tag == active
+                        && c.swallowed_by.is_none()
+                        && self.scratch_owner(c.win).is_none()
                 })
                 .map(|c| c.win)
         });
@@ -1970,6 +2088,9 @@ mod tests {
             scratch: None,
             scratch_floating: false,
             guest_of: None,
+            urgent: false,
+            urgent_serial: 0,
+            swallowed_by: None,
         }
     }
 

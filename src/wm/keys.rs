@@ -411,6 +411,11 @@ impl Wm {
             }
             Action::SwapNext => self.swap(1)?,
             Action::SwapPrev => self.swap(-1)?,
+            Action::FocusUrgent => self.focus_urgent()?,
+            Action::SwallowToggle => {
+                let on = !self.swallow_enabled;
+                self.set_swallow(on);
+            }
             Action::FocusMonitor(d) => self.focus_monitor(d)?,
             Action::TagMonitor(d) => self.move_to_monitor(d)?,
         }

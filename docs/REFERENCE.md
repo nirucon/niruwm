@@ -30,7 +30,17 @@ niructl input set-pointer natural on
 niructl task list
 niructl agent --dry-run "explain why the microphone is silent"
 niructl windows rescue --dry-run
+niructl urgent [--json]        # windows that asked for attention, newest last
+niructl urgent focus           # go to the newest one (Super+Shift+U)
+niructl swallow on|off|toggle|status
 ```
+
+`niructl urgent` reads `_NIRUWM_URGENT` (a WINDOW list on the root window,
+oldest request first); a window in a scratchpad is listed as `scratchpad`.
+`niructl swallow` changes window swallowing for the running session only and
+reports the state the window manager publishes in `_NIRUWM_SWALLOW`;
+`[swallow] enabled` in config.toml is the setting for every login. A window
+manager started again after a crash keeps the session's switch.
 
 `niruthemeselector` is the graphical front end for themes: it previews
 wallpaper and palette, applies through the same path and manages user imports

@@ -36,8 +36,15 @@ display manager starts), `niruclipboard` (clipboard history helper) and
   (`Super+Alt+1…9`); any window can be sent to a slot. A shown scratchpad
   stays on top until you hide it, and its dialogs (an Open or Save dialog,
   for example) stay above it and are hidden and shown with it.
+- Window swallowing, on by default: a program started from a terminal
+  (`mpv`, `zathura`, `feh`, …) takes the terminal's place, and the terminal
+  comes back where it was when the program closes.
+- Urgency like dwm: a window that asks for attention gets the attention
+  colour as its border and on its workspace cell in NIRUBAR, and
+  `Super+Shift+U` goes to it.
 - A crash of the window manager does not end the session: `niruwm-session`
-  starts it again, and every open window keeps its workspace and scratchpad.
+  starts it again, and every open window keeps its workspace and scratchpad;
+  a swallowed terminal stays hidden behind its program.
 - Window rules for floating, centering, workspace, sticky and compositor opacity.
 - Session save/restore, autostart, workspace recipes and focus/presentation
   modes through `niructl`.
@@ -127,6 +134,7 @@ The most important keys (the full list is in
 | `Super+Shift+E` | Toggle fullscreen |
 | `Super+Shift+S` | Show / hide the default scratchpad |
 | `Super+Alt+S` | Toggle sticky |
+| `Super+Shift+U` | Go to the window that asked for attention (urgent) |
 | `Super+Escape` | Lock |
 | `Super+Q` | Close window |
 | `Super+R` | Reload configuration |
@@ -141,6 +149,8 @@ niructl keys run super+t             # run what a key is bound to
 niructl theme niru-nord              # switch theme
 niructl layout monocle               # this workspace only
 niructl scratchpad 2 toggle
+niructl urgent                       # windows that asked for attention; `urgent focus` goes there
+niructl swallow off                  # window swallowing for this session (on|off|toggle|status)
 niructl bar bottom
 niructl display save Desk            # save the current screen layout
 niructl display apply Desk
@@ -180,6 +190,7 @@ previous settings in effect.
 | `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each) |
 | `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
 | `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
+| `[swallow]` | Window swallowing: `enabled` (default `true`), `terminals`, `exclude` |
 | `[[rules]]` | Window rules: `class`, `workspace`, `floating`, `center`, `sticky`, opacity |
 | `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one; an optional `description` is shown in the cheat sheet |
 
@@ -198,6 +209,33 @@ hide_on_focus_loss = true   # default: false
 
 A dialog that belongs to a scratchpad does not count as another window: the
 scratchpad stays open while its dialog has the focus.
+
+### Window swallowing and urgency
+
+When a terminal starts a program that opens a window, the window takes the
+terminal's place: same workspace, same position in the tiling order, the
+terminal's size when it floats. The terminal is hidden until the window
+closes, then it comes back in place with the focus. Terminals are recognised
+by window class, the program by its process (`_NET_WM_PID`, or the X server's
+client PID), whose parent chain must lead to the terminal. Dialogs,
+scratchpads, windows a rule sends to a workspace, other terminals and the
+classes in `exclude` never swallow. Swallowing is on when `[swallow]` is
+absent; `niructl swallow off` turns it off until the next login:
+
+```toml
+[swallow]
+enabled = true                       # default
+# terminals = ["kitty", "XTerm"]     # replaces the built-in list
+# exclude = ["firefox", "mpv"]       # replaces the built-in list
+```
+
+A window that sets the ICCCM urgency hint or `_NET_WM_STATE_DEMANDS_ATTENTION`
+(a terminal bell, a chat message) is marked unless it has the focus: its
+border and its workspace cell in NIRUBAR take the theme's attention colour.
+`Super+Shift+U` (or `niructl urgent focus`) goes to the most recent one,
+switching screen and workspace or showing its scratchpad; the focus clears
+the mark. Activation requests (`_NET_ACTIVE_WINDOW`) from pagers, window
+switchers and notifications are always honoured, so they never need a mark.
 
 The default workspace labels are numbers 1–10; to use icons or names, edit
 `[bar] tags` using the presets commented in the example. After editing, press

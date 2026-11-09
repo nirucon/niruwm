@@ -179,6 +179,10 @@ impl Wm {
                     }
                 }
                 Event::ConfigureRequest(e) => self.configure_request(e)?,
+                // A window asks for attention, or stops asking.
+                Event::PropertyNotify(e) if e.atom == u32::from(AtomEnum::WM_HINTS) => {
+                    self.note_attention(e.window)?;
+                }
                 // Moving between two empty desktops stays inside the root
                 // window, so no EnterNotify arrives at the boundary. Follow
                 // root-level motion as well, otherwise keys keep going to the
@@ -440,6 +444,22 @@ impl Wm {
                     .filter(|n| (1..=9).contains(n))
                     .map(Action::ScratchpadSend),
                 17 => Some(Action::Unscratch),
+                // 20: go to the window that asked for attention most recently.
+                20 => Some(Action::FocusUrgent),
+                // 21: window swallowing, d[1] 0 toggle, 1 on, 2 off.
+                21 => {
+                    let on = match d[1] {
+                        1 => true,
+                        2 => false,
+                        _ => !self.swallow_enabled,
+                    };
+                    self.set_swallow(on);
+                    eprintln!(
+                        "niruwm: window swallowing {}",
+                        if on { "on" } else { "off" }
+                    );
+                    None
+                }
                 // 19: run the binding on modifiers d[1] + keysym d[2].
                 19 => self.bound_action(d[1], d[2]),
                 18 => {
@@ -538,30 +558,11 @@ impl Wm {
             // From an external pager: a zero-based global desktop.
             self.view_global(d[0])?;
         } else if e.type_ == self.atom("_NET_ACTIVE_WINDOW") {
-            // Activating a scratchpad (a window switcher, a notification)
-            // shows it where the user is instead of switching workspace.
-            if self.is_scratch(e.window) {
-                if self.scratch_shown != Some(e.window) {
-                    self.show_scratch(e.window)?;
-                }
-                self.arrange()?;
-                return Ok(true);
-            }
-            if let Some(c) = self.clients.iter().find(|c| c.win == e.window) {
-                let (monitor, tag) = (c.monitor, c.tag);
-                self.focused_monitor = monitor;
-                if let Some(m) = self.monitors.get_mut(monitor) {
-                    m.active = tag as usize;
-                }
-                // A Scroll column may be intentionally unmapped. Set the
-                // requested focus before arranging so the viewport reveals it,
-                // then focus the now-mapped window.
-                self.focus = Some(e.window);
-                self.publish_layout_readonly()?;
-                self.arrange()?;
-                if !self.hidden.contains(&e.window) {
-                    self.set_focus(e.window)?;
-                }
+            // NIRUWM honours every activation request (a pager, a window
+            // switcher, a notification): it switches to the window's screen
+            // and workspace, or shows its scratchpad. See `activate`.
+            if self.clients.iter().any(|c| c.win == e.window) {
+                self.activate(e.window)?;
             }
         } else if e.type_ == self.atom("_NET_WM_STATE") {
             self.handle_wm_state(e)?;
@@ -571,6 +572,25 @@ impl Wm {
 
     fn handle_wm_state(&mut self, e: ClientMessageEvent) -> Result<()> {
         let d = e.data.as_data32();
+        let attention = self.atom("_NET_WM_STATE_DEMANDS_ATTENTION");
+        if (d[1] == attention || d[2] == attention)
+            && self.clients.iter().any(|c| c.win == e.window)
+        {
+            // EWMH: the window manager keeps `_NET_WM_STATE`; the mark itself
+            // follows from it (and from WM_HINTS) in `note_attention`.
+            let existing = self.values(e.window, "_NET_WM_STATE");
+            let has = existing.contains(&attention);
+            let wanted = match d[0] {
+                0 => false,
+                1 => true,
+                _ => !has,
+            };
+            if wanted != has {
+                let state = next_state_atoms(&existing, attention, wanted);
+                self.prop(e.window, "_NET_WM_STATE", AtomEnum::ATOM.into(), &state)?;
+            }
+            self.note_attention(e.window)?;
+        }
         let is_fullscreen = d[1] == self.atom("_NET_WM_STATE_FULLSCREEN")
             || d[2] == self.atom("_NET_WM_STATE_FULLSCREEN");
         if !is_fullscreen {
@@ -587,34 +607,31 @@ impl Wm {
         c.fullscreen = fullscreen;
         let full = self.atom("_NET_WM_STATE_FULLSCREEN");
         let existing = self.values(e.window, "_NET_WM_STATE");
-        let state = next_fullscreen_states(&existing, full, fullscreen);
+        let state = next_state_atoms(&existing, full, fullscreen);
         self.prop(e.window, "_NET_WM_STATE", AtomEnum::ATOM.into(), &state)?;
         self.arrange()
     }
 }
 
-/// Add or remove fullscreen without erasing unrelated EWMH state atoms.
-fn next_fullscreen_states(existing: &[u32], fullscreen: u32, enabled: bool) -> Vec<u32> {
-    let mut state: Vec<u32> = existing
-        .iter()
-        .copied()
-        .filter(|atom| *atom != fullscreen)
-        .collect();
+/// Add or remove one state atom (fullscreen, demands-attention) without
+/// erasing unrelated EWMH state atoms.
+pub(super) fn next_state_atoms(existing: &[u32], atom: u32, enabled: bool) -> Vec<u32> {
+    let mut state: Vec<u32> = existing.iter().copied().filter(|a| *a != atom).collect();
     if enabled {
-        state.push(fullscreen);
+        state.push(atom);
     }
     state
 }
 
 #[cfg(test)]
 mod state_tests {
-    use super::next_fullscreen_states;
+    use super::next_state_atoms;
 
     #[test]
     fn fullscreen_transition_preserves_unrelated_state_atoms() {
-        let states = next_fullscreen_states(&[7, 11, 13], 11, true);
+        let states = next_state_atoms(&[7, 11, 13], 11, true);
         assert_eq!(states, vec![7, 13, 11]);
-        assert_eq!(next_fullscreen_states(&states, 11, false), vec![7, 13]);
-        assert_eq!(next_fullscreen_states(&states, 11, true), vec![7, 13, 11]);
+        assert_eq!(next_state_atoms(&states, 11, false), vec![7, 13]);
+        assert_eq!(next_state_atoms(&states, 11, true), vec![7, 13, 11]);
     }
 }

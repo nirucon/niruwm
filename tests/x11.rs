@@ -2145,3 +2145,232 @@ fn a_shifted_symbol_never_takes_over_the_workspace_key() {
     drop(wm);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// A window with a WM_CLASS and the `_NET_WM_PID` of a given process, mapped.
+fn create_for_pid(c: &RustConnection, root: Window, class: &[u8], pid: u32) -> Window {
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        10,
+        10,
+        300,
+        200,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        w,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        class,
+    )
+    .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        w,
+        atom(c, "_NET_WM_PID"),
+        AtomEnum::CARDINAL,
+        &[pid],
+    )
+    .unwrap();
+    c.map_window(w).unwrap();
+    c.flush().unwrap();
+    w
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_program_started_from_a_terminal_swallows_it_and_gives_it_back() {
+    let dir = std::env::temp_dir().join(format!("niruwm-swallow-{}", std::process::id()));
+    let mut first = scratch_wm(&dir, "");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    wait(|| text(&c, root, "_NIRUWM_SWALLOW") == "on");
+    // The "terminal" belongs to this process; the "program" to a child of it.
+    let other = create(&c, root, b"other\0Other\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![other]);
+    let term = create_for_pid(&c, root, b"xterm\0XTerm\0", std::process::id());
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![term]);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![other, term]);
+    let term_place = geometry(&c, term);
+    let child = Process(Command::new("sleep").arg("60").spawn().unwrap());
+    let gui = create_for_pid(&c, root, b"mpv\0mpv\0", child.0.id());
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![other, gui]);
+    wait(|| mapped(&c, gui) && !mapped(&c, term));
+    assert_eq!(values(&c, root, "_NET_ACTIVE_WINDOW"), vec![gui]);
+    assert_eq!(
+        geometry(&c, gui),
+        term_place,
+        "the program takes the terminal's tile"
+    );
+    assert_eq!(values(&c, term, "_NIRUWM_SWALLOWED_BY"), vec![gui]);
+    // A terminal opened from the terminal is not swallowed.
+    let child_term = Process(Command::new("sleep").arg("60").spawn().unwrap());
+    let nested = create_for_pid(&c, root, b"xterm\0XTerm\0", child_term.0.id());
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![other, gui, nested]);
+    c.destroy_window(nested).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![other, gui]);
+
+    // The manager dies while the terminal is swallowed. The X server maps the
+    // terminal again; the new manager hides it again behind the program.
+    let _ = first.0.kill();
+    let _ = first.0.wait();
+    wait(|| mapped(&c, term));
+    let mut second = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("NIRUWM_RESTARTED", "1")
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        let mut list = values(&c, root, "_NET_CLIENT_LIST");
+        list.sort_unstable();
+        let mut want = vec![other, gui];
+        want.sort_unstable();
+        list == want
+    });
+    wait(|| mapped(&c, gui) && !mapped(&c, term));
+
+    // Off brings the terminal back at once; on again swallows the next one.
+    message(&c, root, root, "_NIRUWM_COMMAND", [21, 2, 0, 0, 0]);
+    wait(|| text(&c, root, "_NIRUWM_SWALLOW") == "off");
+    wait(|| mapped(&c, term) && mapped(&c, gui));
+    assert!(values(&c, term, "_NIRUWM_SWALLOWED_BY").is_empty());
+    c.destroy_window(gui).unwrap();
+    c.flush().unwrap();
+    wait(|| !values(&c, root, "_NET_CLIENT_LIST").contains(&gui));
+    message(&c, root, root, "_NIRUWM_COMMAND", [21, 0, 0, 0, 0]);
+    wait(|| text(&c, root, "_NIRUWM_SWALLOW") == "on");
+    message(&c, root, term, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![term]);
+    let again = create_for_pid(&c, root, b"feh\0feh\0", child.0.id());
+    wait(|| mapped(&c, again) && !mapped(&c, term));
+    // Activating the hidden terminal shows the window in its place.
+    message(&c, root, term, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![again]);
+    // The program closes: the terminal is back in its place with the focus.
+    let again_place = geometry(&c, again);
+    c.destroy_window(again).unwrap();
+    c.flush().unwrap();
+    wait(|| mapped(&c, term));
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![term]);
+    assert!(values(&c, root, "_NET_CLIENT_LIST").contains(&term));
+    assert_eq!(
+        geometry(&c, term),
+        again_place,
+        "the terminal takes the tile back"
+    );
+
+    // A program without `_NET_WM_PID` (plain Xt and Xaw ones) is found
+    // through the X-Resource client PID: here this test process, whose
+    // parent plays the terminal.
+    let outer = create_for_pid(
+        &c,
+        root,
+        b"xterm\0XTerm\0",
+        std::os::unix::process::parent_id(),
+    );
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![outer]);
+    let plain = create(&c, root, b"xclock\0XClock\0");
+    wait(|| mapped(&c, plain) && !mapped(&c, outer));
+    assert_eq!(values(&c, outer, "_NIRUWM_SWALLOWED_BY"), vec![plain]);
+    c.destroy_window(plain).unwrap();
+    c.flush().unwrap();
+    wait(|| mapped(&c, outer));
+
+    for w in [other, term, outer] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| second.0.try_wait().unwrap().is_some());
+    drop(child);
+    drop(child_term);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn urgent_windows_are_marked_and_the_attention_key_goes_to_them() {
+    let dir = std::env::temp_dir().join(format!("niruwm-urgent-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let urgent_hint = |w: Window, on: bool| {
+        let mut hints = x11rb::properties::WmHints::get(&c, w)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .unwrap_or_default();
+        hints.urgent = on;
+        hints.set(&c, w).unwrap();
+        c.flush().unwrap();
+    };
+    let hint_is_urgent = |w: Window| {
+        x11rb::properties::WmHints::get(&c, w)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .is_some_and(|h| h.urgent)
+    };
+    let a = create(&c, root, b"one\0One\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    let b = create(&c, root, b"two\0Two\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    // b goes to workspace 3 and asks for attention there.
+    message(&c, root, b, "_NET_WM_DESKTOP", [2, 0, 0, 0, 0]);
+    wait(|| !mapped(&c, b));
+    urgent_hint(b, true);
+    wait(|| values(&c, root, "_NIRUWM_URGENT") == vec![b]);
+    // The focused window is never marked: its request is answered at once.
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    urgent_hint(a, true);
+    wait(|| !hint_is_urgent(a));
+    assert_eq!(values(&c, root, "_NIRUWM_URGENT"), vec![b]);
+    // _NET_WM_STATE_DEMANDS_ATTENTION marks an unfocused window as well.
+    let k = create(&c, root, b"three\0Three\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![k]);
+    let attention = atom(&c, "_NET_WM_STATE_DEMANDS_ATTENTION");
+    message(&c, root, a, "_NET_WM_STATE", [1, attention, 0, 1, 0]);
+    wait(|| values(&c, root, "_NIRUWM_URGENT") == vec![b, a]);
+    assert!(values(&c, a, "_NET_WM_STATE").contains(&attention));
+    // The key goes to the newest request first, then to the older one on
+    // another workspace, clearing each window's hints.
+    message(&c, root, root, "_NIRUWM_COMMAND", [20, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    wait(|| values(&c, root, "_NIRUWM_URGENT") == vec![b]);
+    assert!(!values(&c, a, "_NET_WM_STATE").contains(&attention));
+    message(&c, root, root, "_NIRUWM_COMMAND", [20, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    wait(|| values(&c, root, "_NIRUWM_URGENT").is_empty());
+    assert_eq!(values(&c, root, "_NET_CURRENT_DESKTOP"), vec![2]);
+    assert!(!hint_is_urgent(b), "the urgency hint is cleared on focus");
+    // A client that clears its own hint is unmarked too.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    urgent_hint(b, true);
+    wait(|| values(&c, root, "_NIRUWM_URGENT") == vec![b]);
+    urgent_hint(b, false);
+    wait(|| values(&c, root, "_NIRUWM_URGENT").is_empty());
+
+    for w in [a, b, k] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

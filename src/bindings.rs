@@ -100,6 +100,11 @@ pub enum Action {
     /// Keep the screen awake until toggled off.
     IdleToggle,
     SwapPrev,
+    /// Go to the window that asked for attention most recently: its screen
+    /// and workspace, or its scratchpad (Super+Shift+U).
+    FocusUrgent,
+    /// Window swallowing on or off for this session.
+    SwallowToggle,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -360,6 +365,9 @@ impl Action {
         add("super+d", "dec_master");
         add("super+shift+j", "swap_next");
         add("super+shift+k", "swap_prev");
+        // Super+U is the centred floating layout; Shift goes to the window
+        // that asked for attention (dwm marks it urgent).
+        add("super+shift+u", "focus_urgent");
 
         // ── Focus ───────────────────────────────────────────────────────────
         // Multi-monitor bindings are inert until
@@ -555,6 +563,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "nightlight_toggle" => Action::NightlightToggle,
         "dnd_toggle" => Action::DndToggle,
         "idle_toggle" => Action::IdleToggle,
+        "focus_urgent" => Action::FocusUrgent,
+        "swallow_toggle" => Action::SwallowToggle,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {
@@ -741,6 +751,10 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::NightlightToggle => s(session, "Night light on or off"),
         Action::DndToggle => s(session, "Do Not Disturb on or off"),
         Action::IdleToggle => s(session, "Keep the screen awake on or off"),
+        Action::SwallowToggle => s(
+            session,
+            "Window swallowing on or off (a program started from a terminal takes its place)",
+        ),
         Action::SetLayout(id) => (layouts, format!("Layout: {}", layout_words(id))),
         Action::SetScrollColumns(c) => (
             layouts,
@@ -779,6 +793,7 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::ToggleFullscreen => s(focus, "Fullscreen on or off"),
         Action::ToggleSticky => s(focus, "Sticky (on every workspace) on or off"),
         Action::Close => s(focus, "Close the window"),
+        Action::FocusUrgent => s(focus, "Go to the window that asked for attention (urgent)"),
         Action::FocusMonitor(d) => (
             focus,
             format!(
