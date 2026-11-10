@@ -8907,7 +8907,13 @@ fn restart_wm(
     match answer {
         Some(true) => {}
         Some(false) => {
-            return Err("the window manager refused to restart (the screen is locked, or its state could not be saved; see the session log)".into())
+            // The screen was locked again between the unlock and the request
+            // (a quick relock, or the idle lock). Keep waiting for the next
+            // unlock instead of dropping the update until the next login.
+            if after_unlock && ready_lock(c, root).is_some() {
+                return restart_wm(c, root, args);
+            }
+            return Err("the window manager refused to restart (the screen is locked, or its state could not be saved; see the session log)".into());
         }
         None => return Err("the window manager did not answer the restart request".into()),
     }
