@@ -12,6 +12,8 @@ Run `niructl` without arguments to print the full usage line. The most used comm
 ```sh
 niructl reload                 # reload WM, bar and theme
 niructl restart-bar
+niructl restart-wm             # run the installed NIRUWM now; windows stay
+niructl restart-wm --check     # exit 0 when the running session can do that
 niructl bar top|bottom|hide|show|toggle|cycle|status
 niructl theme niru-nord
 niructl themes                 # catalogue, origin and active marker
@@ -74,7 +76,7 @@ Screensaver and lock timing live in the shared config under `[idle]`:
 ```toml
 [idle]
 screensaver_timeout = 15      # idle minutes before the screensaver
-lock_after_screensaver = 15   # screensaver minutes before locking
+lock_after_screensaver = 15   # screensaver minutes before locking; 0 locks at screensaver_timeout
 dpms_off_after_lock = 15      # minutes after locking before the display sleeps
 ```
 
@@ -114,6 +116,29 @@ For a TTY login, run `startx "$HOME/.local/bin/niruwm-session"` (or plain
 `${XDG_CACHE_HOME:-$HOME/.cache}/niruwm/runtime` before starting D-Bus/audio.
 Startup errors and WM errors are recorded in
 `${XDG_STATE_HOME:-$HOME/.local/state}/niruwm/session.log`.
+
+### Restart in place
+
+`niructl restart-wm` replaces the running window manager with the installed
+binary without ending the session (NIRUX runs it after `nirux update`).
+NIRUWM writes its window state to
+`$XDG_RUNTIME_DIR/niruwm/restart-<display>.json` (mode 600, read once by the
+next manager and removed), keeps hidden windows unmapped and exits with status
+75. `niruwm-session` then runs the installed session script in the same
+process with the same helpers: it replaces NIRUNOTIFY, NIRUIDLE,
+`niruclipboard`, `nirugestured`, NIRUSHARE and the `niructl` watchers only when
+their program changed (by checksum), never the lock screen, and keeps NIRUIDLE
+while the screen is locked or the screensaver is up. It then starts the new
+NIRUWM, which adopts every window as it was. When that manager stops within 20
+seconds, the session runs the previous one again.
+
+- While the screen is locked, `niructl restart-wm` returns at once and the
+  restart runs in the background after the unlock.
+- `niructl restart-wm --check` exits 0 when the running manager and session
+  can restart in place, and 3 (with a message) when they cannot: a manager or
+  session from before NIRUWM 0.23.0 needs one more logout and login.
+- The log says `restart in place requested`, `restart: replaced helpers: ...`
+  and `restarted in place from NIRUWM X; N of M windows adopted`.
 
 
 ## Theme wallpapers

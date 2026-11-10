@@ -365,6 +365,20 @@ impl Wm {
                 self.c.flush()?;
                 return Ok(true);
             }
+            if d[0] == 22 {
+                // `niructl restart-wm`: d[1] is the serial it waits for. The
+                // answer is published before leaving; the high bit says no.
+                let accepted = super::restart::session_supports_restart() && self.prepare_restart();
+                let _ = self.c.change_property32(
+                    PropMode::REPLACE,
+                    self.root,
+                    self.atom("_NIRUWM_RESTART_ACK"),
+                    AtomEnum::CARDINAL,
+                    &[if accepted { d[1] } else { d[1] | 0x8000_0000 }],
+                );
+                self.c.flush()?;
+                return Ok(!accepted);
+            }
             // The control channel speaks the same actions as the key table,
             // so `niructl` and a binding can never drift apart.
             // The protocol carries zero-based indices (as EWMH does), while

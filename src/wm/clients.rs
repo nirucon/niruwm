@@ -471,6 +471,17 @@ impl Wm {
                 self.swallow_adopted.push((w, owner));
             }
         }
+        // A restart in place left this window's exact state behind.
+        let keep_hidden = match self.restart_saved.remove(&w) {
+            Some(saved) if self.adopting => self.apply_restart_client(w, &saved),
+            _ => false,
+        };
+        let (monitor, tag) = self
+            .clients
+            .iter()
+            .find(|c| c.win == w)
+            .map(|c| (c.monitor, c.tag))
+            .unwrap_or((monitor, tag));
         if restored.as_ref().is_some_and(|r| r.focused) {
             // Remember the window that had focus last time; switching to its
             // workspace waits until the other restored windows have mapped.
@@ -559,7 +570,14 @@ impl Wm {
                 };
             }
         }
-        self.c.map_window(w)?;
+        if keep_hidden {
+            // Hidden before the restart (another workspace, a hidden
+            // scratchpad, a swallowed terminal): arrange() maps it when it is
+            // shown, so it never flashes up now.
+            self.hidden.insert(w);
+        } else {
+            self.c.map_window(w)?;
+        }
         // A restored window must not move focus while its siblings are still
         // starting; the saved focus is applied once restore has settled.
         if suite_settings {

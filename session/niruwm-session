@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.22.4'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.23.0'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -96,6 +96,25 @@ START_PICOM="${START_PICOM:-1}"
 START_IDLE="${START_IDLE:-1}"
 START_SLEEP_LOCK="${START_SLEEP_LOCK:-1}"
 
+# ── Restart in place ────────────────────────────────────────────────────────
+# `niructl restart-wm` makes NIRUWM save its windows and exit with status 75.
+# This script then runs the installed session script again with
+# NIRUWM_SESSION_CONTINUE=1: the X server, D-Bus, audio and every open window
+# stay; only the window manager and the helpers whose program changed are
+# replaced. NIRUWM offers the command only when this variable says the
+# session script understands status 75.
+WM_RESTART_STATUS=75
+NIRUWM_SESSION_RESTART=1
+export NIRUWM_SESSION_RESTART
+CONTINUE="${NIRUWM_SESSION_CONTINUE:-0}"
+unset NIRUWM_SESSION_CONTINUE
+case "$0" in
+  /*) SESSION_SCRIPT=$0 ;;
+  *) SESSION_SCRIPT="$SELF_DIR/$(basename -- "$0")" ;;
+esac
+
+# A restart in place already has all of this: the environment is inherited.
+if [ "$CONTINUE" != 1 ]; then
 # A plain startx login may have no elogind/PAM runtime directory. A user cannot
 # mkdir /run/user/<uid>; never make audio setup a prerequisite for starting X.
 # Establish one private, user-owned directory before D-Bus and all helpers.
@@ -241,6 +260,7 @@ fi
 if [ -x "$HOME/.local/bin/nirux-theme-hook" ]; then
   "$HOME/.local/bin/nirux-theme-hook" >/dev/null 2>&1 || log 'terminal theme hook failed'
 fi
+fi # end of first-start-only setup
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
 STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""; NIRUDICTATE_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
@@ -271,6 +291,7 @@ cleanup() {
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
+if [ "$CONTINUE" != 1 ]; then
 # Graphical privilege prompts need a Polkit agent. Do not start a second one
 # when a desktop session already owns the role.
 if ! pgrep -u "$(id -u)" -f 'polkit.*authentication-agent' >/dev/null 2>&1; then
@@ -290,6 +311,7 @@ if [ "$START_PICOM" = 1 ] && command -v picom >/dev/null 2>&1 &&
    ! pgrep -u "$(id -u)" -x picom >/dev/null 2>&1; then
   picom >/dev/null 2>&1 & PICOM_PID=$!
 fi
+fi # end of first-start-only Polkit and compositor
 start_dunst() {
   if [ "$START_DUNST" = 1 ] && command -v dunst >/dev/null 2>&1 &&
      ! pgrep -u "$(id -u)" -x dunst >/dev/null 2>&1; then
@@ -319,6 +341,7 @@ start_nirunotify() {
   done
   return 0
 }
+if [ "$CONTINUE" != 1 ]; then
 # Clipboard history is a small foreground daemon that owns no policy beyond
 # the bounded local file in ~/.local/state/niru. It is optional and silent.
 if command -v niruclipboard >/dev/null 2>&1; then
@@ -468,12 +491,14 @@ fi
 # manager throws stderr away. A session that stops without a reason is what a
 # blank screen with only the pointer looks like; this is the one place a
 # person can find out why afterwards.
+if [ "$CONTINUE" != 1 ]; then
 {
   printf '\n=== %s session start ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
   printf 'exec: %s\n' "$WM"
   printf 'config: %s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/niruwm/config.toml"
 } >>"$WM_LOG" 2>/dev/null || WM_LOG=/dev/null
-if command -v niructl >/dev/null 2>&1; then
+fi
+if [ "$CONTINUE" != 1 ] && command -v niructl >/dev/null 2>&1; then
   (
     i=0
     while [ "$i" -lt 100 ]; do
@@ -496,7 +521,7 @@ if command -v niructl >/dev/null 2>&1; then
     fi
   ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
 fi
-if command -v nirux >/dev/null 2>&1; then
+if [ "$CONTINUE" != 1 ] && command -v nirux >/dev/null 2>&1; then
   nirux sounds play startup >/dev/null 2>&1 & STARTUP_SOUND_PID=$!
 fi
 # Start NIRUSHARE only when its component is installed and no service is
@@ -514,6 +539,145 @@ if command -v nirudictate >/dev/null 2>&1; then
   mkdir -p "$LOG_DIR" 2>/dev/null || :
   nirudictate autostart >>"$LOG_DIR/nirudictate.log" 2>&1 & NIRUDICTATE_PID=$!
 fi
+fi # end of first-start-only helpers
+
+# ── Helpers across a restart in place ───────────────────────────────────────
+# Every PID this script tracks, so logout still stops what an earlier copy of
+# the script started.
+TRACKED="STATUS_PID DUNST_PID NOTIFY_PID CLIPBOARD_PID GESTURES_PID STARTUP_SOUND_PID PICOM_PID IDLE_PID LOCK_PID BAT_PID AUTO_PID SLEEP_LOCK_PID NIGHTLIGHT_PID POLKIT_PID AUTOSTART_PID DISPLAY_WATCH_PID NIRUSHARE_PID NIRUDICTATE_PID PIPEWIRE_PID WIREPLUMBER_PID PULSE_PID"
+# The helpers that come from the NIRUX generation and are replaced when their
+# program changed: PID variable and program name. nirulock is never in this
+# list: a lock screen is not touched by a restart.
+REPLACEABLE="NOTIFY_PID:nirunotify CLIPBOARD_PID:niruclipboard GESTURES_PID:nirugestured IDLE_PID:niruidle NIGHTLIGHT_PID:niructl DISPLAY_WATCH_PID:niructl NIRUSHARE_PID:nirushare"
+# A checksum of the program a helper was started from, so a changed program
+# is found even when it was replaced at the same path.
+program_sum() {
+  ps_file=$(command -v "$1" 2>/dev/null) || return 0
+  ps_file=$(readlink -f "$ps_file" 2>/dev/null || printf '%s' "$ps_file")
+  [ -r "$ps_file" ] || return 0
+  cksum < "$ps_file" 2>/dev/null | awk '{print $1 "-" $2}'
+}
+record_sums() {
+  for entry in $REPLACEABLE; do
+    var=${entry%%:*}
+    eval "pid=\${$var:-}"
+    [ -n "$pid" ] || continue
+    eval "SUM_$var=\$(program_sum ${entry#*:})"
+  done
+}
+# Hand every tracked PID and program checksum to the next copy of this script.
+export_tracked() {
+  for var in $TRACKED; do
+    eval "pid=\${$var:-}"
+    eval "sum=\${SUM_$var:-}"
+    eval "NIRUWM_TRACK_$var=\"\$pid \$sum\""
+    export "NIRUWM_TRACK_$var"
+  done
+}
+import_tracked() {
+  value=""
+  for var in $TRACKED; do
+    eval "value=\${NIRUWM_TRACK_$var:-}"
+    unset "NIRUWM_TRACK_$var"
+    pid=${value%% *}
+    sum=${value#* }
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    eval "$var=\$pid"
+    case "$sum" in ''|*[!0-9-]*) ;; *) eval "SUM_$var=\$sum" ;; esac
+  done
+}
+alive() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1
+  # A helper that exited stays a zombie until the shell reaps it.
+  al_state=$(sed -n 's/^State:[[:space:]]*\([A-Z]\).*/\1/p' "/proc/$1/status" 2>/dev/null)
+  [ "$al_state" != Z ]
+}
+stop_helper() {
+  kill "$1" 2>/dev/null || return 0
+  sh_i=0
+  while [ "$sh_i" -lt 30 ] && alive "$1"; do sleep 0.1; sh_i=$((sh_i + 1)); done
+  if alive "$1"; then kill -9 "$1" 2>/dev/null || :; fi
+}
+# The PIDs of program $1 that belong to this display. Another X session of
+# the same user (a second seat, a nested test) keeps its own processes.
+display_pids() {
+  for dp_pid in $(pgrep -u "$(id -u)" -x "$1" 2>/dev/null); do
+    dp_display=$(tr '\0' '\n' < "/proc/$dp_pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p')
+    [ "$dp_display" = "$DISPLAY" ] && printf '%s\n' "$dp_pid"
+  done
+  return 0
+}
+on_this_display() { [ -n "$(display_pids "$1")" ]; }
+# Bars left by a manager that stopped without stopping them (a crash).
+stop_display_bars() {
+  for sb_pid in $(display_pids nirubar); do kill "$sb_pid" 2>/dev/null || :; done
+}
+start_helper() {
+  case "$1" in
+    NOTIFY_PID) start_nirunotify || : ;;
+    CLIPBOARD_PID) niruclipboard daemon >>"$WM_LOG" 2>&1 & CLIPBOARD_PID=$! ;;
+    GESTURES_PID) nirugestured daemon >>"$WM_LOG" 2>&1 & GESTURES_PID=$! ;;
+    IDLE_PID) niruidle >/dev/null 2>&1 & IDLE_PID=$! ;;
+    NIGHTLIGHT_PID) niructl nightlight watch >/dev/null 2>&1 & NIGHTLIGHT_PID=$! ;;
+    DISPLAY_WATCH_PID) niructl display watch --quiet >>"$WM_LOG" 2>&1 & DISPLAY_WATCH_PID=$! ;;
+    NIRUSHARE_PID) nirushare serve >>"$LOG_DIR/nirushare.log" 2>&1 & NIRUSHARE_PID=$! ;;
+  esac
+}
+# Replace each running helper whose program is no longer the installed one.
+refresh_helpers() {
+  rh_replaced=""
+  rh_old=""
+  rh_pid=""
+  for rh_entry in $REPLACEABLE; do
+    rh_var=${rh_entry%%:*}
+    rh_name=${rh_entry#*:}
+    eval "rh_pid=\${$rh_var:-}"
+    alive "$rh_pid" || continue
+    eval "rh_old=\${SUM_$rh_var:-}"
+    rh_new=$(program_sum "$rh_name")
+    [ -n "$rh_new" ] || continue
+    [ "$rh_old" != "$rh_new" ] || continue
+    if [ "$rh_var" = IDLE_PID ] && { on_this_display nirulock || on_this_display niruscreensaver; }; then
+      log "restart: niruidle keeps running while the screen is locked or the screensaver is up"
+      continue
+    fi
+    stop_helper "$rh_pid"
+    eval "$rh_var="
+    start_helper "$rh_var"
+    eval "SUM_$rh_var=\$rh_new"
+    rh_replaced="$rh_replaced $rh_name"
+  done
+  if [ -n "$rh_replaced" ]; then
+    log "restart: replaced helpers:$rh_replaced"
+  else
+    log "restart: no helper program changed"
+  fi
+}
+# Status 75 from NIRUWM: run the installed session script, which may be newer
+# than this one, in this same process. When it cannot be run, stay in this
+# script and restart the window manager here.
+restart_in_place() {
+  log "restart in place requested: starting the installed NIRUWM; open windows are kept"
+  NIRUWM_RESTARTED=1
+  export NIRUWM_RESTARTED
+  NIRUWM_PREVIOUS_WM="$WM_RUNNING"
+  export NIRUWM_PREVIOUS_WM
+  if [ -x "$SESSION_SCRIPT" ] && sh -n "$SESSION_SCRIPT" 2>/dev/null; then
+    export_tracked
+    NIRUWM_SESSION_CONTINUE=1
+    export NIRUWM_SESSION_CONTINUE
+    exec "$SESSION_SCRIPT" "$@"
+  fi
+  log "restart: $SESSION_SCRIPT cannot be run; keeping this session script"
+  refresh_helpers
+}
+if [ "$CONTINUE" = 1 ]; then
+  import_tracked
+  printf '\n=== %s restart in place ===\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$WM_LOG" 2>/dev/null || :
+  refresh_helpers
+else
+  record_sums
+fi
 # A crash of the window manager must not end the session. The X server and
 # every program keep running; a new NIRUWM adopts the open windows (they keep
 # their workspaces and scratchpad slots) and skips the session restore, since
@@ -526,14 +690,41 @@ WM_RESTART_LIMIT=${WM_RESTART_LIMIT:-3}
 WM_RESTART_WINDOW=${WM_RESTART_WINDOW:-60}
 crashes=""
 STATUS=0
+# After a restart in place, the manager that ran before. If the new one fails
+# straight away, the session goes back to it instead of ending.
+FALLBACK_WM="${NIRUWM_PREVIOUS_WM:-}"
+unset NIRUWM_PREVIOUS_WM
+WM_RUNNING=""
 while :; do
   STATUS=0
+  WM_RUNNING=$(readlink -f "$WM" 2>/dev/null || printf '%s' "$WM")
+  started=$(date +%s)
   "$WM" "$@" || STATUS=$?
   # Status 0 is a deliberate quit. HUP, INT and TERM (129, 130, 143) are a
-  # logout or someone stopping the manager on purpose. Anything else (a
-  # panic, an abort, SIGSEGV, SIGKILL from the OOM killer) is a crash.
-  case "$STATUS" in 0|129|130|143) break ;; esac
+  # logout or someone stopping the manager on purpose. 75 asks for a restart
+  # in place. Anything else (a panic, an abort, SIGSEGV, SIGKILL from the
+  # OOM killer) is a crash.
+  case "$STATUS" in
+    0|129|130|143) break ;;
+    "$WM_RESTART_STATUS")
+      restart_in_place "$@"
+      FALLBACK_WM="$WM_RUNNING"
+      continue
+      ;;
+  esac
   now=$(date +%s)
+  if [ -n "$FALLBACK_WM" ] && [ -x "$FALLBACK_WM" ] && [ "$FALLBACK_WM" != "$WM_RUNNING" ] &&
+     [ $((now - started)) -lt 20 ] &&
+     { ! command -v xprop >/dev/null 2>&1 || xprop -root -len 1 _NET_NUMBER_OF_DESKTOPS >/dev/null 2>&1; }; then
+    log "the restarted NIRUWM ($WM_RUNNING) stopped with status $STATUS within $((now - started))s; running the previous one again ($FALLBACK_WM)"
+    WM="$FALLBACK_WM"
+    FALLBACK_WM=""
+    stop_display_bars
+    NIRUWM_RESTARTED=1
+    export NIRUWM_RESTARTED
+    continue
+  fi
+  FALLBACK_WM=
   recent=""
   for at in $crashes; do
     [ $((now - at)) -lt "$WM_RESTART_WINDOW" ] && recent="$recent $at"
@@ -551,7 +742,8 @@ while :; do
   fi
   log "niruwm stopped with status $STATUS (crash $count of at most $WM_RESTART_LIMIT within ${WM_RESTART_WINDOW}s); starting it again, open windows are kept"
   # The bars belonged to the manager that died; the new one starts its own.
-  pkill -u "$(id -u)" -x nirubar 2>/dev/null || :
+  # Only this display's: another session of the same user keeps its bars.
+  stop_display_bars
   sleep 1
   NIRUWM_RESTARTED=1
   export NIRUWM_RESTARTED

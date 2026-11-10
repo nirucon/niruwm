@@ -292,6 +292,30 @@ fn idle_seconds(conn: &x11rb::rust_connection::RustConnection, root: Window) -> 
     Some(u64::from(info.ms_since_user_input) / 1000)
 }
 
+/// Seconds of idle at which the lock step is due.
+fn lock_seconds(s: &Settings) -> u64 {
+    s.screen.saturating_add(s.lock_after).saturating_mul(60)
+}
+
+/// Whether the screensaver step should be up at `idle` seconds.
+///
+/// It runs from `screensaver_timeout` until the lock. With
+/// `lock_after_screensaver = 0` the lock comes at the same moment, so there is
+/// no screensaver period at all: the lock screen is what covers the display.
+/// Without a locker the screensaver stays, so the screen is still covered.
+fn wants_saver(s: &Settings, idle: u64, locked: bool, has_locker: bool) -> bool {
+    !locked
+        && s.screen > 0
+        && idle >= s.screen.saturating_mul(60)
+        && (!has_locker || idle < lock_seconds(s))
+}
+
+/// Whether the lock step is due. `lock_after_screensaver = 0` locks at
+/// `screensaver_timeout`, as documented; it never means "do not lock".
+fn wants_lock(s: &Settings, idle: u64, locked: bool, has_locker: bool) -> bool {
+    !locked && has_locker && s.screen > 0 && idle >= lock_seconds(s)
+}
+
 fn main() {
     let arg = std::env::args().nth(1).unwrap_or_default();
     if arg == "--version" {
@@ -329,10 +353,6 @@ fn main() {
     let saver = first_available(&["niruscreensaver".to_string()]);
 
     let mut screen_at = settings.screen.saturating_mul(60);
-    let mut lock_at = settings
-        .screen
-        .saturating_add(settings.lock_after)
-        .saturating_mul(60);
     let mut dpms_at = settings
         .screen
         .saturating_add(settings.lock_after)
@@ -399,10 +419,6 @@ fn main() {
         if stamp != config_stamp {
             settings = load_settings();
             screen_at = settings.screen.saturating_mul(60);
-            lock_at = settings
-                .screen
-                .saturating_add(settings.lock_after)
-                .saturating_mul(60);
             dpms_at = settings
                 .screen
                 .saturating_add(settings.lock_after)
@@ -484,10 +500,7 @@ fn main() {
         // 1. Screensaver.
         if saver_child.is_none()
             && !blanked
-            && !locked
-            && settings.screen > 0
-            && idle >= screen_at
-            && (settings.lock_after == 0 || idle < lock_at)
+            && wants_saver(&settings, idle, locked, locker.is_some())
         {
             match &saver {
                 Some(s) => {
@@ -505,7 +518,7 @@ fn main() {
 
         // Track a nonblocking child, never a timeout wrapper. Input activity
         // cannot mark a still-running locker as unlocked or spawn another one.
-        if !locked && settings.lock_after > 0 && idle >= lock_at && Instant::now() >= retry_lock_at
+        if wants_lock(&settings, idle, locked, locker.is_some()) && Instant::now() >= retry_lock_at
         {
             stop_saver(&mut saver_child);
             if let Some(l) = &locker {
@@ -530,6 +543,47 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn timing(screen: u64, lock_after: u64) -> Settings {
+        Settings {
+            screen,
+            lock_after,
+            dpms_after: 15,
+            lock_timeout: 0,
+        }
+    }
+
+    #[test]
+    fn lock_after_zero_locks_together_with_the_screensaver() {
+        let s = timing(5, 0);
+        // Before the timeout: nothing.
+        assert!(!wants_saver(&s, 299, false, true));
+        assert!(!wants_lock(&s, 299, false, true));
+        // At the timeout: the lock, and no separate screensaver.
+        assert!(wants_lock(&s, 300, false, true));
+        assert!(!wants_saver(&s, 300, false, true));
+        // Once locked, neither step starts again.
+        assert!(!wants_lock(&s, 900, true, true));
+        assert!(!wants_saver(&s, 900, true, true));
+    }
+
+    #[test]
+    fn lock_after_minutes_shows_the_screensaver_first() {
+        let s = timing(5, 2);
+        assert!(wants_saver(&s, 300, false, true));
+        assert!(!wants_lock(&s, 300, false, true));
+        assert!(wants_saver(&s, 419, false, true));
+        assert!(wants_lock(&s, 420, false, true));
+        assert!(!wants_saver(&s, 420, false, true));
+    }
+
+    #[test]
+    fn without_a_locker_the_screensaver_stays_up() {
+        let s = timing(5, 0);
+        assert!(!wants_lock(&s, 300, false, false));
+        assert!(wants_saver(&s, 300, false, false));
+        assert!(wants_saver(&s, 3600, false, false));
+    }
 
     #[test]
     fn the_idle_lock_tells_nirulock_it_is_not_manual() {

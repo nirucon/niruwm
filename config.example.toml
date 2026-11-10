@@ -258,7 +258,8 @@ workspaces = 10
 #                           Must be at least 1. 0 is rejected, because it
 #                           would mean "never" and leave the screen unlocked.
 #   lock_after_screensaver  minutes the screensaver stays up before locking.
-#                           0 locks at the same time as the screensaver.
+#                           0 locks at screensaver_timeout: the lock screen
+#                           comes up in place of the screensaver.
 #   dpms_off_after_lock     minutes after locking before the display is
 #                           switched off. 0 keeps the display on.
 #

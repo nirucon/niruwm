@@ -98,11 +98,21 @@ fn main() {
         eprintln!("Usage: niruwm [--version|--check-config|--reset-config|--doctor|--dump-config|--replay FILE]");
         std::process::exit(2)
     }
-    if let Err(e) = Wm::new().and_then(|mut w| w.run()) {
-        // A session that ends without a word is the worst possible outcome:
-        // the bar appears for a moment and the screen goes black. Say what
-        // failed, on stderr and in the session log, before leaving.
-        eprintln!("niruwm: the session ended: {e}");
-        std::process::exit(1)
+    let outcome = Wm::new().and_then(|mut w| {
+        w.run()?;
+        Ok(w.restart_requested)
+    });
+    match outcome {
+        // `niructl restart-wm`: the bars are stopped (the manager was dropped)
+        // and niruwm-session runs the installed binary again.
+        Ok(true) => std::process::exit(wm::RESTART_STATUS),
+        Ok(false) => {}
+        Err(e) => {
+            // A session that ends without a word is the worst possible outcome:
+            // the bar appears for a moment and the screen goes black. Say what
+            // failed, on stderr and in the session log, before leaving.
+            eprintln!("niruwm: the session ended: {e}");
+            std::process::exit(1)
+        }
     }
 }

@@ -50,7 +50,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | \
-theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
+theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | restart-wm [--check] | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
 layout NAME|columns 1|2|toggle | layouts | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
@@ -8480,6 +8480,10 @@ fn run() -> Result<()> {
         return studio::command(&c, root, &args[1..], &mut StudioEffects);
     }
 
+    if cmd == "restart-wm" {
+        return restart_wm(&c, root, &args[1..]);
+    }
+
     if cmd == "restart-bar" {
         let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
             .ok_or("no window manager is running")?;
@@ -8663,6 +8667,175 @@ fn run() -> Result<()> {
         wait_applied(&c, root, &atom, action, value)?;
     }
     Ok(())
+}
+
+/// Exit status of `niructl restart-wm` when the running manager or session
+/// cannot restart in place, so `nirux update` can tell "log in again" from a
+/// failure.
+const RESTART_UNSUPPORTED: i32 = 3;
+
+/// The running manager's name ("NIRUWM 0.23.0") and its process id, from
+/// its check window (`_NET_WM_PID`; 0 for a manager that does not say).
+fn running_wm(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+) -> Option<(Window, String, u32)> {
+    let check = property_u32(c, root, atom_named(c, "_NET_SUPPORTING_WM_CHECK").ok()?)?;
+    // A stale property can name a window that is already gone.
+    c.get_window_attributes(check).ok()?.reply().ok()?;
+    let pid = property_u32(c, check, atom_named(c, "_NET_WM_PID").ok()?).unwrap_or(0);
+    let name = c
+        .get_property(
+            false,
+            check,
+            atom_named(c, "_NET_WM_NAME").ok()?,
+            atom_named(c, "UTF8_STRING").ok()?,
+            0,
+            64,
+        )
+        .ok()?
+        .reply()
+        .ok()
+        .map(|r| String::from_utf8_lossy(&r.value).to_string())
+        .unwrap_or_default();
+    Some((check, name, pid))
+}
+
+/// `niructl restart-wm [--check]`: run the installed NIRUWM in this session.
+///
+/// The manager saves its window state and exits with the restart status;
+/// niruwm-session restarts the session helpers whose binary changed and starts
+/// the installed manager, which adopts every window where it was. While the
+/// screen is locked nothing is restarted: the request waits in the background
+/// until the lock is gone (`--after-unlock`), so a locked screen stays locked.
+fn restart_wm(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    args: &[String],
+) -> Result<()> {
+    let check_only = args.iter().any(|a| a == "--check");
+    let after_unlock = args.iter().any(|a| a == "--after-unlock");
+    let quiet = args.iter().any(|a| a == "--quiet");
+    if let Some(bad) = args
+        .iter()
+        .find(|a| !matches!(a.as_str(), "--check" | "--after-unlock" | "--quiet"))
+    {
+        return Err(format!("restart-wm: unknown option {bad}; use --check").into());
+    }
+    let Some((check, name, old_pid)) = running_wm(c, root) else {
+        eprintln!("niructl: restart-wm: no window manager is running on this display");
+        std::process::exit(RESTART_UNSUPPORTED);
+    };
+    if property_u32(c, check, atom_named(c, "_NIRUWM_RESTART_CONTROL")?) != Some(1) {
+        // A NIRUWM that knows the command but runs outside niruwm-session
+        // 0.23.0 or later (an older session script, or started by hand) has
+        // nothing that would start it again.
+        let knows = name
+            .strip_prefix("NIRUWM ")
+            .and_then(|v| {
+                let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+                Some((parts.next()?, parts.next().unwrap_or(0)))
+            })
+            .is_some_and(|(major, minor)| major > 0 || minor >= 23);
+        let why = if knows {
+            "its session script is older than NIRUWM 0.23.0, or it was not started by niruwm-session"
+        } else {
+            "it is older than NIRUWM 0.23.0"
+        };
+        let who = if name.is_empty() {
+            "the running window manager".to_string()
+        } else {
+            name
+        };
+        eprintln!(
+            "niructl: {who} cannot restart in place ({why}); log out and back in once to activate the update"
+        );
+        std::process::exit(RESTART_UNSUPPORTED);
+    }
+    if check_only {
+        if !quiet {
+            println!("{name}: can restart in place");
+        }
+        return Ok(());
+    }
+    if ready_lock(c, root).is_some() {
+        if after_unlock {
+            // Wait for the unlock; a session that ends meanwhile ends this.
+            let deadline = Instant::now() + Duration::from_secs(24 * 3600);
+            while ready_lock(c, root).is_some() {
+                if Instant::now() >= deadline || running_wm(c, root).map(|w| w.2) != Some(old_pid) {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            // Give the lock screen time to hand the keyboard back.
+            std::thread::sleep(Duration::from_secs(2));
+        } else {
+            use std::os::unix::process::CommandExt as _;
+            let me = std::env::current_exe()?;
+            let mut waiter = std::process::Command::new(me);
+            // Its own session: closing the terminal that ran `nirux update`
+            // must not cancel the restart that waits for the unlock.
+            // SAFETY: setsid is async-signal-safe and takes no arguments.
+            unsafe {
+                waiter.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
+            waiter
+                .args(["restart-wm", "--after-unlock"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            println!("The screen is locked: NIRUWM restarts after it is unlocked.");
+            return Ok(());
+        }
+    }
+    let serial = command_serial() & 0x7fff_ffff;
+    let ack = atom_named(c, "_NIRUWM_RESTART_ACK")?;
+    send(c, root, atom_named(c, CMD_ATOM)?, [22, serial, 0, 0, 0])?;
+    c.flush()?;
+    let mut answer = None;
+    for _ in 0..250 {
+        match property_u32(c, root, ack) {
+            Some(v) if v == serial => {
+                answer = Some(true);
+                break;
+            }
+            Some(v) if v == serial | 0x8000_0000 => {
+                answer = Some(false);
+                break;
+            }
+            _ => {}
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    match answer {
+        Some(true) => {}
+        Some(false) => {
+            return Err("the window manager refused to restart (the screen is locked, or its state could not be saved; see the session log)".into())
+        }
+        None => return Err("the window manager did not answer the restart request".into()),
+    }
+    // The new manager is a new process with its own check window.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if let Some((_, new_name, pid)) = running_wm(c, root) {
+            if pid != old_pid && pid != 0 {
+                if !quiet {
+                    println!(
+                        "Restarted in place: {} -> {new_name}",
+                        if name.is_empty() { "?" } else { &name }
+                    );
+                }
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err("the window manager stopped but no new one has started yet; see ~/.local/state/niruwm/session.log".into())
 }
 
 /// One line of `_NIRUWM_SCRATCHPADS`: slot (0 default, 1-9), state, window, class.

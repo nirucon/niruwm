@@ -77,13 +77,13 @@ jobs:
         with:
           name: session-binaries
           path: /tmp/ci-bin/*
-          retention-days: 3
+          retention-days: 1
 
       - name: Shellcheck
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh /src/tests/nightlight.sh
+            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh /src/tests/nightlight.sh /src/tests/restart-in-place.sh
 
   session:
     needs: verify

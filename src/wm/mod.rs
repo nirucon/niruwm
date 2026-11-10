@@ -12,6 +12,8 @@ pub fn keysym_for(name: &str) -> Option<u32> {
     keys::keysym_named(name)
 }
 mod randr;
+mod restart;
+pub(crate) use restart::RESTART_STATUS;
 
 use crate::bindings::Binding;
 use crate::config::{Config, Result, Theme};
@@ -334,6 +336,10 @@ pub(crate) struct Wm {
     pub(crate) restore_remaining: usize,
     /// When to stop waiting for programs that open fewer windows than saved.
     pub(crate) restore_deadline: Option<std::time::Instant>,
+    /// `niructl restart-wm` was accepted: exit with `RESTART_STATUS`.
+    pub(crate) restart_requested: bool,
+    /// Windows the previous manager saved before a restart in place.
+    pub(crate) restart_saved: HashMap<Window, restart::SavedClient>,
 }
 
 impl Wm {
@@ -445,6 +451,8 @@ impl Wm {
             "_NIRUWM_LAYOUT",
             "_NIRUWM_BAR_CONTROL",
             "_NIRUWM_BAR_RESTART_SERIAL",
+            "_NIRUWM_RESTART_CONTROL",
+            "_NIRUWM_RESTART_ACK",
             "_NIRUWM_BAR_STATE",
             "_NIRUWM_QUIT",
             "_NIRUWM_LOCK",
@@ -519,6 +527,8 @@ impl Wm {
             restore_focus: None,
             restore_remaining: 0,
             restore_deadline: None,
+            restart_requested: false,
+            restart_saved: HashMap::new(),
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
         wm.wallpaper.set_outputs(randr::outputs(&wm.c, root));
@@ -552,13 +562,29 @@ impl Wm {
         // same X session: every window is still there (the save-set mapped the
         // hidden ones). They keep their workspaces through `_NET_WM_DESKTOP`
         // and their scratchpad slots through `_NIRUWM_SCRATCH_SLOT`.
+        // A deliberate restart (`niructl restart-wm`) also left the windows'
+        // screens, layouts, order and focus, and kept the hidden windows
+        // unmapped instead of letting the save-set show them.
+        let restart_state = if restarted { restart::read() } else { None };
+        if let Some(state) = &restart_state {
+            wm.apply_restart_monitors(state);
+            wm.restart_saved = state.clients.iter().map(|c| (c.win, c.clone())).collect();
+        }
+        let adopt = wm.restart_candidates(restart_state.as_ref(), viewable);
         wm.adopting = true;
-        for w in viewable {
+        for w in adopt {
             if let Err(e) = wm.manage(w) {
                 eprintln!("niruwm: could not adopt window {w}: {e}");
             }
         }
         wm.adopting = false;
+        wm.restart_saved.clear();
+        if let Some(state) = &restart_state {
+            if let Err(e) = wm.finish_restart(state) {
+                eprintln!("niruwm: restart state only partly applied: {e}");
+            }
+            restart::remove();
+        }
         wm.relink_swallowed();
         wm.arrange()?;
         wm.start_bar();
@@ -572,7 +598,7 @@ impl Wm {
         // failure here costs comfort, never the session.
         // A restart after a crash must not start the saved programs a second
         // time: they are still running.
-        if restarted {
+        if restarted && restart_state.is_none() {
             eprintln!("niruwm: started again after a crash; keeping the open windows");
         }
         if wm.cfg.restore_session && !restarted {
@@ -620,6 +646,25 @@ impl Wm {
             AtomEnum::CARDINAL.into(),
             &[1],
         )?;
+        // Which process owns the check window: `niructl restart-wm` waits for
+        // a different one. The window id alone can repeat, because the X
+        // server may give the next client the same id range.
+        self.prop(
+            check,
+            "_NET_WM_PID",
+            AtomEnum::CARDINAL.into(),
+            &[std::process::id()],
+        )?;
+        // `niructl restart-wm` checks this before asking: only a session
+        // script that knows the restart status may be handed one.
+        if restart::session_supports_restart() {
+            self.prop(
+                check,
+                "_NIRUWM_RESTART_CONTROL",
+                AtomEnum::CARDINAL.into(),
+                &[1],
+            )?;
+        }
         self.c.change_property8(
             PropMode::REPLACE,
             check,

@@ -506,7 +506,7 @@ pub struct IdleConfig {
     #[serde(alias = "screensaver_timeout_minutes", alias = "idle_minutes")]
     pub screensaver_timeout: u32,
     /// Minutes the screensaver stays up before the session locks. 0 locks at
-    /// the same moment as the screensaver.
+    /// `screensaver_timeout`, in place of the screensaver.
     #[serde(alias = "lock_after_screensaver_minutes", alias = "lock_after_minutes")]
     pub lock_after_screensaver: u32,
     /// Minutes after locking before the display is switched off.

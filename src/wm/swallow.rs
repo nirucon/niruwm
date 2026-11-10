@@ -245,15 +245,24 @@ impl Wm {
     /// After a restart: hide again the terminals whose window is still there.
     pub(crate) fn relink_swallowed(&mut self) {
         for (t, owner) in std::mem::take(&mut self.swallow_adopted) {
+            // A restart in place links the terminal while adopting it, so it
+            // is never shown in between; that link is confirmed here.
             let both = self.clients.iter().any(|c| c.win == owner)
                 && self
                     .clients
                     .iter()
-                    .any(|c| c.win == t && c.swallowed_by.is_none());
+                    .any(|c| c.win == t && c.swallowed_by.map_or(true, |o| o == owner));
             if both && owner != t && self.swallow_enabled {
                 self.swallow(owner, t);
                 eprintln!("niruwm: terminal {t:#x} stays swallowed by {owner:#x}");
             } else {
+                if let Some(c) = self
+                    .clients
+                    .iter_mut()
+                    .find(|c| c.win == t && c.swallowed_by == Some(owner))
+                {
+                    c.swallowed_by = None;
+                }
                 let atom = self.atom("_NIRUWM_SWALLOWED_BY");
                 let _ = self.c.delete_property(t, atom);
             }

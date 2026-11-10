@@ -45,15 +45,26 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - A crash of the window manager does not end the session: `niruwm-session`
   starts it again, and every open window keeps its workspace and scratchpad;
   a swallowed terminal stays hidden behind its program.
+- Update without logging out: `niructl restart-wm` runs the installed NIRUWM
+  in the same session. Every window keeps its screen, workspace, floating or
+  tiled state, place in the layout and focus; each workspace keeps its layout;
+  the shown scratchpad stays shown and hidden windows never flash up. The
+  session helpers whose program changed (NIRUNOTIFY, NIRUIDLE, the clipboard
+  and gesture daemons, NIRUSHARE, the display and night-light watchers) are
+  replaced; a lock screen is never touched, and while the screen is locked
+  the restart waits for the unlock. If the new manager fails at once, the
+  session goes back to the previous one.
 - Window rules for floating, centering, workspace, sticky and compositor opacity.
 - Session save/restore, autostart, workspace recipes and focus/presentation
   modes through `niructl`.
 - Studio mode for recording (`niructl studio`): no screen saver, lock or
   popups, picom off and the performance profile while it is on, everything
   put back as it was afterwards; optionally on while REAPER is open.
-- Calendar events in the bar: the bundled NIRUBAR (0.22) shows read-only
+- Calendar events in the bar: the bundled NIRUBAR (0.23) shows read-only
   ICS feeds, such as Google Calendar's secret iCal address, in the clock's
-  calendar (day markers, an agenda, click to open the day in the browser).
+  calendar (day markers, an agenda, click to open the day in the browser),
+  and a reminder notification 10 minutes before each timed event
+  (`remind_minutes` in `calendars.toml`, 0 is off).
   An edited `calendars.toml` takes effect by itself within seconds, or at
   once with `niructl reload`.
   See the [NIRUBAR docs](https://github.com/nirucon/nirubar/blob/main/docs/CONFIGURATION.md#calendar-events).
@@ -218,7 +229,7 @@ previous settings in effect.
 | `[autostart]`, `[[recipes]]` | Programs started at login, workspace recipes |
 | `[nightlight]`, `[brightness]` | Night light and brightness |
 | `[monitors]` | Per-workspace layouts, master ratios and counts, per-screen profiles |
-| `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each) |
+| `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each; `lock_after_screensaver = 0` locks at `screensaver_timeout` instead of showing the screensaver first) |
 | `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
 | `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
 | `[swallow]` | Window swallowing: `enabled` (default `true`), `terminals`, `exclude` |
