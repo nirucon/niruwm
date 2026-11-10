@@ -956,6 +956,7 @@ fn lock_action(reason: &str) -> Result<()> {
         return Ok(());
     }
     if let Some(locker) = program("nirulock") {
+        stop_screensavers(&c);
         spawn_locker(&locker, reason)?;
         wait_ready_lock(&c, root)?;
         return Ok(());
@@ -964,6 +965,96 @@ fn lock_action(reason: &str) -> Result<()> {
         return spawn_action(&locker, &[]);
     }
     Err("no screen locker found: install nirulock or slock".into())
+}
+
+/// Close a running NIRUSCREENSAVER on this display before locking.
+///
+/// The screensaver holds the pointer grab, so NIRULOCK could not take it and
+/// gave up: a manual lock, or the lock before a suspend, failed while the
+/// screensaver was up. Resetting the X idle clock first keeps NIRUIDLE from
+/// starting the screensaver again before the lock screen is ready.
+fn stop_screensavers(c: &impl Connection) {
+    let _ = c.force_screen_saver(ScreenSaver::RESET);
+    let _ = c.flush();
+    let pids = screensaver_pids(std::env::var("DISPLAY").ok().as_deref());
+    if pids.is_empty() {
+        return;
+    }
+    for pid in &pids {
+        unsafe { libc::kill(*pid, libc::SIGTERM) };
+    }
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline
+        && pids
+            .iter()
+            .any(|pid| Path::new(&format!("/proc/{pid}")).exists() && !zombie(*pid))
+    {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn zombie(pid: i32) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            stat.rsplit_once(") ")
+                .map(|(_, rest)| rest.starts_with('Z'))
+        })
+        .unwrap_or(true)
+}
+
+/// This user's NIRUSCREENSAVER processes on DISPLAY (all of them when the
+/// display is unknown), read from /proc.
+fn screensaver_pids(display: Option<&str>) -> Vec<i32> {
+    let uid = unsafe { libc::getuid() };
+    let me = std::process::id() as i32;
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        let dir = entry.path();
+        if fs::read_to_string(dir.join("comm"))
+            .map(|c| c.trim() != "niruscreensaver")
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        let owner = fs::read_to_string(dir.join("status"))
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Uid:"))
+                    .and_then(|v| v.split_whitespace().next()?.parse::<u32>().ok())
+            });
+        if owner != Some(uid) {
+            continue;
+        }
+        if let Some(display) = display {
+            let same = fs::read(dir.join("environ"))
+                .map(|env| {
+                    env.split(|b| *b == 0)
+                        .any(|kv| kv == format!("DISPLAY={display}").as_bytes())
+                })
+                .unwrap_or(false);
+            if !same {
+                continue;
+            }
+        }
+        pids.push(pid);
+    }
+    pids
 }
 
 /// The lock window that currently owns the readiness marker, if any.
@@ -1011,6 +1102,7 @@ fn ensure_lock_ready() -> Result<(x11rb::rust_connection::RustConnection, Window
     }
     let locker = program("nirulock")
         .ok_or("cannot lock before suspend: install nirulock (slock cannot confirm readiness)")?;
+    stop_screensavers(&c);
     spawn_locker(&locker, "suspend")?;
     let window = wait_ready_lock(&c, root)?;
     Ok((c, root, window))
@@ -10316,6 +10408,16 @@ screensaver_timeout = 15
         std::fs::write(&path, "1\n").unwrap();
         assert!(idle_until().is_none(), "expired inhibition stayed active");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn screensaver_pids_ignores_other_displays_and_this_process() {
+        // No NIRUSCREENSAVER runs on a display that cannot exist, and the
+        // scan never returns this test process.
+        assert!(super::screensaver_pids(Some(":nirux-test-no-display")).is_empty());
+        let me = std::process::id() as i32;
+        assert!(!super::screensaver_pids(None).contains(&me));
+        assert!(super::zombie(i32::MAX));
     }
 
     #[test]
