@@ -24,7 +24,7 @@ use std::{
 };
 use x11rb::{
     connection::{Connection, RequestConnection as _},
-    protocol::{screensaver::ConnectionExt as _, xproto::*},
+    protocol::{dpms::ConnectionExt as _, screensaver::ConnectionExt as _, xproto::*},
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
@@ -280,6 +280,34 @@ fn session_inhibit_value(value: &[u8]) -> bool {
     !String::from_utf8_lossy(value).trim().is_empty()
 }
 
+/// Keep the X server's own blanking and DPMS timers at zero.
+///
+/// NIRUIDLE owns the ladder (screensaver, lock, display off). The server's
+/// defaults (blank and DPMS off after 600 s) turned the display off after ten
+/// minutes, before the screensaver and long before the lock, so a user coming
+/// back found a dark but unlocked screen. `niructl idle off` and other tools
+/// may restore `xset s default`, so this is checked every tick; it costs two
+/// round trips and changes nothing when the timers are already zero. DPMS
+/// stays enabled, so `dpms force off` after the lock still works.
+fn keep_x_timers_off(conn: &RustConnection) {
+    if let Some(saver) = conn.get_screen_saver().ok().and_then(|c| c.reply().ok()) {
+        if saver.timeout != 0 {
+            let _ = conn.set_screen_saver(
+                0,
+                saver.interval as i16,
+                Blanking::from(u8::from(saver.prefer_blanking)),
+                Exposures::from(u8::from(saver.allow_exposures)),
+            );
+        }
+    }
+    if let Some(t) = conn.dpms_get_timeouts().ok().and_then(|c| c.reply().ok()) {
+        if t.standby_timeout != 0 || t.suspend_timeout != 0 || t.off_timeout != 0 {
+            let _ = conn.dpms_set_timeouts(0, 0, 0);
+        }
+    }
+    let _ = conn.flush();
+}
+
 fn xset_saver(force: &str, dpms: &str) {
     let _ = Command::new("xset")
         .args(["s", force, dpms])
@@ -430,6 +458,7 @@ fn main() {
                 settings.screen, settings.lock_after, settings.dpms_after
             );
         }
+        keep_x_timers_off(&conn);
         reap(&mut saver_child);
         if let Some(status) = reap(&mut locker_child) {
             if status.success() {
