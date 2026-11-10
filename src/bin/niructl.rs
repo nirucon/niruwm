@@ -2797,6 +2797,8 @@ fn display_watch(args: &[String]) -> Result<()> {
     }
     const SETTLE: Duration = Duration::from_millis(700);
     let mut seen = DisplaySeen::read();
+    // The last lid state seen while it mattered, to lock on open -> closed.
+    let mut lid_was = seen.lid;
     let mut pending: Option<Instant> = None;
     let mut deferred = false;
     let mut retry_next: Option<u64> = None;
@@ -2860,6 +2862,15 @@ fn display_watch(args: &[String]) -> Result<()> {
         if events {
             pending = Some(Instant::now() + SETTLE);
         }
+        let lid_now = if seen.lid_matters {
+            display_lid_closed()
+        } else {
+            None
+        };
+        if lid_closed_now(lid_was, lid_now) {
+            lock_on_docked_lid_close();
+        }
+        lid_was = lid_now;
         if seen.lid_matters && pending.is_none() && display_lid_closed() != seen.lid {
             pending = Some(Instant::now() + Duration::from_millis(300));
         }
@@ -3473,6 +3484,29 @@ fn display_screens(
             }),
         })
         .collect()
+}
+
+/// True on the open -> closed edge only: a lid that was already closed when
+/// watching started, or that stays closed, does not lock again.
+fn lid_closed_now(was: Option<bool>, now: Option<bool>) -> bool {
+    was == Some(false) && now == Some(true)
+}
+
+/// Closing the lid while other screens keep the machine awake (docked:
+/// logind ignores the lid then) locks the session, unless
+/// `[idle] lock_on_lid_close = false`. Undocked, logind suspends and the
+/// sleep-lock helper locks first, so this only covers the docked case.
+fn lock_on_docked_lid_close() {
+    let wanted = Config::load()
+        .map(|cfg| cfg.idle.lock_on_lid_close)
+        .unwrap_or(true);
+    if !wanted {
+        return;
+    }
+    eprintln!("niructl: display watch: lid closed while docked; locking");
+    if let Err(error) = lock_action("suspend") {
+        eprintln!("niructl: display watch: lock on lid close failed: {error}");
+    }
 }
 
 /// The ACPI lid switch, when the machine has one.
@@ -10414,6 +10448,24 @@ screensaver_timeout = 15
         std::fs::write(&path, "1\n").unwrap();
         assert!(idle_until().is_none(), "expired inhibition stayed active");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn docked_lid_locks_on_the_closing_edge_only() {
+        assert!(super::lid_closed_now(Some(false), Some(true)));
+        assert!(
+            !super::lid_closed_now(Some(true), Some(true)),
+            "stays closed"
+        );
+        assert!(
+            !super::lid_closed_now(None, Some(true)),
+            "closed at start or undocked"
+        );
+        assert!(!super::lid_closed_now(Some(true), Some(false)), "opened");
+        assert!(
+            !super::lid_closed_now(Some(false), None),
+            "undocked: logind suspends"
+        );
     }
 
     #[test]

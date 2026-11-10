@@ -512,6 +512,9 @@ pub struct IdleConfig {
     /// Minutes after locking before the display is switched off.
     #[serde(alias = "dpms_off_minutes")]
     pub dpms_off_after_lock: u32,
+    /// Lock when the lid is closed while other screens keep the machine
+    /// awake (docked). Undocked, logind suspends and the session locks first.
+    pub lock_on_lid_close: bool,
 }
 
 impl Default for IdleConfig {
@@ -520,6 +523,7 @@ impl Default for IdleConfig {
             screensaver_timeout: 15,
             lock_after_screensaver: 15,
             dpms_off_after_lock: 15,
+            lock_on_lid_close: true,
         }
     }
 }
@@ -550,6 +554,7 @@ impl IdleConfig {
             screensaver_timeout: clamp_minutes(self.screensaver_timeout, 15),
             lock_after_screensaver: self.lock_after_screensaver.min(Self::MAX_MINUTES),
             dpms_off_after_lock: self.dpms_off_after_lock.min(Self::MAX_MINUTES),
+            lock_on_lid_close: self.lock_on_lid_close,
         }
     }
 
@@ -2679,6 +2684,10 @@ cell_width = 34
                 .expect("[idle] must parse");
         assert_eq!(c.idle.screensaver_timeout, 5);
         assert_eq!(c.idle.lock_after_screensaver, 2);
+        assert!(
+            c.idle.lock_on_lid_close,
+            "locking on a docked lid close is on by default"
+        );
         assert!(c.validate().is_ok());
     }
 
@@ -2716,11 +2725,13 @@ cell_width = 34
             screensaver_timeout: 0,
             lock_after_screensaver: 99_999,
             dpms_off_after_lock: 0,
+            lock_on_lid_close: false,
         };
         let safe = already.safe();
         assert_eq!(safe.screensaver_timeout, 15, "bad timeout falls back");
         assert_eq!(safe.lock_after_screensaver, IdleConfig::MAX_MINUTES);
         assert_eq!(safe.dpms_off_after_lock, 0, "0 keeps the display on");
+        assert!(!safe.lock_on_lid_close, "an explicit false is kept");
     }
 
     #[test]

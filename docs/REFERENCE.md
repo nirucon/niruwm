@@ -78,6 +78,7 @@ Screensaver and lock timing live in the shared config under `[idle]`:
 screensaver_timeout = 15      # idle minutes before the screensaver
 lock_after_screensaver = 15   # screensaver minutes before locking; 0 locks at screensaver_timeout
 dpms_off_after_lock = 15      # minutes after locking before the display sleeps
+lock_on_lid_close = true      # docked: lock (no sleep) when the lid is closed
 ```
 
 `niruidle` owns both timers in one process, so the ladder
