@@ -23,7 +23,7 @@
 # that must stay hidden (a flash of every hidden window is the failure this
 # guards against).
 #
-# Needs: Xvfb, xdotool, xprop, xwininfo, xterm, xeyes, xev, dbus-run-session.
+# Needs: Xvfb, xdotool, xprop, xwininfo, xterm, xeyes, xev, dbus-daemon.
 # Never touches DISPLAY :0 or the real HOME.
 set -eu
 
@@ -85,11 +85,13 @@ Xvfb "$DISP" -screen 0 2560x800x24 -nolisten tcp >"$T/xvfb.log" 2>&1 &
 XVFB=$!
 SESSION=""
 XEV=""
+BUS_PID=""
 cleanup() {
   [ -z "$XEV" ] || kill "$XEV" 2>/dev/null || :
   [ -z "$SESSION" ] || kill "$SESSION" 2>/dev/null || :
   sleep 0.5
   kill "$XVFB" 2>/dev/null || :
+  [ -z "$BUS_PID" ] || kill "$BUS_PID" 2>/dev/null || :
   # Programs started for the test run under the throwaway HOME.
   pkill -f "$T" 2>/dev/null || :
   rm -rf "$T"
@@ -101,14 +103,22 @@ while [ ! -S "/tmp/.X11-unix/X$NUM" ]; do
   sleep 0.1
 done
 
+# One private session bus for everything the test starts, stopped at the
+# end. Without an address, every D-Bus client (notify-send from niructl)
+# would autolaunch a bus of its own that outlives the test.
+BUS_INFO=$(env -i HOME="$H" PATH=/usr/bin:/bin dbus-daemon --session --fork --print-address=1 --print-pid=1) ||
+  fail "cannot start a private D-Bus session bus"
+BUS=$(printf '%s\n' "$BUS_INFO" | sed -n 1p)
+BUS_PID=$(printf '%s\n' "$BUS_INFO" | sed -n 2p)
 run() {
   env -i HOME="$H" DISPLAY="$DISP" PATH="$H/.local/bin:/usr/bin:/bin" \
-    XDG_RUNTIME_DIR="$T/run" NIRU_RANDR_EMU="$T/screens" LANG=C.UTF-8 "$@"
+    XDG_RUNTIME_DIR="$T/run" NIRU_RANDR_EMU="$T/screens" LANG=C.UTF-8 \
+    DBUS_SESSION_BUS_ADDRESS="$BUS" "$@"
 }
 ctl() { run "$H/.local/bin/niructl" "$@"; }
 prop() { run xprop -root "$1" 2>/dev/null | sed 's/^[^=]*= *//'; }
 
-run dbus-run-session -- "$H/.local/bin/niruwm-session" >"$T/session.out" 2>&1 &
+run "$H/.local/bin/niruwm-session" >"$T/session.out" 2>&1 &
 SESSION=$!
 i=0
 until prop _NET_SUPPORTING_WM_CHECK | grep -q 0x; do
