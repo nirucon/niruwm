@@ -55,7 +55,7 @@ layout NAME|columns 1|2|toggle | layouts | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
 timing show|set KEY MINUTES | \
-wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off | \
+wallpaper list|status|apply [--json]|set PATH|mode VALUE|rotation MINUTES|scale VALUE|follow-theme on|off|style art|signature|toggle | \
          output list|set NAME KEY VALUE|reset NAME | \
 autostart | recipe list|run NAME | mode focus|presentation|stop|status [MINUTES] | \
 display list [--json]|save NAME|save-json NAME|preview NAME [SECONDS]|preview-json [SECONDS]|apply NAME|keep|revert|status [--json]|delete NAME|rename OLD NEW|startup show|set NAME|off|apply|rotate OUTPUT normal|left|right|inverted|auto|automatic on|off|status [--json]|run|doctor [--json]|watch [--once] [--quiet] | \
@@ -5165,6 +5165,7 @@ fn wallpaper_status() -> Result<()> {
     println!("file={}", wallpaper.file);
     println!("dir={}", wallpaper.dir);
     println!("theme_dir={}", wallpaper.theme_dir);
+    println!("theme_style={}", wallpaper.theme_style);
     println!("theme={}", cfg.theme);
     let resolved = wallpaper::Wallpaper::new(wallpaper, &cfg.theme).theme_image();
     println!(
@@ -5357,6 +5358,7 @@ fn wallpaper_json(cfg: &Config, planned: &wallpaper::Wallpaper) -> serde_json::V
         "file": w.file,
         "dir": w.dir,
         "theme_dir": w.theme_dir,
+        "theme_style": w.theme_style,
         "theme_image": theme_image.map(|p| p.display().to_string()).unwrap_or_default(),
         "outputs": w.outputs.iter().map(|o| serde_json::json!({
             "output": o.output,
@@ -6074,6 +6076,25 @@ fn wallpaper_update(args: &[String]) -> Result<()> {
             }
             document["wallpaper"]["enabled"] = toml_edit::value(true);
             document["wallpaper"]["scale"] = toml_edit::value(value);
+        }
+        "style" => {
+            // `art`, `signature` or `toggle`: the picture a theme shows.
+            // A config without the key (every config before 0.24) is `art`;
+            // indexing a missing key would panic, so read it with get().
+            let current = document
+                .get("wallpaper")
+                .and_then(|w| w.get("theme_style"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("art")
+                .to_string();
+            let value = match args.get(1).map(String::as_str).ok_or(USAGE)? {
+                "toggle" if current == "signature" => "art",
+                "toggle" => "signature",
+                v @ ("art" | "signature") => v,
+                _ => return Err("wallpaper style must be art, signature or toggle".into()),
+            };
+            document["wallpaper"]["theme_style"] = toml_edit::value(value);
+            println!("theme_style={value}");
         }
         "follow-theme" => {
             let value = args.get(1).map(String::as_str).ok_or(USAGE)?;

@@ -75,7 +75,9 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - Display profiles that follow screens by EDID identity, with optional
   automatic switching on hotplug and lid events.
 - Shared NIRU themes (ten built in, plus user themes), theme wallpapers per
-  screen and a theme hook for terminal colours.
+  screen in two styles (each theme's artwork, or NIRUX Signature: one photo in
+  every theme's colours, `niructl wallpaper style toggle`) and a theme hook for
+  terminal colours.
 - Native integration for notifications, DND, audio, microphone, Bluetooth,
   power profiles, brightness, night light and screenshots.
 - `niructl`: one control command for the whole suite (themes, bar, layouts,
@@ -225,7 +227,7 @@ previous settings in effect.
 | Section | Contents |
 |---|---|
 | top level | `theme`, `gap`, `border_width`, `bar_height`, `master_ratio`, `terminal`, `browser`, `launcher`, `font_size`, weather coordinates |
-| `[wallpaper]`, `[[wallpaper.outputs]]` | Theme wallpapers, single file, scale, rotation, per-screen pictures |
+| `[wallpaper]`, `[[wallpaper.outputs]]` | Theme wallpapers (Art or Signature style), single file, scale, rotation, per-screen pictures |
 | `[autostart]`, `[[recipes]]` | Programs started at login, workspace recipes |
 | `[nightlight]`, `[brightness]` | Night light and brightness |
 | `[monitors]` | Per-workspace layouts, master ratios and counts, per-screen profiles |

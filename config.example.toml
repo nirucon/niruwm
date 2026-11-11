@@ -137,6 +137,11 @@ follow_theme = true
 # NIRUX installs nirux-wallpaper-<theme>-4k.png and -8k.png here. A custom
 # theme `foo` can provide nirux-wallpaper-foo-4k.png.
 theme_dir = "~/Pictures/Wallpapers/NIRU"
+# Which picture a theme shows: "art" (each theme's own artwork) or
+# "signature" (the NIRUX Signature picture in the theme's colours, from the
+# optional pack: nirux wallpapers signature). A theme without a Signature
+# picture keeps its artwork. Switch with: niructl wallpaper style toggle
+theme_style = "art"
 
 # Pictures for one named screen are written as [[wallpaper.outputs]] entries
 # by `niructl wallpaper output set`. A screen without an entry uses the

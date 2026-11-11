@@ -499,9 +499,21 @@ impl Wallpaper {
         }
         roots.push(expand_home("~/Pictures/Wallpapers/NIRU"));
         roots.dedup();
-        for root in roots {
-            for suffix in ["4k.png", "8k.png", "png", "jpg", "jpeg", "webp", "bmp"] {
-                let candidate = root.join(format!("nirux-wallpaper-{slug}-{suffix}"));
+        // A Signature picture wins when that style is chosen; every root is
+        // searched for it before the artwork, so an artwork in an earlier
+        // root never hides the chosen style.
+        let mut names = Vec::new();
+        if self.cfg.theme_style == "signature" {
+            for suffix in ["4k.png", "8k.png", "png"] {
+                names.push(format!("nirux-wallpaper-signature-{slug}-{suffix}"));
+            }
+        }
+        for suffix in ["4k.png", "8k.png", "png", "jpg", "jpeg", "webp", "bmp"] {
+            names.push(format!("nirux-wallpaper-{slug}-{suffix}"));
+        }
+        for name in &names {
+            for root in &roots {
+                let candidate = root.join(name);
                 if candidate.is_file() {
                     return Some(candidate);
                 }
@@ -963,6 +975,37 @@ mod tests {
                 tool.binary()
             );
         }
+    }
+
+    #[test]
+    fn signature_style_prefers_the_signature_picture() {
+        let dir = std::env::temp_dir().join(format!("niruwm-sig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        File::create(dir.join("nirux-wallpaper-nord-4k.png")).unwrap();
+        let mut cfg = WallpaperConfig {
+            enabled: true,
+            theme_dir: dir.display().to_string(),
+            ..WallpaperConfig::default()
+        };
+        // Signature chosen but missing: the artwork is used.
+        cfg.theme_style = "signature".into();
+        assert_eq!(
+            Wallpaper::new(&cfg, "niru-nord").theme_image(),
+            Some(dir.join("nirux-wallpaper-nord-4k.png"))
+        );
+        File::create(dir.join("nirux-wallpaper-signature-nord-4k.png")).unwrap();
+        assert_eq!(
+            Wallpaper::new(&cfg, "niru-nord").theme_image(),
+            Some(dir.join("nirux-wallpaper-signature-nord-4k.png"))
+        );
+        // Art keeps the artwork even when a Signature picture exists.
+        cfg.theme_style = "art".into();
+        assert_eq!(
+            Wallpaper::new(&cfg, "niru-nord").theme_image(),
+            Some(dir.join("nirux-wallpaper-nord-4k.png"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

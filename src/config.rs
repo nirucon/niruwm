@@ -718,6 +718,11 @@ pub struct WallpaperConfig {
     /// Directory holding NIRUX-installed theme wallpapers. A custom theme
     /// `foo` may provide `nirux-wallpaper-foo-4k.png` or `-8k.png`.
     pub theme_dir: String,
+    /// Which picture a theme shows: `art` (each theme's own artwork) or
+    /// `signature` (the NIRUX Signature picture in the theme's colours,
+    /// `nirux-wallpaper-signature-foo-4k.png`), falling back to the artwork
+    /// when a theme has no Signature picture.
+    pub theme_style: String,
     /// Pictures for one named screen. A screen without an entry inherits the
     /// common settings above. Entries survive a screen being unplugged.
     pub outputs: Vec<OutputWallpaper>,
@@ -736,6 +741,7 @@ impl Default for WallpaperConfig {
             shuffle_on_start: true,
             follow_theme: true,
             theme_dir: "~/Pictures/Wallpapers/NIRU".into(),
+            theme_style: "art".into(),
             outputs: Vec::new(),
         }
     }
@@ -1264,6 +1270,9 @@ impl Config {
         if self.wallpaper.rotation_minutes > 100_000 {
             return Err("wallpaper.rotation_minutes is too large".into());
         }
+        if !["art", "signature"].contains(&self.wallpaper.theme_style.as_str()) {
+            return Err("wallpaper.theme_style must be art or signature".into());
+        }
         if self.wallpaper.follow_theme && self.wallpaper.theme_dir.trim().is_empty() {
             return Err("wallpaper.theme_dir must not be empty when follow_theme is true".into());
         }
@@ -1682,6 +1691,7 @@ pub fn dump() -> Result<String> {
     out.push_str(&format!("scale = {:?}\n", c.wallpaper.scale));
     out.push_str(&format!("follow_theme = {}\n", c.wallpaper.follow_theme));
     out.push_str(&format!("theme_dir = {:?}\n", c.wallpaper.theme_dir));
+    out.push_str(&format!("theme_style = {:?}\n", c.wallpaper.theme_style));
     out.push_str(&format!(
         "rotation_minutes = {}\n",
         c.wallpaper.rotation_minutes
@@ -1796,6 +1806,8 @@ pub struct ThemeCatalog {
     pub appearance_overrides: bool,
     pub follow_theme: bool,
     pub theme_dir: String,
+    /// `art` or `signature` (see `WallpaperConfig::theme_style`).
+    pub theme_style: String,
 }
 
 fn theme_preferences_path() -> PathBuf {
@@ -1830,16 +1842,27 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn theme_wallpaper(id: &str, theme_dir: &Path) -> Option<PathBuf> {
+/// The picture file names a theme may have, in the order they are tried:
+/// the Signature picture first when that style is chosen, then the artwork.
+pub fn theme_wallpaper_names(slug: &str, style: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    if style == "signature" {
+        for suffix in ["4k.png", "8k.png", "png"] {
+            names.push(format!("nirux-wallpaper-signature-{slug}-{suffix}"));
+        }
+    }
+    for suffix in ["4k.png", "8k.png", "png"] {
+        names.push(format!("nirux-wallpaper-{slug}-{suffix}"));
+    }
+    names
+}
+
+fn theme_wallpaper(id: &str, theme_dir: &Path, style: &str) -> Option<PathBuf> {
     let short = id.strip_prefix("niru-").unwrap_or(id);
-    [
-        format!("nirux-wallpaper-{short}-4k.png"),
-        format!("nirux-wallpaper-{short}-8k.png"),
-        format!("nirux-wallpaper-{short}.png"),
-    ]
-    .into_iter()
-    .map(|name| theme_dir.join(name))
-    .find(|path| path.is_file())
+    theme_wallpaper_names(short, style)
+        .into_iter()
+        .map(|name| theme_dir.join(name))
+        .find(|path| path.is_file())
 }
 
 fn appearance_has_overrides() -> bool {
@@ -1904,7 +1927,7 @@ pub fn theme_catalog() -> ThemeCatalog {
         let user_file = directory().join("themes").join(format!("{id}.toml"));
         let overridden = user_file.is_file() && builtin;
         let hidden = prefs.hidden.iter().any(|name| name == &id);
-        let wallpaper = theme_wallpaper(&id, &theme_dir);
+        let wallpaper = theme_wallpaper(&id, &theme_dir, &cfg.wallpaper.theme_style);
         match Theme::load(&id) {
             Ok(colors) => themes.push(ThemeEntry {
                 name: colors.name.clone(),
@@ -1940,6 +1963,7 @@ pub fn theme_catalog() -> ThemeCatalog {
         appearance_overrides: appearance_has_overrides(),
         follow_theme: cfg.wallpaper.follow_theme,
         theme_dir: cfg.wallpaper.theme_dir,
+        theme_style: cfg.wallpaper.theme_style,
     }
 }
 
