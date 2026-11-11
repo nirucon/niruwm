@@ -988,11 +988,18 @@ mod tests {
             theme_dir: dir.display().to_string(),
             ..WallpaperConfig::default()
         };
-        // Signature chosen but missing: the artwork is used.
+        // Signature chosen but missing here: the artwork is used, unless the
+        // machine running the test has signature pictures in its own
+        // wallpaper folders (they are searched too).
         cfg.theme_style = "signature".into();
-        assert_eq!(
-            Wallpaper::new(&cfg, "niru-nord").theme_image(),
-            Some(dir.join("nirux-wallpaper-nord-4k.png"))
+        let chosen = Wallpaper::new(&cfg, "niru-nord").theme_image();
+        assert!(
+            chosen == Some(dir.join("nirux-wallpaper-nord-4k.png"))
+                || chosen
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .is_some_and(|n| n.to_string_lossy().contains("signature-nord")),
+            "{chosen:?}"
         );
         File::create(dir.join("nirux-wallpaper-signature-nord-4k.png")).unwrap();
         assert_eq!(

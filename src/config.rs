@@ -1050,6 +1050,42 @@ pub fn directory() -> PathBuf {
         .join("niruwm")
 }
 
+/// The copy of the last `config.toml` that loaded, used when the file has an
+/// error. NIRUBAR reads the same copy.
+pub fn last_good_path() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
+        })
+        .join("niruwm")
+        .join("config.last-good.toml")
+}
+
+/// A parse error in a few words: "config.toml line 213: expected `.`, `=`".
+pub fn short_error(e: &str) -> String {
+    let mut line_no = None;
+    let mut detail = None;
+    for l in e.lines() {
+        let t = l.trim();
+        if let Some(rest) = t.strip_prefix("TOML parse error at line ") {
+            line_no = rest.split(',').next().map(str::to_string);
+        } else if !t.is_empty()
+            && !t.starts_with('|')
+            && !t
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ' ' || c == '|' || c == '^')
+        {
+            detail = Some(t.to_string());
+        }
+    }
+    match (line_no, detail) {
+        (Some(n), Some(d)) => format!("config.toml line {n}: {d}"),
+        (Some(n), None) => format!("config.toml line {n}: syntax error"),
+        _ => format!("config.toml: {}", e.lines().next().unwrap_or(e)),
+    }
+}
+
 fn legacy_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -1080,10 +1116,8 @@ impl Config {
             }
             Err(e) => return Err(e.into()),
         };
+        let c = Self::from_text(&text)?;
         let value: toml::Value = text.parse()?;
-        let mut c: Self = value.clone().try_into()?;
-        apply_appearance_defaults(&mut c, &value);
-        c.validate()?;
         // A missing section silently selects the built-in default. For
         // `[wallpaper]` that default is "disabled", which stops the theme
         // wallpaper from ever being set. Say so instead of doing nothing.
@@ -1095,6 +1129,63 @@ impl Config {
             );
         }
         Ok(c)
+    }
+
+    /// Parse and check the text of a `config.toml`.
+    pub fn from_text(text: &str) -> Result<Self> {
+        let value: toml::Value = text.parse()?;
+        let mut c: Self = value.clone().try_into()?;
+        apply_appearance_defaults(&mut c, &value);
+        c.validate()?;
+        Ok(c)
+    }
+
+    /// The configuration for starting a session, which a typing error must
+    /// never end. A file that does not parse or check gives the last working
+    /// copy (kept in the state directory each time the file loads), or the
+    /// built-in defaults when there is none. The second value says what was
+    /// wrong, for a notification.
+    #[allow(dead_code)] // used by the WM binary, shared with niructl
+    pub fn load_resilient() -> (Self, Option<String>) {
+        match Self::load() {
+            Ok(c) => {
+                if let Ok(text) = fs::read_to_string(directory().join("config.toml")) {
+                    let path = last_good_path();
+                    if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                        if let Some(dir) = path.parent() {
+                            let _ = fs::create_dir_all(dir);
+                        }
+                        let tmp = path.with_extension("toml.tmp");
+                        if fs::write(&tmp, &text).is_ok() {
+                            let _ = fs::rename(&tmp, &path);
+                        }
+                    }
+                }
+                (c, None)
+            }
+            Err(e) => {
+                let problem = short_error(&e.to_string());
+                let fallback = fs::read_to_string(last_good_path())
+                    .ok()
+                    .and_then(|text| Self::from_text(&text).ok());
+                let used = if fallback.is_some() {
+                    "the last working settings"
+                } else {
+                    "the default settings"
+                };
+                eprintln!("niruwm: config.toml has an error, using {used}: {e}");
+                let c = fallback.unwrap_or_else(|| {
+                    let value = toml::Value::Table(Default::default());
+                    let mut c: Self = value.clone().try_into().unwrap_or_default();
+                    apply_appearance_defaults(&mut c, &value);
+                    c
+                });
+                (
+                    c,
+                    Some(format!("{problem}\nUsing {used} until the file is fixed.")),
+                )
+            }
+        }
     }
 
     /// Final binding table: the defaults with any user entry replacing the
@@ -2331,6 +2422,16 @@ pub fn theme_hide(id: &str, hide: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_typing_error_is_described_in_a_few_words() {
+        let text = "theme = \"niru-noir\"\nn# Monitors\n";
+        let e = Config::from_text(text).unwrap_err().to_string();
+        let short = short_error(&e);
+        assert!(short.starts_with("config.toml line 2: "), "{short}");
+        assert!(!short.contains('|'), "{short}");
+        assert!(Config::from_text("theme = \"niru-noir\"\n").is_ok());
+    }
 
     #[test]
     fn invalid_png_and_failed_staging_do_not_replace_existing_theme() {

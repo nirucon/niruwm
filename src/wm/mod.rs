@@ -365,8 +365,29 @@ impl Wm {
     }
 
     pub(crate) fn new() -> Result<Self> {
-        let cfg = Config::load()?;
-        let theme = Theme::load(&cfg.theme)?;
+        // A typing error in config.toml or a theme must not end the session:
+        // start with the last working settings and say what is wrong.
+        let (cfg, config_problem) = Config::load_resilient();
+        let (theme, theme_problem) = match Theme::load(&cfg.theme) {
+            Ok(t) => (t, None),
+            Err(e) => {
+                eprintln!(
+                    "niruwm: theme {:?} has an error, using niru-noir: {e}",
+                    cfg.theme
+                );
+                (
+                    Theme::load("niru-noir")?,
+                    Some(format!(
+                        "Theme {}: {e}\nUsing niru-noir until it is fixed.",
+                        cfg.theme
+                    )),
+                )
+            }
+        };
+        let startup_problem = match (config_problem, theme_problem) {
+            (Some(a), Some(b)) => Some(format!("{a}\n{b}")),
+            (a, b) => a.or(b),
+        };
         let wallpaper = Wallpaper::new(&cfg.wallpaper, &cfg.theme);
         let monitor_cfg = monitor_config(&cfg);
         let (c, s) = x11rb::connect(None)?;
@@ -605,6 +626,9 @@ impl Wm {
             if let Err(e) = wm.restore_session() {
                 eprintln!("niruwm: could not restore the session: {e}");
             }
+        }
+        if let Some(problem) = startup_problem {
+            wm.settings_problem(&problem);
         }
         Ok(wm)
     }
@@ -1217,10 +1241,14 @@ impl Wm {
     /// means the previous working state is still in use. `niructl` exposes
     /// that distinction instead of reporting a fixed sleep as success.
     pub(crate) fn reload(&mut self) -> Result<bool> {
-        let cfg = match Config::load() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("niruwm: reload rejected: {e}");
+        let cfg = match Config::load_resilient() {
+            (c, None) => c,
+            (_, Some(problem)) => {
+                eprintln!("niruwm: reload rejected: {problem}");
+                let first = problem.lines().next().unwrap_or_default().to_string();
+                self.settings_problem(&format!(
+                    "{first}\nThe current settings stay until the file is fixed."
+                ));
                 return Ok(false);
             }
         };
@@ -1228,6 +1256,10 @@ impl Wm {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("niruwm: reload rejected: {e}");
+                self.settings_problem(&format!(
+                    "Theme {}: {e}\nThe current theme stays until it is fixed.",
+                    cfg.theme
+                ));
                 return Ok(false);
             }
         };
@@ -1328,6 +1360,19 @@ impl Wm {
                 None
             }
         }
+    }
+
+    /// A settings file with an error: say where, in a notification that
+    /// stays until it is closed, instead of a session that ends. It waits a
+    /// moment at login, so the notification daemon is up.
+    pub(crate) fn settings_problem(&mut self, body: &str) {
+        self.spawn_detached(&[
+            "sh".into(),
+            "-c".into(),
+            "sleep 3; exec notify-send -u critical -a NIRUWM \"Settings error\" \"$1\"".into(),
+            "sh".into(),
+            format!("{body}\nFix it, then reload with Super+Shift+R or niructl reload."),
+        ]);
     }
 
     /// Tell the person when a binding failed, not only the log.
