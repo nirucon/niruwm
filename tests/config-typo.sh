@@ -7,7 +7,11 @@ SOURCE=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 WM=${1:-$SOURCE/target/release/niruwm}
 BAR=${2:-}
 TEST=$(mktemp -d)
-cleanup() { kill "$WMPID" "$XPID" 2>/dev/null || :; rm -rf "$TEST"; }
+cleanup() {
+  [ -z "$WMPID" ] || { pkill -P "$WMPID" 2>/dev/null; kill "$WMPID" 2>/dev/null; } || :
+  [ -z "$XPID" ] || kill "$XPID" 2>/dev/null || :
+  rm -rf "$TEST"
+}
 WMPID= XPID=
 trap cleanup EXIT HUP INT TERM
 export HOME="$TEST/home" XDG_CONFIG_HOME="$TEST/home/.config" XDG_STATE_HOME="$TEST/home/.local/state"
@@ -30,7 +34,7 @@ start() {
   sleep 5
   kill -0 "$WMPID" 2>/dev/null || { cat "$TEST/wm.log"; echo "FAIL: $1: niruwm ended"; exit 1; }
 }
-stop() { kill "$WMPID" 2>/dev/null || :; wait "$WMPID" 2>/dev/null || :; WMPID=; }
+stop() { pkill -P "$WMPID" 2>/dev/null || :; kill "$WMPID" 2>/dev/null || :; wait "$WMPID" 2>/dev/null || :; WMPID=; }
 
 # 1. A good file loads and is kept as the last working copy.
 printf 'theme = "niru-forest-vigil"\n[bar]\nenabled = true\n' > "$XDG_CONFIG_HOME/niruwm/config.toml"
