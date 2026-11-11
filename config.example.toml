@@ -141,7 +141,7 @@ theme_dir = "~/Pictures/Wallpapers/NIRU"
 # "signature" (the NIRUX Signature picture in the theme's colours, from the
 # optional pack: nirux wallpapers signature). A theme without a Signature
 # picture keeps its artwork. Switch with: niructl wallpaper style toggle
-theme_style = "art"
+# theme_style = "art"
 
 # Pictures for one named screen are written as [[wallpaper.outputs]] entries
 # by `niructl wallpaper output set`. A screen without an entry uses the
