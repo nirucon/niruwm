@@ -73,7 +73,7 @@ plug 1
 plug 0
 "$BIN" powerprofile watch > "$T/watch.log" 2>&1 &
 WATCH=$!
-trap 'kill $WATCH 2>/dev/null; rm -rf "$T"' EXIT INT TERM
+trap 'kill $WATCH 2>/dev/null || :; rm -rf "$T"' EXIT INT TERM
 wait_for() {
   i=0
   while [ "$(active)" != "$1" ]; do
