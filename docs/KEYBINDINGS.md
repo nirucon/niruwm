@@ -31,6 +31,8 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Shift+F1` | The NIRUX manual (search and read) |
 | `Super+.` | Emoji and symbol picker |
 | `Super+O` | Find files in the home folder |
+| `Ctrl+Alt+W` | Jump to a visible window by its label |
+| `Super+Shift+N` | Quick note to the inbox (also to Discord or a device) |
 | `Super+W` / `Alt+Tab` / `` Super+` `` | Window switcher |
 | `Super+Shift+F` | Open the file manager (pcmanfm) |
 

@@ -29,6 +29,10 @@ pub enum Action {
     LauncherEmoji,
     /// File search (`nirulauncher --files`).
     LauncherFiles,
+    /// Jump to a visible window by its label (`nirulauncher --hints`).
+    WindowHints,
+    /// One line to the notes inbox, optionally shared (`nirulauncher --note`).
+    QuickNote,
     /// The NIRUX manual (`nirulauncher --manual`, NIRU Launcher 0.10).
     LauncherManual,
     /// Lock the screen with the first available locker.
@@ -306,6 +310,10 @@ impl Action {
         add("super+period", "launcher_emoji");
         // File search: Super+O as in "open"; free by default.
         add("super+o", "launcher_files");
+        // Jump to any visible window by typing its label, on every screen.
+        add("ctrl+alt+w", "window_hints");
+        // Super+N is the night light, so the note takes Shift.
+        add("super+shift+n", "quick_note");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
@@ -502,6 +510,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher_keys" => Action::LauncherKeys,
         "launcher_emoji" => Action::LauncherEmoji,
         "launcher_files" => Action::LauncherFiles,
+        "window_hints" => Action::WindowHints,
+        "quick_note" => Action::QuickNote,
         "launcher_manual" => Action::LauncherManual,
         "save_session" => Action::SaveSession,
         "clear_session" => Action::ClearSession,
@@ -750,6 +760,11 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::LauncherKeys => s(apps, "Keybinding cheat sheet (this list)"),
         Action::LauncherEmoji => s(apps, "Emoji and symbol picker"),
         Action::LauncherFiles => s(apps, "Find files in the home folder"),
+        Action::WindowHints => s(apps, "Jump to a visible window by its label"),
+        Action::QuickNote => s(
+            apps,
+            "Quick note to the inbox (also to Discord or a device)",
+        ),
         Action::LauncherManual => s(apps, "The NIRUX manual (search and read)"),
         Action::WindowSwitcher => s(apps, "Window switcher"),
         Action::Start(cmd) => {

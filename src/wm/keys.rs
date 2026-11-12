@@ -199,6 +199,16 @@ impl Wm {
                     self.start(&["nirulauncher".into(), "--emoji".into()]);
                 }
             }
+            Action::WindowHints => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--hints".into()]);
+                }
+            }
+            Action::QuickNote => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--note".into()]);
+                }
+            }
             Action::LauncherManual => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--manual".into()]);

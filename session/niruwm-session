@@ -382,16 +382,24 @@ case "$NOTIFICATION_PROVIDER" in
 esac
 
 # ── Night-light schedule ────────────────────────────────────────────────────
-# Manual mode does nothing here. Fixed/solar mode starts one watcher that owns
+# Manual mode does nothing here. Fixed/solar mode (the default) starts one watcher that owns
 # every gammastep call and re-applies after resume or output changes.
 NIGHTLIGHT_MODE=$(awk -F= '
   /^[[:space:]]*\[nightlight\]/ { inside = 1; next }
   /^[[:space:]]*\[/ { inside = 0 }
   inside && $1 ~ /mode[[:space:]]*$/ { gsub(/[ \t"]/, "", $2); print $2; exit }
 ' "$CONFIG_HOME/niruwm/config.toml" 2>/dev/null || :)
-if [ "$NIGHTLIGHT_MODE" != "" ] && [ "$NIGHTLIGHT_MODE" != manual ] \
+# 0.25.2: a file without a mode gets the default, which follows the sun.
+if [ "$NIGHTLIGHT_MODE" != manual ] \
    && command -v niructl >/dev/null 2>&1; then
   niructl nightlight watch >/dev/null 2>&1 & NIGHTLIGHT_PID=$!
+fi
+
+# ── Battery charge limit ───────────────────────────────────────────────────
+# [battery] charge_limit (80 % by default) on laptops whose firmware supports
+# it; "charge to full once" ends here, at the next login.
+if command -v niructl >/dev/null 2>&1 && ls -d /sys/class/power_supply/BAT* >/dev/null 2>&1; then
+  niructl battery apply >/dev/null 2>&1 || log "battery charge limit not applied: $(niructl battery apply 2>&1 | tail -1)"
 fi
 
 # ── Idle ladder ─────────────────────────────────────────────────────────────

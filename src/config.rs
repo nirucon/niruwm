@@ -63,6 +63,8 @@ pub struct Config {
     #[serde(default)]
     pub idle: IdleConfig,
     pub brightness: BrightnessConfig,
+    /// Battery charge limit (`[battery]`, NIRUWM 0.25.2), set by `niructl battery`.
+    pub battery: BatteryConfig,
     /// Settings NIRUBAR reads from the same file. It refuses unknown fields as
     /// strictly as this program does, so every setting either program knows
     /// has to be accepted here, or the shared file is a config the other one
@@ -595,8 +597,8 @@ impl Default for NightlightConfig {
         Self {
             latitude: 0.0,
             longitude: 0.0,
-            temperature: 3400,
-            mode: "manual".into(),
+            temperature: 2700,
+            mode: "solar".into(),
             on: "20:00".into(),
             off: "07:00".into(),
             day_temperature: 6500,
@@ -619,6 +621,19 @@ impl Default for BrightnessConfig {
             device: String::new(),
             step: 5,
         }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BatteryConfig {
+    /// Stop charging at this percentage (50..=100; 100 means no limit).
+    pub charge_limit: u32,
+}
+
+impl Default for BatteryConfig {
+    fn default() -> Self {
+        Self { charge_limit: 80 }
     }
 }
 
@@ -927,6 +942,7 @@ impl Default for Config {
             nightlight: NightlightConfig::default(),
             idle: IdleConfig::default(),
             brightness: BrightnessConfig::default(),
+            battery: BatteryConfig::default(),
             scratchpad: ScratchpadConfig::default(),
             swallow: SwallowConfig::default(),
             studio: StudioConfig::default(),
@@ -1412,6 +1428,9 @@ impl Config {
             || !(1000..=10000).contains(&self.nightlight.day_temperature)
         {
             return Err("nightlight latitude/longitude/temperature out of range".into());
+        }
+        if !(50..=100).contains(&self.battery.charge_limit) {
+            return Err("battery.charge_limit must be 50..100 (100 means no limit)".into());
         }
         if !matches!(self.nightlight.mode.as_str(), "manual" | "fixed" | "solar") {
             return Err("nightlight.mode must be manual, fixed or solar".into());

@@ -73,6 +73,7 @@ explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
 storage review [--json]|clean cache --yes | \
 agent [--dry-run] TASK | task list [--json]|clear | \
 windows rescue [--dry-run] | \
+battery status [--json]|apply|full|limit | \
 config history|diff [N|--all]|undo [STEPS] [--yes]|restore N [--yes]|reset SECTION|KEY|all [--yes] | \
 input status [--json]|apply|set-keyboard LAYOUT [VARIANT]|set-repeat DELAY RATE|set-pointer natural|tap on|off|toggle natural|tap|set-speed VALUE|cycle-speed|reset";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
@@ -380,14 +381,18 @@ fn nightlight(args: &[String]) -> Result<()> {
     } else {
         (cfg.weather_latitude, cfg.weather_longitude)
     };
-    if latitude == 0.0 && longitude == 0.0 {
-        return Err(
-            "set [nightlight] latitude/longitude in config.toml (or weather coordinates)".into(),
-        );
-    }
+    // 0.25.2: without a location, use Stockholm's, which the example file
+    // ships with, so the default schedule works before anyone sets theirs.
+    let (latitude, longitude) = if latitude == 0.0 && longitude == 0.0 {
+        (59.33, 18.07)
+    } else {
+        (latitude, longitude)
+    };
     let location = format!("{latitude}:{longitude}");
     let state = nightlight_state();
-    let apply = |kelvin: u32| -> Result<()> {
+    // `loud` shows a notification; the schedule changes the temperature in
+    // small steps at dusk and dawn and stays quiet.
+    let apply = |kelvin: u32, loud: bool| -> Result<()> {
         let before = gamma_signature();
         command(
             "gammastep",
@@ -422,50 +427,113 @@ fn nightlight(args: &[String]) -> Result<()> {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&state, kelvin.to_string())?;
-        notify("Night light", &format!("{kelvin} K"), None);
+        if loud {
+            notify("Night light", &format!("{kelvin} K"), None);
+        }
         Ok(())
     };
-    let off = || -> Result<()> {
+    let off = |loud: bool| -> Result<()> {
         command("gammastep", &["-x".into()])?;
         let _ = std::fs::remove_file(&state);
-        notify("Night light", "off", None);
+        if loud {
+            notify("Night light", "off", None);
+        }
         Ok(())
     };
-    let reconcile = || -> Result<()> {
+    // What the schedule wants now, and whether that is the night phase.
+    let scheduled = || -> Result<(Option<u32>, bool)> {
         let clock = Local::now();
         let now = clock.hour() * 60 + clock.minute();
-        let desired = match nl.mode.as_str() {
+        Ok(match nl.mode.as_str() {
             "fixed" => {
                 let on = clock_minutes(&nl.on).ok_or("nightlight.on must be HH:MM")?;
                 let off = clock_minutes(&nl.off).ok_or("nightlight.off must be HH:MM")?;
-                fixed_schedule_active(now, on, off).then_some(nl.temperature)
+                let night = fixed_schedule_active(now, on, off);
+                (night.then_some(nl.temperature), night)
             }
-            "solar" => Some(
-                solar_temperature(&location, nl.day_temperature, nl.temperature)
-                    .ok_or("gammastep could not compute the solar temperature")?,
-            ),
-            _ => None,
+            "solar" => {
+                let kelvin = solar_temperature(&location, nl.day_temperature, nl.temperature)
+                    .ok_or("gammastep could not compute the solar temperature")?;
+                (
+                    Some(kelvin),
+                    kelvin < (nl.day_temperature + nl.temperature) / 2,
+                )
+            }
+            _ => (None, false),
+        })
+    };
+    // 0.25.2: Super+N (on, off, toggle) wins over the schedule until the
+    // schedule changes phase, at the next sunset or sunrise (or on/off time).
+    let override_file = state.with_file_name("nightlight-override");
+    let remember = |choice: &str| -> Result<()> {
+        if nl.mode == "manual" {
+            return Ok(());
+        }
+        let (_, night) = scheduled()?;
+        if let Some(parent) = override_file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            &override_file,
+            format!("{choice} {}", if night { "night" } else { "day" }),
+        )?;
+        Ok(())
+    };
+    let reconcile = || -> Result<()> {
+        let (desired, night) = scheduled()?;
+        let phase = if night { "night" } else { "day" };
+        let manual = std::fs::read_to_string(&override_file).ok();
+        let desired = match manual
+            .as_deref()
+            .map(str::split_whitespace)
+            .map(|mut w| (w.next(), w.next()))
+        {
+            Some((Some(choice), Some(p))) if p == phase => {
+                if choice == "on" {
+                    Some(nl.temperature)
+                } else {
+                    None
+                }
+            }
+            Some(_) => {
+                let _ = std::fs::remove_file(&override_file);
+                desired
+            }
+            None => desired,
         };
         match desired {
             Some(kelvin) => {
                 let current = std::fs::read_to_string(&state).ok();
                 if current.as_deref() != Some(&kelvin.to_string()) {
-                    apply(kelvin)?;
+                    apply(kelvin, false)?;
                 }
             }
-            None if state.exists() => off()?,
+            None if state.exists() => off(false)?,
             _ => {}
         }
         Ok(())
     };
     match args.first().map(String::as_str).unwrap_or("status") {
-        "on" => apply(nl.temperature)?,
-        "off" => off()?,
+        "on" => {
+            apply(nl.temperature, true)?;
+            remember("on")?;
+        }
+        "off" => {
+            off(true)?;
+            remember("off")?;
+        }
         "toggle" => {
-            if state.exists() {
-                off()?
+            // In solar mode the day temperature is also "applied", so "on"
+            // means the night temperature is what the screen shows.
+            let shown = std::fs::read_to_string(&state).ok();
+            if shown.as_deref() == Some(&nl.temperature.to_string())
+                || (nl.mode == "manual" && state.exists())
+            {
+                off(true)?;
+                remember("off")?;
             } else {
-                apply(nl.temperature)?
+                apply(nl.temperature, true)?;
+                remember("on")?;
             }
         }
         "temperature" => {
@@ -477,7 +545,7 @@ fn nightlight(args: &[String]) -> Result<()> {
             if !(1000..=10000).contains(&kelvin) {
                 return Err("temperature must be 1000..10000 K".into());
             }
-            apply(kelvin)?;
+            apply(kelvin, true)?;
         }
         "apply" => reconcile()?,
         "watch" => {
@@ -8209,6 +8277,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "brightness" {
         return brightness(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "battery" {
+        return battery_command(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "audio" {
         return audio(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -8545,6 +8616,7 @@ fn run() -> Result<()> {
     if matches!(
         cmd.as_str(),
         "themes"
+            | "battery"
             | "theme-catalog"
             | "theme-import"
             | "theme-remove"
@@ -11059,5 +11131,240 @@ fn config_command(args: &[String]) -> Result<()> {
             config_apply(&current, &new, &format!("reset of {name}"), yes)
         }
         _ => Err(HELP.into()),
+    }
+}
+
+// ── niructl battery: the charge limit ([battery] charge_limit) ─────────────
+
+struct BatteryInfo {
+    name: String,
+    dir: std::path::PathBuf,
+    capacity: Option<u32>,
+    status: String,
+    limit: Option<u32>,
+    writable: bool,
+}
+
+fn battery_read(path: &std::path::Path) -> Option<String> {
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
+fn battery_writable(path: &std::path::Path) -> bool {
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        return false;
+    };
+    // SAFETY: access() only reads the NUL-terminated path.
+    unsafe { libc::access(c.as_ptr(), libc::W_OK) == 0 }
+}
+
+fn batteries() -> Vec<BatteryInfo> {
+    let root = std::path::Path::new(
+        &std::env::var("NIRUCTL_POWER_SUPPLY").unwrap_or_else(|_| "/sys/class/power_supply".into()),
+    )
+    .to_path_buf();
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(&root) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("BAT") {
+            continue;
+        }
+        let dir = entry.path();
+        let end = dir.join("charge_control_end_threshold");
+        out.push(BatteryInfo {
+            capacity: battery_read(&dir.join("capacity")).and_then(|v| v.parse().ok()),
+            status: battery_read(&dir.join("status")).unwrap_or_default(),
+            limit: battery_read(&end).and_then(|v| v.parse().ok()),
+            writable: end.exists() && battery_writable(&end),
+            name,
+            dir,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// "Charge to full once" lasts until the next login: the marker lives in the
+/// runtime directory, which the system clears when the session ends.
+fn battery_full_marker() -> std::path::PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("niructl-{}", unsafe { libc::getuid() }))
+        });
+    dir.join("nirux-battery-full")
+}
+
+fn battery_apply(target: u32) -> Result<Vec<String>> {
+    let mut done = Vec::new();
+    let all = batteries();
+    if all.is_empty() {
+        return Err("no battery".into());
+    }
+    for b in &all {
+        let end = b.dir.join("charge_control_end_threshold");
+        if !end.exists() {
+            continue;
+        }
+        if !b.writable {
+            return Err(format!(
+                "{}: the charge limit is not writable for this user; `nirux update` installs the permission rule (log in again afterwards)",
+                b.name
+            )
+            .into());
+        }
+        let start = b.dir.join("charge_control_start_threshold");
+        let start_now = battery_read(&start).and_then(|v| v.parse::<u32>().ok());
+        let lowering = match b.limit {
+            Some(now) => target < now,
+            None => true,
+        };
+        let fix_start =
+            start.exists() && start_now.is_some_and(|v| v >= target) && battery_writable(&start);
+        // Firmware rejects an end below the start, and some a start above the end.
+        if lowering && fix_start {
+            fs::write(&start, (target.saturating_sub(5)).to_string())?;
+        }
+        fs::write(&end, target.to_string())?;
+        if !lowering && fix_start {
+            fs::write(&start, (target.saturating_sub(5)).to_string())?;
+        }
+        done.push(format!("{}: charges to {target} %", b.name));
+    }
+    if done.is_empty() {
+        return Err("this battery has no charge limit in Linux (no charge_control_end_threshold); many HP models lack it".into());
+    }
+    Ok(done)
+}
+
+fn battery_command(args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let marker = battery_full_marker();
+    let configured = Config::load().map(|c| c.battery.charge_limit).unwrap_or(80);
+    match sub {
+        "status" => {
+            let all = batteries();
+            let full = marker.exists();
+            if args.iter().any(|a| a == "--json") {
+                let list: Vec<serde_json::Value> = all
+                    .iter()
+                    .map(|b| {
+                        serde_json::json!({
+                            "name": b.name, "capacity": b.capacity, "status": b.status,
+                            "limit": b.limit, "supported": b.limit.is_some(), "writable": b.writable,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::json!({"configured": configured, "full_once": full, "batteries": list})
+                );
+                return Ok(());
+            }
+            if all.is_empty() {
+                println!("no battery");
+                return Ok(());
+            }
+            for b in &all {
+                let level = b
+                    .capacity
+                    .map(|c| format!("{c} %"))
+                    .unwrap_or_else(|| "?".into());
+                let limit = match (b.limit, b.writable) {
+                    (None, _) => "no charge limit in Linux on this model".to_string(),
+                    (Some(l), true) => format!("charges to {l} %"),
+                    (Some(l), false) => format!(
+                        "charges to {l} % (not writable: run `nirux update`, then log in again)"
+                    ),
+                };
+                println!("{}: {level} {} · {limit}", b.name, b.status.to_lowercase());
+            }
+            println!(
+                "configured: {configured} %{}",
+                if full {
+                    " · charging to 100 % once, until the next login (niructl battery limit ends it)"
+                } else {
+                    ""
+                }
+            );
+            Ok(())
+        }
+        "apply" => {
+            let target = if marker.exists() { 100 } else { configured };
+            match battery_apply(target) {
+                Ok(lines) => {
+                    for l in lines {
+                        println!("{l}");
+                    }
+                    Ok(())
+                }
+                // Desktops and unsupported laptops are not an error at login.
+                Err(e) if batteries().iter().all(|b| b.limit.is_none()) => {
+                    println!("{e}");
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        }
+        "full" => {
+            if let Some(dir) = marker.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            for l in battery_apply(100)? {
+                println!("{l} (once; back to {configured} % at the next login, or with niructl battery limit)");
+            }
+            fs::write(&marker, "1")?;
+            Ok(())
+        }
+        "limit" => {
+            let _ = fs::remove_file(&marker);
+            for l in battery_apply(configured)? {
+                println!("{l}");
+            }
+            Ok(())
+        }
+        _ => Err("Usage: niructl battery status [--json] | apply | full | limit".into()),
+    }
+}
+
+#[cfg(test)]
+mod battery_tests {
+    use super::*;
+
+    #[test]
+    fn the_limit_is_written_and_full_once_is_temporary() {
+        let base = std::env::temp_dir().join(format!("niructl-battery-{}", std::process::id()));
+        let bat = base.join("BAT0");
+        fs::create_dir_all(&bat).unwrap();
+        fs::write(bat.join("charge_control_end_threshold"), "100\n").unwrap();
+        fs::write(bat.join("charge_control_start_threshold"), "95\n").unwrap();
+        fs::write(bat.join("capacity"), "64\n").unwrap();
+        fs::create_dir_all(base.join("AC")).unwrap();
+        std::env::set_var("NIRUCTL_POWER_SUPPLY", &base);
+        let lines = battery_apply(80).unwrap();
+        assert_eq!(lines, vec!["BAT0: charges to 80 %"]);
+        assert_eq!(
+            fs::read_to_string(bat.join("charge_control_end_threshold")).unwrap(),
+            "80"
+        );
+        assert_eq!(
+            fs::read_to_string(bat.join("charge_control_start_threshold")).unwrap(),
+            "75"
+        );
+        battery_apply(100).unwrap();
+        assert_eq!(
+            fs::read_to_string(bat.join("charge_control_end_threshold")).unwrap(),
+            "100"
+        );
+        fs::remove_file(bat.join("charge_control_end_threshold")).unwrap();
+        fs::remove_file(bat.join("charge_control_start_threshold")).unwrap();
+        assert!(battery_apply(80)
+            .unwrap_err()
+            .to_string()
+            .contains("no charge limit"));
+        std::env::remove_var("NIRUCTL_POWER_SUPPLY");
+        let _ = fs::remove_dir_all(&base);
     }
 }

@@ -200,15 +200,17 @@ return_workspace = 1
 
 # ── Night light and brightness ─────────────────────────────────────────────
 [nightlight]
-# Manual night light, applied by `niructl nightlight on` / Super+N.
+# Night light: warm, reddish light in the evening. By default it follows the
+# sun (solar) at 2700 K. Super+N or `niructl nightlight on|off|toggle` switch
+# it by hand; mode = "manual" turns the schedule off.
 # 0,0 means no location; manual temperature still works.
 latitude = 59.33
 longitude = 18.07
-temperature = 3400
+temperature = 2700
 # manual: Super+N / niructl nightlight on|off
 # fixed:  on/off local times every day
 # solar:  gammastep computes sunrise/sunset from the coordinates
-mode = "manual"
+mode = "solar"
 on = "20:00"
 off = "07:00"
 day_temperature = 6500
@@ -217,6 +219,14 @@ day_temperature = 6500
 # Empty uses brightnessctl's default device; step is the up/down percentage.
 device = ""
 step = 5
+
+[battery]
+# Stop charging at this percentage, which is kinder to the battery when the
+# laptop is mostly plugged in. 100 means no limit. It needs firmware support
+# (ThinkPad, Framework, many Dell, ASUS and Lenovo; many HP models lack it):
+# `niructl battery status` tells. `niructl battery full` charges to 100 % once,
+# until the next login.
+charge_limit = 80
 
 # ── Monitors ────────────────────────────────────────────────────────────────
 # Automatic by default: every connected screen gets its own ten workspaces,
