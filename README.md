@@ -207,6 +207,10 @@ The program itself has a few diagnostic options:
 ```sh
 niruwm --check-config     # validate config.toml without applying it
 niruwm --reset-config     # restore the full example; keeps a .niruwm-backup copy
+niructl config history    # every working version (~/.local/state/niruwm/config-history, last 30)
+niructl config undo       # back one version, with a diff and a question first
+niructl config diff       # only what differs from the defaults
+niructl config reset bar  # one section (or a key such as bar.modules) back to the defaults
 niruwm --doctor
 niruwm --dump-config
 niruwm --version

@@ -12,6 +12,8 @@ mod bindings;
 #[path = "../config.rs"]
 #[allow(dead_code)] // shared with NIRUWM; theme management consumes part of it
 mod config;
+#[path = "../config_tools.rs"]
+mod config_tools;
 #[path = "../display_auto.rs"]
 mod display_auto;
 #[path = "../keysheet.rs"]
@@ -71,6 +73,7 @@ explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
 storage review [--json]|clean cache --yes | \
 agent [--dry-run] TASK | task list [--json]|clear | \
 windows rescue [--dry-run] | \
+config history|diff [N|--all]|undo [STEPS] [--yes]|restore N [--yes]|reset SECTION|KEY|all [--yes] | \
 input status [--json]|apply|set-keyboard LAYOUT [VARIANT]|set-repeat DELAY RATE|set-pointer natural|tap on|off|toggle natural|tap|set-speed VALUE|cycle-speed|reset";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -8578,6 +8581,9 @@ fn run() -> Result<()> {
     ) {
         return offline(cmd);
     }
+    if cmd == "config" {
+        return config_command(&args[1..]);
+    }
     if cmd == "wallpaper" {
         let sub = args.get(1).map(String::as_str).unwrap_or("");
         if sub == "list" || sub == "status" {
@@ -10784,5 +10790,234 @@ mod display_uevent_tests {
         assert!(!drm_uevent_is_hotplug(usb));
         let drm_add = b"add@/devices/drm/card1/card1-DP-1\0ACTION=add\0SUBSYSTEM=drm\0";
         assert!(!drm_uevent_is_hotplug(drm_add));
+    }
+}
+
+// ── niructl config: history, undo, diff and reset ──────────────────────────
+
+fn config_file() -> std::path::PathBuf {
+    config::directory().join("config.toml")
+}
+
+fn history_label(path: &std::path::Path) -> String {
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let digits: String = stem.chars().filter(|c| c.is_ascii_digit()).take(14).collect();
+    if digits.len() == 14 {
+        format!(
+            "{}-{}-{} {}:{}:{}",
+            &digits[0..4],
+            &digits[4..6],
+            &digits[6..8],
+            &digits[8..10],
+            &digits[10..12],
+            &digits[12..14]
+        )
+    } else {
+        stem.to_string()
+    }
+}
+
+fn stdin_is_terminal() -> bool {
+    unsafe { libc::isatty(0) == 1 }
+}
+
+/// Show what `new` changes, ask (or require --yes when nobody can answer),
+/// keep the current file in the history, write, and reload the session.
+fn config_apply(current: &str, new: &str, what: &str, yes: bool) -> Result<()> {
+    if let Err(e) = Config::from_text(new) {
+        return Err(format!(
+            "{what} would not load ({}); nothing was changed",
+            config::short_error(&e.to_string())
+        )
+        .into());
+    }
+    let diff = config_tools::unified_diff(current, new, "config.toml now", &format!("config.toml after {what}"));
+    if diff.is_empty() {
+        println!("Nothing to change: config.toml already matches.");
+        return Ok(());
+    }
+    print!("{diff}");
+    if !yes {
+        if !stdin_is_terminal() {
+            println!("\nThis is a preview. Run the same command with --yes to apply it.");
+            return Ok(());
+        }
+        print!("\nApply {what}? [y/N] ");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y" | "yes" | "j" | "J" | "ja") {
+            println!("Nothing was changed.");
+            return Ok(());
+        }
+    }
+    config::history_record(current);
+    let path = config_file();
+    let dir = path.parent().ok_or("configuration directory is missing")?;
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".config.toml.{}", std::process::id()));
+    fs::write(&tmp, new)?;
+    fs::rename(&tmp, &path)?;
+    // It loads (checked above), so it is a working version too: a second
+    // undo then steps back from here even before the session reloads.
+    config::history_record(new);
+    println!("Applied {what}. The previous version is in the history: niructl config undo");
+    let reloaded = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            std::process::Command::new(exe)
+                .arg("reload")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .ok()
+        })
+        .is_some_and(|s| s.success());
+    if reloaded {
+        println!("The session reloaded the settings.");
+    } else {
+        println!("No running NIRUWM answered; the settings apply at the next start.");
+    }
+    Ok(())
+}
+
+fn config_command(args: &[String]) -> Result<()> {
+    const HELP: &str = "Usage: niructl config history | diff [N|--all] | undo [STEPS] [--yes] | restore N [--yes] | reset SECTION|KEY|all [--yes]";
+    let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+    let rest: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .map(String::as_str)
+        .filter(|a| *a != "--yes" && *a != "-y")
+        .collect();
+    let current = match fs::read_to_string(config_file()) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let entries = config::history_entries();
+    let texts: Vec<String> = entries
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap_or_default())
+        .collect();
+    let position = texts.iter().position(|t| *t == current);
+    let pick = |n: usize| -> Result<(String, String)> {
+        texts.get(n).cloned().map(|t| (t, history_label(&entries[n]))).ok_or_else(|| {
+            format!(
+                "there is no version {n}; `niructl config history` lists {} version(s)",
+                texts.len()
+            )
+            .into()
+        })
+    };
+    match args.first().map(String::as_str) {
+        Some("history") => {
+            if entries.is_empty() {
+                println!("No versions kept yet. NIRUWM keeps one each time config.toml loads.");
+                return Ok(());
+            }
+            println!("Working versions of config.toml, newest first (* = the file now):\n");
+            for (i, path) in entries.iter().enumerate() {
+                let summary = match texts.get(i + 1) {
+                    Some(older) => {
+                        let names = config_tools::changed_sections(older, &texts[i]);
+                        if names.is_empty() {
+                            "only comments or layout".to_string()
+                        } else {
+                            names.join(", ")
+                        }
+                    }
+                    None => "oldest kept".to_string(),
+                };
+                let mark = if Some(i) == position { "*" } else { " " };
+                println!("{mark}{i:>3}  {}  {summary}", history_label(path));
+            }
+            if position.is_none() {
+                println!("\nThe file now is not in the list: it has not loaded since it was edited.");
+            }
+            println!("\nniructl config diff N     what changed since version N");
+            println!("niructl config restore N  go back to version N");
+            println!("niructl config undo       go back one version");
+            println!("Kept in {} (the last {}).", config::history_dir().display(), config::HISTORY_KEEP);
+            Ok(())
+        }
+        Some("diff") => {
+            if let Some(n) = rest.first().and_then(|a| a.parse::<usize>().ok()) {
+                let (old, label) = pick(n)?;
+                let d = config_tools::unified_diff(&old, &current, &format!("version {n} ({label})"), "config.toml now");
+                if d.is_empty() {
+                    println!("config.toml is the same as version {n}.");
+                } else {
+                    print!("{d}");
+                }
+                return Ok(());
+            }
+            let all = rest.contains(&"--all");
+            let (template, source) = config_tools::template();
+            let d = config_tools::differences(&current, &template)?;
+            println!("Your settings compared with the defaults ({source}):\n");
+            if d.is_empty() {
+                println!("Nothing differs.");
+            }
+            for (title, lines) in [
+                ("Changed", &d.changed),
+                ("Added", &d.added),
+                ("Removed from the defaults", &d.removed),
+            ] {
+                if !lines.is_empty() {
+                    println!("{title}:");
+                    for l in lines {
+                        println!("  {l}");
+                    }
+                    println!();
+                }
+            }
+            if all && !d.unset.is_empty() {
+                println!("Not in your file (the built-in default applies):");
+                for l in &d.unset {
+                    println!("  {l}");
+                }
+                println!();
+            } else if !d.unset.is_empty() {
+                println!("{} default key(s) are not in your file; --all lists them.", d.unset.len());
+            }
+            println!("Reset a part with: niructl config reset SECTION   (for example bar)");
+            Ok(())
+        }
+        Some("undo") => {
+            let steps = match rest.first() {
+                Some(a) => a.parse::<usize>().map_err(|_| HELP)?.max(1),
+                None => 1,
+            };
+            let target = position.map_or(steps - 1, |p| p + steps);
+            let (old, label) = pick(target).map_err(|_| -> Box<dyn std::error::Error> {
+                "no older version is kept; `niructl config history` lists what there is".into()
+            })?;
+            config_apply(&current, &old, &format!("undo to version {target} ({label})"), yes)
+        }
+        Some("restore") => {
+            let n = rest.first().and_then(|a| a.parse::<usize>().ok()).ok_or(HELP)?;
+            let (old, label) = pick(n)?;
+            config_apply(&current, &old, &format!("restore of version {n} ({label})"), yes)
+        }
+        Some("reset") => {
+            let (template, source) = config_tools::template();
+            let Some(name) = rest.first() else {
+                return Err(format!(
+                    "name what to reset: {} or all",
+                    config_tools::section_names(&current, &template).join(", ")
+                )
+                .into());
+            };
+            let new = config_tools::reset_text(&current, &template, name).map_err(|e| {
+                format!(
+                    "{e}. Sections: {} or all",
+                    config_tools::section_names(&current, &template).join(", ")
+                )
+            })?;
+            println!("Defaults from {source}.\n");
+            config_apply(&current, &new, &format!("reset of {name}"), yes)
+        }
+        _ => Err(HELP.into()),
     }
 }

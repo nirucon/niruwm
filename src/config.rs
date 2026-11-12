@@ -1004,16 +1004,26 @@ impl Default for Bar {
             separator: "|".into(),
             modules: vec![
                 "workspaces".into(),
+                "dictation".into(),
+                "recording".into(),
+                "scratchpad".into(),
                 "layout".into(),
                 "media".into(),
                 "volume".into(),
+                "microphone".into(),
                 "brightness".into(),
                 "display".into(),
+                "tailscale".into(),
                 "network".into(),
+                "wifi".into(),
                 "mode".into(),
                 "battery".into(),
                 "niruxupdate".into(),
                 "agent".into(),
+                "nirusec".into(),
+                "dnd".into(),
+                "quicksettings".into(),
+                "share".into(),
                 "clock".into(),
             ],
             tags: default_tags(),
@@ -1060,6 +1070,69 @@ pub fn last_good_path() -> PathBuf {
         })
         .join("niruwm")
         .join("config.last-good.toml")
+}
+
+/// Where every working version of `config.toml` is kept, newest last by
+/// name: `YYYYMMDD-HHMMSS.toml`. `niructl config history`, `undo` and
+/// `restore` read it; NIRUBAR writes its backups here too.
+pub fn history_dir() -> PathBuf {
+    last_good_path()
+        .parent()
+        .map(|p| p.join("config-history"))
+        .unwrap_or_else(|| PathBuf::from("config-history"))
+}
+
+/// How many versions `history_record` keeps.
+pub const HISTORY_KEEP: usize = 30;
+
+/// The kept versions, newest first.
+pub fn history_entries() -> Vec<PathBuf> {
+    let mut entries: Vec<PathBuf> = fs::read_dir(history_dir())
+        .map(|dir| {
+            dir.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "toml"))
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+    entries.reverse();
+    entries
+}
+
+/// Keep `text` as a version unless an identical one is already kept, so
+/// undoing to an older version does not push it to the top again and a
+/// second undo goes one step further back. The oldest versions beyond
+/// `HISTORY_KEEP` are removed. Returns the new file, if one was written.
+pub fn history_record(text: &str) -> Option<PathBuf> {
+    let entries = history_entries();
+    if entries
+        .iter()
+        .any(|p| fs::read_to_string(p).ok().as_deref() == Some(text))
+    {
+        return None;
+    }
+    let dir = history_dir();
+    fs::create_dir_all(&dir).ok()?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    // A sequence number keeps versions from the same second in order when
+    // the names are sorted.
+    let mut n = 0;
+    let mut path = dir.join(format!("{stamp}-{n:02}.toml"));
+    while path.exists() {
+        n += 1;
+        path = dir.join(format!("{stamp}-{n:02}.toml"));
+    }
+    let tmp = dir.join(format!(".{}.tmp", std::process::id()));
+    fs::write(&tmp, text).ok()?;
+    fs::rename(&tmp, &path).ok()?;
+    let mut all = history_entries();
+    while all.len() > HISTORY_KEEP {
+        if let Some(old) = all.pop() {
+            let _ = fs::remove_file(old);
+        }
+    }
+    Some(path)
 }
 
 /// A parse error in a few words: "config.toml line 213: expected `.`, `=`".
@@ -1160,6 +1233,7 @@ impl Config {
                             let _ = fs::rename(&tmp, &path);
                         }
                     }
+                    history_record(&text);
                 }
                 (c, None)
             }
@@ -1740,6 +1814,7 @@ pub fn reset_to_example() -> Result<(PathBuf, Option<PathBuf>)> {
     let parent = path.parent().ok_or("configuration directory is missing")?;
     fs::create_dir_all(parent)?;
     let backup = if original.is_some() {
+        history_record(original.as_deref().unwrap_or(""));
         let backup = PathBuf::from(format!("{}.niruwm-backup", path.display()));
         fs::write(&backup, original.as_deref().unwrap_or(""))?;
         Some(backup)
