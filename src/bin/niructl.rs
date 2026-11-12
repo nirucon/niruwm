@@ -10801,7 +10801,11 @@ fn config_file() -> std::path::PathBuf {
 
 fn history_label(path: &std::path::Path) -> String {
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    let digits: String = stem.chars().filter(|c| c.is_ascii_digit()).take(14).collect();
+    let digits: String = stem
+        .chars()
+        .filter(|c| c.is_ascii_digit())
+        .take(14)
+        .collect();
     if digits.len() == 14 {
         format!(
             "{}-{}-{} {}:{}:{}",
@@ -10831,7 +10835,12 @@ fn config_apply(current: &str, new: &str, what: &str, yes: bool) -> Result<()> {
         )
         .into());
     }
-    let diff = config_tools::unified_diff(current, new, "config.toml now", &format!("config.toml after {what}"));
+    let diff = config_tools::unified_diff(
+        current,
+        new,
+        "config.toml now",
+        &format!("config.toml after {what}"),
+    );
     if diff.is_empty() {
         println!("Nothing to change: config.toml already matches.");
         return Ok(());
@@ -10902,13 +10911,17 @@ fn config_command(args: &[String]) -> Result<()> {
         .collect();
     let position = texts.iter().position(|t| *t == current);
     let pick = |n: usize| -> Result<(String, String)> {
-        texts.get(n).cloned().map(|t| (t, history_label(&entries[n]))).ok_or_else(|| {
-            format!(
-                "there is no version {n}; `niructl config history` lists {} version(s)",
-                texts.len()
-            )
-            .into()
-        })
+        texts
+            .get(n)
+            .cloned()
+            .map(|t| (t, history_label(&entries[n])))
+            .ok_or_else(|| {
+                format!(
+                    "there is no version {n}; `niructl config history` lists {} version(s)",
+                    texts.len()
+                )
+                .into()
+            })
     };
     match args.first().map(String::as_str) {
         Some("history") => {
@@ -10933,18 +10946,29 @@ fn config_command(args: &[String]) -> Result<()> {
                 println!("{mark}{i:>3}  {}  {summary}", history_label(path));
             }
             if position.is_none() {
-                println!("\nThe file now is not in the list: it has not loaded since it was edited.");
+                println!(
+                    "\nThe file now is not in the list: it has not loaded since it was edited."
+                );
             }
             println!("\nniructl config diff N     what changed since version N");
             println!("niructl config restore N  go back to version N");
             println!("niructl config undo       go back one version");
-            println!("Kept in {} (the last {}).", config::history_dir().display(), config::HISTORY_KEEP);
+            println!(
+                "Kept in {} (the last {}).",
+                config::history_dir().display(),
+                config::HISTORY_KEEP
+            );
             Ok(())
         }
         Some("diff") => {
             if let Some(n) = rest.first().and_then(|a| a.parse::<usize>().ok()) {
                 let (old, label) = pick(n)?;
-                let d = config_tools::unified_diff(&old, &current, &format!("version {n} ({label})"), "config.toml now");
+                let d = config_tools::unified_diff(
+                    &old,
+                    &current,
+                    &format!("version {n} ({label})"),
+                    "config.toml now",
+                );
                 if d.is_empty() {
                     println!("config.toml is the same as version {n}.");
                 } else {
@@ -10979,7 +11003,10 @@ fn config_command(args: &[String]) -> Result<()> {
                 }
                 println!();
             } else if !d.unset.is_empty() {
-                println!("{} default key(s) are not in your file; --all lists them.", d.unset.len());
+                println!(
+                    "{} default key(s) are not in your file; --all lists them.",
+                    d.unset.len()
+                );
             }
             println!("Reset a part with: niructl config reset SECTION   (for example bar)");
             Ok(())
@@ -10993,12 +11020,25 @@ fn config_command(args: &[String]) -> Result<()> {
             let (old, label) = pick(target).map_err(|_| -> Box<dyn std::error::Error> {
                 "no older version is kept; `niructl config history` lists what there is".into()
             })?;
-            config_apply(&current, &old, &format!("undo to version {target} ({label})"), yes)
+            config_apply(
+                &current,
+                &old,
+                &format!("undo to version {target} ({label})"),
+                yes,
+            )
         }
         Some("restore") => {
-            let n = rest.first().and_then(|a| a.parse::<usize>().ok()).ok_or(HELP)?;
+            let n = rest
+                .first()
+                .and_then(|a| a.parse::<usize>().ok())
+                .ok_or(HELP)?;
             let (old, label) = pick(n)?;
-            config_apply(&current, &old, &format!("restore of version {n} ({label})"), yes)
+            config_apply(
+                &current,
+                &old,
+                &format!("restore of version {n} ({label})"),
+                yes,
+            )
         }
         Some("reset") => {
             let (template, source) = config_tools::template();

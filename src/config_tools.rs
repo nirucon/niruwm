@@ -34,7 +34,10 @@ pub fn template() -> (String, String) {
             return (text, path.display().to_string());
         }
     }
-    (EMBEDDED.to_string(), "the defaults built into NIRUWM".into())
+    (
+        EMBEDDED.to_string(),
+        "the defaults built into NIRUWM".into(),
+    )
 }
 
 /// Top-level names a reset accepts: every section and key of the template
@@ -56,10 +59,7 @@ pub fn section_names(user: &str, template: &str) -> Vec<String> {
 fn inline(v: &Value) -> String {
     match v {
         Value::String(s) => format!("{s:?}"),
-        Value::Array(a) => format!(
-            "[{}]",
-            a.iter().map(inline).collect::<Vec<_>>().join(", ")
-        ),
+        Value::Array(a) => format!("[{}]", a.iter().map(inline).collect::<Vec<_>>().join(", ")),
         Value::Table(t) => format!(
             "{{ {} }}",
             t.iter()
@@ -118,9 +118,9 @@ fn walk(user: &Value, template: &Value, path: &str, out: &mut Differences) {
                 }
                 match t.get(k) {
                     Some(tv) => walk(uv, tv, &p, out),
-                    None if uv.is_table() => {
-                        out.added.push(format!("[{p}] (a section the template does not have)"))
-                    }
+                    None if uv.is_table() => out
+                        .added
+                        .push(format!("[{p}] (a section the template does not have)")),
                     None if is_table_array(uv) => {
                         for e in uv.as_array().into_iter().flatten() {
                             out.added.push(format!("[[{p}]] {}", inline(e)));
@@ -135,7 +135,10 @@ fn walk(user: &Value, template: &Value, path: &str, out: &mut Differences) {
                     if tv.is_table() {
                         out.unset.push(format!("[{p}]"));
                     } else if is_table_array(tv) {
-                        out.removed.push(format!("[[{p}]] all {} entries", tv.as_array().map_or(0, |a| a.len())));
+                        out.removed.push(format!(
+                            "[[{p}]] all {} entries",
+                            tv.as_array().map_or(0, |a| a.len())
+                        ));
                     } else {
                         out.unset.push(format!("{p} (template: {})", inline(tv)));
                     }
@@ -150,9 +153,10 @@ fn walk(user: &Value, template: &Value, path: &str, out: &mut Differences) {
                 out.removed.push(format!("[[{path}]] {}", inline(e)));
             }
         }
-        (u, t) if u != t => out
-            .changed
-            .push(format!("{path} = {}    (default {})", inline(u), inline(t))),
+        (u, t) if u != t => {
+            out.changed
+                .push(format!("{path} = {}    (default {})", inline(u), inline(t)))
+        }
         _ => {}
     }
 }
@@ -367,13 +371,19 @@ mod tests {
         assert!(out.contains("theme = \"niru-nord\""));
         assert!(out.contains("mode = \"single\""));
         let out = reset_text(user, T, "wallpaper").unwrap();
-        assert!(out.contains("dir = \"~/Bilder\""), "the picture folder is kept: {out}");
+        assert!(
+            out.contains("dir = \"~/Bilder\""),
+            "the picture folder is kept: {out}"
+        );
         assert!(out.contains("mode = \"fixed\""));
         let commented = "[wallpaper]\n# The folder.\ndir = \"~/Bilder\"\n[bar]\ntitle = true\n";
         let out = reset_text(commented, T, "bar").unwrap();
         assert!(out.contains("# The folder.\ndir = \"~/Bilder\""), "{out}");
         let out = reset_text(user, T, "bar.modules").unwrap();
-        assert!(out.contains("modules = [\"clock\"]") && out.contains("title = true"), "{out}");
+        assert!(
+            out.contains("modules = [\"clock\"]") && out.contains("title = true"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -388,8 +398,14 @@ mod tests {
     fn differences_name_changed_and_added_values() {
         let user = "theme = \"niru-nord\"\n[bar]\nmodules = [\"clock\"]\n[wallpaper]\ndir = \"~/Bilder\"\nmode = \"fixed\"\n[[keys]]\nkeys = \"super+x\"\naction = \"kill\"\n";
         let d = differences(user, T).unwrap();
-        assert_eq!(d.changed, vec!["theme = \"niru-nord\"    (default \"niru-noir\")"]);
-        assert_eq!(d.added, vec!["[[keys]] { action = \"kill\", keys = \"super+x\" }"]);
+        assert_eq!(
+            d.changed,
+            vec!["theme = \"niru-nord\"    (default \"niru-noir\")"]
+        );
+        assert_eq!(
+            d.added,
+            vec!["[[keys]] { action = \"kill\", keys = \"super+x\" }"]
+        );
         assert_eq!(d.unset, vec!["bar.title (template: false)"]);
         assert!(differences(T, T).unwrap().is_empty());
     }
