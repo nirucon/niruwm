@@ -3,6 +3,7 @@ mod clients;
 mod events;
 mod keys;
 mod mouse;
+mod overview;
 mod scratch;
 mod swallow;
 pub(crate) use scratch::ScratchOp;
@@ -340,6 +341,8 @@ pub(crate) struct Wm {
     pub(crate) restart_requested: bool,
     /// Windows the previous manager saved before a restart in place.
     pub(crate) restart_saved: HashMap<Window, restart::SavedClient>,
+    /// Workspace thumbnails for the overview (Super+E).
+    pub(crate) overview: overview::Overview,
 }
 
 impl Wm {
@@ -491,6 +494,9 @@ impl Wm {
             // abort the manager when the command arrived.
             "_NIRUWM_LAYOUT_SAVE_ACK",
             "_NIRUWM_LAYOUT_SAVE_SERIAL",
+            "_NIRUWM_DO",
+            "_NIRUWM_DO_RESULT",
+            "_NIRUWM_DO_CONTROL",
         ] {
             atoms.insert(n, c.intern_atom(false, n.as_bytes())?.reply()?.atom);
         }
@@ -550,6 +556,7 @@ impl Wm {
             restore_deadline: None,
             restart_requested: false,
             restart_saved: HashMap::new(),
+            overview: overview::Overview::default(),
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
         wm.wallpaper.set_outputs(randr::outputs(&wm.c, root));
@@ -670,6 +677,8 @@ impl Wm {
             AtomEnum::CARDINAL.into(),
             &[1],
         )?;
+        // `niructl do` (NIRUWM 0.26) checks this before sending a request.
+        self.prop(check, "_NIRUWM_DO_CONTROL", AtomEnum::CARDINAL.into(), &[1])?;
         // Which process owns the check window: `niructl restart-wm` waits for
         // a different one. The window id alone can repeat, because the X
         // server may give the next client the same id range.

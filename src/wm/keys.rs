@@ -281,6 +281,7 @@ impl Wm {
                 // do nothing.
                 self.media_key(&name);
             }
+            Action::Overview => self.overview(),
             Action::WindowSwitcher => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--windows".into()]);

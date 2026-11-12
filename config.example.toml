@@ -227,6 +227,15 @@ step = 5
 # `niructl battery status` tells. `niructl battery full` charges to 100 % once,
 # until the next login.
 charge_limit = 80
+# The power profile follows the power source (power-profiles-daemon): one
+# profile on battery, another on AC, switched when you plug in or unplug.
+# Studio mode wins while it is on; a profile set by hand (niructl powerprofile
+# set) holds until the next plug or unplug. Profiles: performance, balanced,
+# power-saver, or "keep" to leave it alone. `niructl powerprofile auto`
+# applies it now. (Shown as comments: older NIRUWM versions reject new keys.)
+# auto_profile = true
+# profile_on_battery = "power-saver"
+# profile_on_ac = "balanced"
 
 # ── Monitors ────────────────────────────────────────────────────────────────
 # Automatic by default: every connected screen gets its own ten workspaces,
@@ -509,7 +518,8 @@ hide_on_focus_loss = false
 #   launcher_actions, launcher_search, launcher_clipboard,
 #   launcher_keys (cheat sheet), launcher_emoji (emoji and symbols),
 #   launcher_files (file search), launcher_manual (the NIRUX manual),
-#   window_switcher, lock, start CMD, shell CMD,
+#   window_switcher, overview (every workspace with a thumbnail), lock,
+#   start CMD, shell CMD,
 #   focus_next, focus_prev, move_next, move_prev,
 #   tag N, movetotag N, toggletag N, togglemovetotag N, tag_next, tag_prev,
 #   layout tile|left|monocle|centered|centeredfloat|floating|fibonacci|scroll,
@@ -601,6 +611,12 @@ action = "save_session"
 [[keys]]
 keys = "super+w"
 action = "window_switcher"
+
+# Every workspace of every screen as a card with a thumbnail; pick one with
+# its number, the arrows and Enter, or a click (NIRU Launcher --overview).
+[[keys]]
+keys = "super+e"
+action = "overview"
 
 [[keys]]
 keys = "super+Escape"

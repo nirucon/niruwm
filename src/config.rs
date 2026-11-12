@@ -629,11 +629,43 @@ impl Default for BrightnessConfig {
 pub struct BatteryConfig {
     /// Stop charging at this percentage (50..=100; 100 means no limit).
     pub charge_limit: u32,
+    /// The power profile follows the power source (NIRUWM 0.26): one profile
+    /// on battery, another on AC. Studio mode wins while it is on.
+    pub auto_profile: bool,
+    /// The profile on battery; "" or "keep" leaves it alone.
+    pub profile_on_battery: String,
+    /// The profile on AC; "" or "keep" leaves it alone.
+    pub profile_on_ac: String,
 }
 
 impl Default for BatteryConfig {
     fn default() -> Self {
-        Self { charge_limit: 80 }
+        Self {
+            charge_limit: 80,
+            auto_profile: true,
+            profile_on_battery: "power-saver".into(),
+            profile_on_ac: "balanced".into(),
+        }
+    }
+}
+
+/// The profile names power-profiles-daemon knows.
+pub const POWER_PROFILES: [&str; 3] = ["performance", "balanced", "power-saver"];
+
+impl BatteryConfig {
+    /// The profile for a power source ("ac" or "battery"), or `None` to
+    /// leave the profile alone (auto off, "keep", "" or an unknown source).
+    #[allow(dead_code)] // niructl reads it; the WM shares this file
+    pub fn profile_for(&self, source: &str) -> Option<&str> {
+        if !self.auto_profile {
+            return None;
+        }
+        let p = match source {
+            "ac" => self.profile_on_ac.trim(),
+            "battery" => self.profile_on_battery.trim(),
+            _ => return None,
+        };
+        (!p.is_empty() && p != "keep").then_some(p)
     }
 }
 
@@ -1431,6 +1463,18 @@ impl Config {
         }
         if !(50..=100).contains(&self.battery.charge_limit) {
             return Err("battery.charge_limit must be 50..100 (100 means no limit)".into());
+        }
+        for (key, value) in [
+            ("profile_on_battery", &self.battery.profile_on_battery),
+            ("profile_on_ac", &self.battery.profile_on_ac),
+        ] {
+            let v = value.trim();
+            if !(v.is_empty() || v == "keep" || POWER_PROFILES.contains(&v)) {
+                return Err(format!(
+                    "battery.{key} must be performance, balanced, power-saver, keep or \"\""
+                )
+                .into());
+            }
         }
         if !matches!(self.nightlight.mode.as_str(), "manual" | "fixed" | "solar") {
             return Err("nightlight.mode must be manual, fixed or solar".into());
@@ -2951,6 +2995,28 @@ cell_width = 34
         assert_eq!(safe.lock_after_screensaver, IdleConfig::MAX_MINUTES);
         assert_eq!(safe.dpms_off_after_lock, 0, "0 keeps the display on");
         assert!(!safe.lock_on_lid_close, "an explicit false is kept");
+    }
+
+    #[test]
+    fn the_power_profile_follows_the_source_by_default() {
+        let c: Config = toml::from_str("[battery]\ncharge_limit = 80\n").unwrap();
+        assert!(c.validate().is_ok());
+        assert_eq!(c.battery.profile_for("battery"), Some("power-saver"));
+        assert_eq!(c.battery.profile_for("ac"), Some("balanced"));
+        assert_eq!(c.battery.profile_for("unknown"), None);
+        let c: Config = toml::from_str(
+            "[battery]\nauto_profile = true\nprofile_on_battery = \"keep\"\nprofile_on_ac = \"performance\"\n",
+        )
+        .unwrap();
+        assert!(c.validate().is_ok());
+        assert_eq!(c.battery.profile_for("battery"), None);
+        assert_eq!(c.battery.profile_for("ac"), Some("performance"));
+        let c: Config = toml::from_str("[battery]\nauto_profile = false\n").unwrap();
+        assert_eq!(c.battery.profile_for("battery"), None);
+        let c: Config = toml::from_str("[battery]\nprofile_on_ac = \"turbo\"\n").unwrap();
+        assert!(c.validate().is_err());
+        let c: Config = toml::from_str("[battery]\nprofile_on_battery = \"\"\n").unwrap();
+        assert!(c.validate().is_ok());
     }
 
     #[test]

@@ -101,6 +101,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 
 | Keys | Action |
 |---|---|
+| `Super+E` | Overview of every workspace, with thumbnails |
 | `Super+Tab` | Next workspace |
 | `Super+Shift+Tab` | Previous workspace |
 | `Super+1…9` / `Super+0` | Go to workspace 1…9 / 10 |

@@ -61,6 +61,10 @@ ln -s generations/A "$H/.local/share/nirux/current"
 for b in niruwm niructl niruidle nirubar niruwm-session niruclipboard; do
   ln -s "$H/.local/share/nirux/current/bin/$b" "$H/.local/bin/$b"
 done
+# A stand-in gammastep: the night-light watcher (solar mode, the default)
+# runs without touching any real display's gamma.
+printf '#!/bin/sh\nexit 0\n' > "$H/.local/bin/gammastep"
+chmod 755 "$H/.local/bin/gammastep"
 switch_to() {
   ln -sfn "generations/$1" "$H/.local/share/nirux/current.new"
   mv -T "$H/.local/share/nirux/current.new" "$H/.local/share/nirux/current"
@@ -217,9 +221,19 @@ mine() {
     tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "HOME=$H" && echo "$pid"
   done
 }
+nightlight_watchers() { mine -f "niructl nightlight watch" | grep -c . || :; }
+[ "$(nightlight_watchers)" -eq 1 ] || fail "one night-light watcher at login, found $(nightlight_watchers)"
 gen=A
 r=1
 while [ "$r" -le "$ROUNDS" ]; do
+  if [ "$r" -eq 2 ]; then
+    # A helper that should run but does not (here: the night-light watcher,
+    # stopped; on a real host the config changed from manual to solar after
+    # the login) is started by the restart.
+    for pid in $(mine -f "niructl nightlight watch"); do kill "$pid"; done
+    sleep 0.3
+    [ "$(nightlight_watchers)" -eq 0 ] || fail "could not stop the night-light watcher"
+  fi
   if [ "$gen" = A ]; then gen=B; else gen=A; fi
   switch_to "$gen"
   OLD_WM=$(mine -x niruwm)
@@ -263,6 +277,11 @@ while [ "$r" -le "$ROUNDS" ]; do
   fi
   [ -n "$NEW_IDLE" ] && [ "$NEW_IDLE" != "$OLD_IDLE" ] || fail "round $r: niruidle changed but was not replaced"
   [ -z "$OLD_CLIP" ] || [ "$NEW_CLIP" = "$OLD_CLIP" ] || fail "round $r: niruclipboard did not change but was restarted"
+  [ "$(nightlight_watchers)" -eq 1 ] || fail "round $r: $(nightlight_watchers) night-light watchers instead of 1"
+  if [ "$r" -eq 2 ]; then
+    grep -q "started the missing helper: niructl nightlight watch" "$H/.local/state/niruwm/session.log" ||
+      fail "round 2: the missing night-light watcher was not started"
+  fi
   [ "$(mine -x niruidle | wc -l)" -eq 1 ] || fail "round $r: more than one niruidle: $(ps -o pid,ppid,stat,lstart,args -p "$(mine -x niruidle | tr "\n" "," | sed "s/,$//")")"
   bars=$(run xwininfo -root -tree | grep -c NIRUBAR || :)
   [ "$bars" -eq 2 ] || fail "round $r: $bars bars instead of 2"

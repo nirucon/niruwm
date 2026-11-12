@@ -1008,7 +1008,7 @@ impl Wm {
             .find(|d| self.values(*d, "_NET_WM_STATE").contains(&modal))
     }
 
-    fn focus_client(&mut self, w: Option<Window>) -> Result<()> {
+    pub(crate) fn focus_client(&mut self, w: Option<Window>) -> Result<()> {
         match w {
             Some(w) => self.set_focus(w),
             None => {
@@ -1210,7 +1210,19 @@ impl Wm {
         }
     }
 
+    /// Lay out every screen. A screen that is about to leave a workspace is
+    /// captured for the overview first (see `overview.rs`).
     pub(crate) fn arrange(&mut self) -> Result<()> {
+        let timed = self.overview_before_arrange();
+        let result = self.arrange_screens();
+        if let Some(started) = timed {
+            self.overview_log_switch(started);
+        }
+        self.overview_after_arrange();
+        result
+    }
+
+    fn arrange_screens(&mut self) -> Result<()> {
         let area = self.work_area();
         self.settle_scratch();
         self.settle_swallowed();

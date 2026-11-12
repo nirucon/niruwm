@@ -154,7 +154,8 @@ The most important keys (the full list is in
 | `Super+O` | Find files in the home folder |
 | `Super+Ctrl+C` | Pick a color from the screen (`nirushot pick`) |
 | `Super+Ctrl+O` | Copy the text in a screen region (`nirushot ocr`) |
-| `Alt+Tab` / `Super+grave` | Window switcher / workspace overview |
+| `Alt+Tab` / `Super+grave` | Window switcher |
+| `Super+E` | Overview: every workspace of every screen with a thumbnail |
 | `Super+1…9`, `Super+0` | Select workspace 1…10 |
 | `Super+Shift+1…9`, `Super+Shift+0` | Move window to workspace 1…10 |
 | `Super+J` / `Super+K` | Next / previous window |
@@ -181,6 +182,8 @@ niructl scratchpad 2 toggle
 niructl urgent                       # windows that asked for attention; `urgent focus` goes there
 niructl swallow off                  # window swallowing for this session (on|off|toggle|status)
 niructl studio on                    # studio mode: no saver/lock/popups, picom off, performance
+niructl do tag 3                     # any key action by name (niructl do --list); never shell, start or quit
+niructl powerprofile auto            # the power profile for battery or AC, now
 niructl bar bottom
 niructl display save Desk            # save the current screen layout
 niructl display apply Desk
@@ -294,7 +297,8 @@ the screen saver, idle lock and display-off wait (for this session only),
 Do Not Disturb is on, picom is stopped and the power profile is
 `performance`; NIRUBAR shows *studio*. Off puts back exactly what it changed:
 DND that was already on stays on, a compositor that was not running is not
-started, a power profile you changed meanwhile is kept. The state lives on the
+started, a power profile you changed meanwhile is kept, and on a laptop the
+profile of the power source returns (see below). The state lives on the
 X root window, so it survives a window manager restart and ends with the
 session; a logout can never leave the machine without its idle lock.
 `[studio]` chooses the items, the profile, and whether a DAW window (REAPER)
@@ -306,7 +310,22 @@ power_profile = "performance"   # "keep" leaves it alone
 auto_enable = false             # true: REAPER opening turns it on
 ```
 
-The default workspace labels are numbers 1–10; to use icons or names, edit
+### Power profile on battery and AC
+
+On a laptop with power-profiles-daemon the power profile follows the power
+source: `power-saver` on battery, `balanced` on AC, switched when you plug in
+or unplug. Studio mode wins while it is on. A profile you pick by hand
+(`niructl powerprofile set`, the launcher) holds until the next plug or
+unplug; `niructl powerprofile auto` goes back to the automatic one.
+
+```toml
+[battery]
+auto_profile = true                  # false: the profile is left alone
+profile_on_battery = "power-saver"   # performance, balanced, power-saver or "keep"
+profile_on_ac = "balanced"
+```
+
+The default workspace labels are numbers 1 to 10; to use icons or names, edit
 `[bar] tags` using the presets commented in the example. After editing, press
 `Super+R` or run `niructl reload`.
 

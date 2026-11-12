@@ -115,6 +115,8 @@ pub enum Action {
     SwallowToggle,
     /// Studio (DAW) mode on or off for this session (`niructl studio`).
     StudioToggle,
+    /// Every workspace with a thumbnail (`nirulauncher --overview`).
+    Overview,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -318,6 +320,8 @@ impl Action {
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
         add("super+w", "window_switcher");
+        // Every workspace of every screen as a thumbnail; E as in "everything".
+        add("super+e", "overview");
         add("alt+Tab", "window_switcher");
         add("super+grave", "window_switcher");
         add("super+shift+f", "start pcmanfm");
@@ -591,6 +595,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "focus_urgent" => Action::FocusUrgent,
         "swallow_toggle" => Action::SwallowToggle,
         "studio_toggle" => Action::StudioToggle,
+        "overview" => Action::Overview,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
         "move_float" => {
@@ -603,6 +608,217 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         }
         other => return Err(format!("unknown action: {other}")),
     })
+}
+
+/// One request on the `niructl do` channel (`_NIRUWM_COMMAND` 23).
+#[derive(Clone, Debug, PartialEq)]
+pub enum DoRequest {
+    /// A named action, exactly as a `[[keys]]` binding would run it.
+    Run(Action),
+    /// Focus screen `monitor` (zero-based, as in the overview state), show
+    /// workspace `tag` (one-based) there and focus `window` when given.
+    Goto {
+        monitor: usize,
+        tag: u32,
+        window: Option<u32>,
+    },
+}
+
+/// Why a `niructl do` request is not run.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DoError {
+    /// A real action that this channel never runs (exit status 2).
+    Refused(String),
+    /// Not an action, or a bad argument (exit status 1).
+    Invalid(String),
+}
+
+impl std::fmt::Display for DoError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DoError::Refused(m) | DoError::Invalid(m) => f.write_str(m),
+        }
+    }
+}
+
+/// The actions `niructl do` accepts: name, argument (empty for none) and a
+/// one-line description. Everything a key can do, except running a program
+/// given as text (`shell`, `start`) and ending the session (`quit`).
+#[allow(dead_code)] // used by niructl, which shares this file
+pub const DO_ACTIONS: &[(&str, &str, &str)] = &[
+    ("terminal", "", "Open a terminal"),
+    ("terminal_alt", "", "Open the alternative terminal"),
+    ("browser", "", "Open the configured web browser"),
+    ("launcher", "", "Application launcher"),
+    ("launcher_unified", "", "Unified launcher"),
+    ("launcher_actions", "", "NIRU Actions"),
+    ("launcher_search", "", "Web search"),
+    ("launcher_clipboard", "", "Clipboard history"),
+    ("launcher_keys", "", "Keybinding cheat sheet"),
+    ("launcher_emoji", "", "Emoji and symbol picker"),
+    ("launcher_files", "", "File search"),
+    ("launcher_manual", "", "The NIRUX manual"),
+    ("window_hints", "", "Jump to a visible window by its label"),
+    ("window_switcher", "", "Window switcher"),
+    ("quick_note", "", "Quick note to the inbox"),
+    (
+        "overview",
+        "",
+        "Overview of every workspace, with thumbnails",
+    ),
+    ("lock", "", "Lock the screen"),
+    ("suspend", "", "Lock, then suspend the computer"),
+    ("reload", "", "Reload the configuration"),
+    ("save_session", "", "Save the open windows as the session"),
+    ("clear_session", "", "Forget the saved session"),
+    ("theme", "NAME", "Switch to a theme"),
+    ("tag", "N", "Go to workspace N on the focused screen"),
+    ("toggletag", "N", "Go to workspace N"),
+    ("movetotag", "N", "Move the focused window to workspace N"),
+    (
+        "togglemovetotag",
+        "N",
+        "Move the focused window to workspace N and follow it",
+    ),
+    ("tag_next", "", "Next workspace"),
+    ("tag_prev", "", "Previous workspace"),
+    (
+        "goto",
+        "MONITOR TAG [WINDOW]",
+        "Show workspace TAG on screen MONITOR (from 0) and focus WINDOW",
+    ),
+    ("focusmon", "1|-1", "Focus the next or previous screen"),
+    (
+        "tagmon",
+        "1|-1",
+        "Move the focused window to the next or previous screen",
+    ),
+    ("focus_next", "", "Focus the next window"),
+    ("focus_prev", "", "Focus the previous window"),
+    (
+        "focus_urgent",
+        "",
+        "Go to the window that asked for attention",
+    ),
+    ("swap_next", "", "Move the window down the stack"),
+    ("swap_prev", "", "Move the window up the stack"),
+    ("close", "", "Close the focused window"),
+    ("toggle_fullscreen", "", "Fullscreen on or off"),
+    ("toggle_float", "", "Floating on or off"),
+    ("toggle_sticky", "", "Sticky (on every workspace) on or off"),
+    (
+        "layout",
+        "tile|left|monocle|centered|centeredfloat|floating|fibonacci|scroll",
+        "Set the layout",
+    ),
+    ("layout_next", "", "Next layout"),
+    ("layout_prev", "", "Previous layout"),
+    ("scroll_columns", "1|2|toggle", "Scroll layout columns"),
+    ("inc_master", "", "One more window in the master area"),
+    ("dec_master", "", "One window fewer in the master area"),
+    ("inc_master_ratio", "", "Wider master area"),
+    ("dec_master_ratio", "", "Narrower master area"),
+    ("toggle_gaps", "", "Gaps on or off"),
+    ("bar_top", "", "Bar at the top"),
+    ("bar_bottom", "", "Bar at the bottom"),
+    ("bar_hide", "", "Hide the bar"),
+    ("bar_show", "", "Show the bar"),
+    ("bar_toggle", "", "Show or hide the bar"),
+    ("bar_cycle", "", "Bar: top, bottom, hidden"),
+    (
+        "scratchpad",
+        "[N]",
+        "Show or hide the default scratchpad, or slot N",
+    ),
+    (
+        "scratchpad_send",
+        "N",
+        "Send the window to scratchpad N, or take it back",
+    ),
+    ("unscratch", "", "Make the scratchpad a normal window"),
+    (
+        "move_float",
+        "left|right|up|down|DX DY",
+        "Move a floating window",
+    ),
+    ("resize_float", "DX DY", "Resize a floating window"),
+    ("media_key", "KEYSYM", "A media key, e.g. XF86AudioMute"),
+    (
+        "brightness_step",
+        "N",
+        "Screen brightness up or down by N %",
+    ),
+    ("nightlight_toggle", "", "Night light on or off"),
+    ("dnd_toggle", "", "Do Not Disturb on or off"),
+    ("idle_toggle", "", "Keep the screen awake on or off"),
+    ("swallow_toggle", "", "Window swallowing on or off"),
+    ("studio_toggle", "", "Studio mode on or off"),
+];
+
+/// A window id as `niructl do goto` takes it: decimal or 0x hex.
+fn window_id(text: &str) -> Option<u32> {
+    let t = text.trim();
+    match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => t.parse().ok(),
+    }
+}
+
+/// Parse a `niructl do` request: the action names and argument syntax of
+/// `[[keys]]`, plus `goto`. Nothing that runs a program given as text or ends
+/// the session is accepted, whatever the caller (a voice command, a script).
+pub fn parse_do(text: &str) -> Result<DoRequest, DoError> {
+    let text = text.trim();
+    let verb = text.split_whitespace().next().unwrap_or("");
+    if verb.is_empty() {
+        return Err(DoError::Invalid("no action given".into()));
+    }
+    if verb == "goto" {
+        let args: Vec<&str> = text.split_whitespace().skip(1).collect();
+        let usage = || DoError::Invalid("goto needs MONITOR TAG [WINDOW]".into());
+        if !(2..=3).contains(&args.len()) {
+            return Err(usage());
+        }
+        let monitor = args[0].parse::<usize>().map_err(|_| usage())?;
+        let tag = args[1].parse::<u32>().map_err(|_| usage())?;
+        if !(1..=99).contains(&tag) {
+            return Err(DoError::Invalid("goto: TAG starts at 1".into()));
+        }
+        let window = match args.get(2) {
+            Some(w) => Some(window_id(w).ok_or_else(|| {
+                DoError::Invalid(format!("goto: {w} is not a window id (decimal or 0x hex)"))
+            })?),
+            None => None,
+        };
+        return Ok(DoRequest::Goto {
+            monitor,
+            tag,
+            window,
+        });
+    }
+    match verb {
+        "shell" | "start" => {
+            return Err(DoError::Refused(format!(
+                "{verb} runs a program given as text; niructl do never does that"
+            )))
+        }
+        "quit" => {
+            return Err(DoError::Refused(
+                "quit ends the session; niructl do never does that (use niructl logout)".into(),
+            ))
+        }
+        "unbind" => return Err(DoError::Invalid("unbind is not an action to run".into())),
+        _ => {}
+    }
+    let action = parse_action(text).map_err(DoError::Invalid)?;
+    // Defence in depth: whatever the spelling, these never pass.
+    if matches!(
+        action,
+        Action::Shell(_) | Action::Start(_) | Action::Quit | Action::Unbind
+    ) {
+        return Err(DoError::Refused(format!("{verb} is not allowed here")));
+    }
+    Ok(DoRequest::Run(action))
 }
 
 /// The X keysym for a key name from [`parse_keys`].
@@ -767,6 +983,7 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         ),
         Action::LauncherManual => s(apps, "The NIRUX manual (search and read)"),
         Action::WindowSwitcher => s(apps, "Window switcher"),
+        Action::Overview => s(tags, "Overview of every workspace, with thumbnails"),
         Action::Start(cmd) => {
             if cmd.trim() == "pcmanfm" {
                 s(apps, "Open the file manager (pcmanfm)")
@@ -1148,6 +1365,104 @@ mod tests {
         assert_eq!(key_label("super+ctrl+c"), "Super+Ctrl+C");
         assert_eq!(key_label("XF86AudioMute"), "XF86AudioMute");
         assert_eq!(key_label("alt+Tab"), "Alt+Tab");
+    }
+
+    #[test]
+    fn niructl_do_runs_named_actions_and_refuses_programs_and_quit() {
+        assert_eq!(parse_do("tag 2"), Ok(DoRequest::Run(Action::FocusTag(2))));
+        assert_eq!(parse_do("  browser "), Ok(DoRequest::Run(Action::Browser)));
+        assert_eq!(parse_do("overview"), Ok(DoRequest::Run(Action::Overview)));
+        assert_eq!(
+            parse_do("layout monocle"),
+            Ok(DoRequest::Run(Action::SetLayout(LayoutId::Monocle)))
+        );
+        for bad in ["shell rm -rf ~", "start xterm", "quit", "shell"] {
+            assert!(
+                matches!(parse_do(bad), Err(DoError::Refused(_))),
+                "{bad} must be refused"
+            );
+        }
+        for bad in ["", "frobnicate", "tag", "tag x", "layout nope", "unbind"] {
+            assert!(
+                matches!(parse_do(bad), Err(DoError::Invalid(_))),
+                "{bad:?} must be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn niructl_do_goto_takes_decimal_and_hex_windows() {
+        assert_eq!(
+            parse_do("goto 0 3"),
+            Ok(DoRequest::Goto {
+                monitor: 0,
+                tag: 3,
+                window: None
+            })
+        );
+        assert_eq!(
+            parse_do("goto 1 10 0x1a00007"),
+            Ok(DoRequest::Goto {
+                monitor: 1,
+                tag: 10,
+                window: Some(0x1a00007)
+            })
+        );
+        assert_eq!(
+            parse_do("goto 0 1 27262983"),
+            Ok(DoRequest::Goto {
+                monitor: 0,
+                tag: 1,
+                window: Some(27262983)
+            })
+        );
+        for bad in [
+            "goto",
+            "goto 0",
+            "goto 0 0",
+            "goto a 1",
+            "goto 0 1 zz",
+            "goto 0 1 2 3",
+        ] {
+            assert!(matches!(parse_do(bad), Err(DoError::Invalid(_))), "{bad}");
+        }
+    }
+
+    #[test]
+    fn every_listed_do_action_is_accepted() {
+        for (name, arg, description) in DO_ACTIONS {
+            assert!(!description.is_empty());
+            let sample = match *arg {
+                "" | "[N]" => name.to_string(),
+                "N" => format!("{name} 3"),
+                "NAME" => format!("{name} nord"),
+                "KEYSYM" => format!("{name} XF86AudioMute"),
+                "DX DY" => format!("{name} 20 0"),
+                "MONITOR TAG [WINDOW]" => format!("{name} 0 1"),
+                other => format!("{name} {}", other.split('|').next().unwrap()),
+            };
+            assert!(parse_do(&sample).is_ok(), "{sample}");
+        }
+        // Every default binding is reachable, except the refused ones.
+        for raw in Action::defaults() {
+            let verb = raw.action.split_whitespace().next().unwrap();
+            if matches!(verb, "shell" | "start" | "quit") {
+                continue;
+            }
+            assert!(
+                DO_ACTIONS.iter().any(|(n, _, _)| *n == verb)
+                    || matches!(verb, "move_next" | "move_prev"),
+                "{verb} is missing from DO_ACTIONS"
+            );
+        }
+    }
+
+    #[test]
+    fn overview_is_on_super_e() {
+        let d = Action::defaults();
+        assert!(d
+            .iter()
+            .any(|r| r.keys == "super+e" && r.action == "overview"));
     }
 
     #[test]

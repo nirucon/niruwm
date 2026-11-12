@@ -365,6 +365,14 @@ impl Wm {
                 self.c.flush()?;
                 return Ok(true);
             }
+            if d[0] == 23 {
+                // `niructl do`: d[1] is the caller's window with the request.
+                let keep_going = self.do_request(d[1])?;
+                if keep_going {
+                    self.arrange()?;
+                }
+                return Ok(keep_going);
+            }
             if d[0] == 22 {
                 // `niructl restart-wm`: d[1] is the serial it waits for. The
                 // answer is published before leaving; the high bit says no.
@@ -551,6 +559,8 @@ impl Wm {
             // to be released. d[0] = 1 means "locked", 0 means "unlocked".
             if d[0] == 1 {
                 self.keys_released = true;
+                // Screen content must not linger behind a lock.
+                self.overview_locked();
                 // Every modifier, every key: a grab left behind here would be
                 // answered by the window manager instead of the lock screen
                 // after the unlock, which looks like a dead keyboard.

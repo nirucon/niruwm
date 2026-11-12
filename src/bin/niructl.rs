@@ -65,7 +65,8 @@ action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD N
 layout show|save | \
 scratchpad [N] [toggle|show|hide]|send N|unscratch|list [--json] | \
 urgent [list|--json|focus] | swallow on|off|toggle|status | studio on|off|toggle|status | \
-powerprofile status|list|set NAME|next | \
+powerprofile status|list|set NAME|next|auto|watch | \
+do ACTION [ARG...]|do goto MONITOR TAG [WINDOW]|do --list [--json] | \
 lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
@@ -3057,6 +3058,11 @@ impl DrmUevents {
 
     /// Read every queued message; true when one was a drm change.
     fn drain(&self) -> bool {
+        self.drain_matching(drm_uevent_is_hotplug)
+    }
+
+    /// Read every queued message; true when one matched `wanted`.
+    fn drain_matching(&self, wanted: fn(&[u8]) -> bool) -> bool {
         let mut found = false;
         let mut buffer = [0u8; 8192];
         loop {
@@ -3071,7 +3077,7 @@ impl DrmUevents {
             if read <= 0 {
                 return found;
             }
-            found |= drm_uevent_is_hotplug(&buffer[..read as usize]);
+            found |= wanted(&buffer[..read as usize]);
         }
     }
 }
@@ -4909,32 +4915,48 @@ fn powerprofilesctl(args: &[&str]) -> Result<String> {
     )
 }
 
-fn power_source() -> String {
-    let base = std::path::Path::new("/sys/class/power_supply");
+/// `/sys/class/power_supply`, or `NIRUCTL_POWER_SUPPLY` in tests.
+fn power_supply_root() -> PathBuf {
+    PathBuf::from(
+        std::env::var("NIRUCTL_POWER_SUPPLY").unwrap_or_else(|_| "/sys/class/power_supply".into()),
+    )
+}
+
+/// "ac", "battery" or "unknown" (no system battery: a desktop).
+///
+/// Batteries of devices (a wireless mouse or headset, `scope=Device`) are
+/// not the computer's: a desktop with a wireless mouse is not "on battery".
+fn power_source_in(base: &Path) -> String {
     let Ok(entries) = std::fs::read_dir(base) else {
         return "unknown".into();
     };
     let mut battery = false;
+    let mut online = false;
     for entry in entries.flatten() {
         let path = entry.path();
-        let kind = std::fs::read_to_string(path.join("type")).unwrap_or_default();
-        let kind = kind.trim();
-        if kind == "Mains" || kind == "USB" {
-            if std::fs::read_to_string(path.join("online"))
-                .map(|v| v.trim() == "1")
-                .unwrap_or(false)
-            {
-                return "ac".into();
-            }
-        } else if kind == "Battery" {
-            battery = true;
+        let read = |name: &str| {
+            std::fs::read_to_string(path.join(name))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default()
+        };
+        if read("scope").eq_ignore_ascii_case("device") {
+            continue;
+        }
+        match read("type").as_str() {
+            "Mains" | "USB" => online |= read("online") == "1",
+            "Battery" => battery = true,
+            _ => {}
         }
     }
-    if battery {
-        "battery".into()
-    } else {
-        "unknown".into()
+    match (battery, online) {
+        (false, _) => "unknown".into(),
+        (true, true) => "ac".into(),
+        (true, false) => "battery".into(),
     }
+}
+
+fn power_source() -> String {
+    power_source_in(&power_supply_root())
 }
 
 fn power_profile_state() -> Result<PowerProfileState> {
@@ -4980,6 +5002,17 @@ fn powerprofile_status() {
                 "state=ready\nprovider=power-profiles-daemon\nactive={}\npower={}",
                 state.active, state.source
             );
+            let cfg = Config::load().map(|c| c.battery).unwrap_or_default();
+            println!(
+                "auto={}\nauto_target={}\nhold={}",
+                if cfg.auto_profile { "on" } else { "off" },
+                cfg.profile_for(&state.source).unwrap_or("keep"),
+                if power_auto_read().hold {
+                    "manual"
+                } else {
+                    "none"
+                }
+            );
             for profile in state.profiles {
                 println!("profile={profile}");
             }
@@ -5024,11 +5057,263 @@ fn powerprofile(args: &[String]) -> Result<()> {
                     return Err(format!("power profile {target} did not become active").into());
                 }
             }
+            // Chosen by hand: it holds until the next plug or unplug.
+            let mut auto = power_auto_read();
+            auto.hold = true;
+            let _ = power_auto_write(&auto);
             println!("power profile {target}");
         }
+        "auto" => {
+            let cfg = Config::load().map(|c| c.battery).unwrap_or_default();
+            let mut auto = power_auto_read();
+            auto.hold = false;
+            let line = power_auto_apply(&cfg, &power_source(), studio_is_on(), &mut auto)?;
+            let _ = power_auto_write(&auto);
+            println!("{line}");
+        }
+        "watch" => return power_auto_watch(args.iter().any(|a| a == "--once")),
         _ => return Err(USAGE.into()),
     }
     Ok(())
+}
+
+// ── The power profile follows the power source ([battery] auto_profile) ────
+
+/// What the automatic profile remembers for this login: the source it last
+/// acted on, and whether a profile chosen by hand holds until it changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PowerAuto {
+    source: String,
+    hold: bool,
+}
+
+fn power_auto_path() -> PathBuf {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("niructl-{}", unsafe { libc::getuid() }))
+        });
+    dir.join("niruwm").join("power-auto")
+}
+
+fn power_auto_read() -> PowerAuto {
+    let text = fs::read_to_string(power_auto_path()).unwrap_or_default();
+    let mut auto = PowerAuto::default();
+    for line in text.lines() {
+        match line.split_once('=') {
+            Some(("source", v)) => auto.source = v.trim().to_string(),
+            Some(("hold", v)) => auto.hold = v.trim() == "1",
+            _ => {}
+        }
+    }
+    auto
+}
+
+fn power_auto_write(auto: &PowerAuto) -> Result<()> {
+    let path = power_auto_path();
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(
+        &tmp,
+        format!("source={}\nhold={}\n", auto.source, u8::from(auto.hold)),
+    )?;
+    fs::rename(tmp, path)?;
+    Ok(())
+}
+
+/// Studio mode is on in this X session (`_NIRUWM_STUDIO`); false without one.
+fn studio_is_on() -> bool {
+    if std::env::var_os("DISPLAY").is_none() {
+        return false;
+    }
+    let Ok((c, n)) = x11rb::connect(None) else {
+        return false;
+    };
+    let root = c.setup().roots[n].root;
+    let Ok(atom) = atom_named(&c, studio::SWITCH) else {
+        return false;
+    };
+    c.get_property(false, root, atom, AtomEnum::ANY, 0, 16)
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .is_some_and(|r| String::from_utf8_lossy(&r.value).trim() == "on")
+}
+
+/// Apply the configured profile for `source` unless studio mode holds it.
+/// Records the source; returns one line for the user.
+fn power_auto_apply(
+    cfg: &crate::config::BatteryConfig,
+    source: &str,
+    studio: bool,
+    auto: &mut PowerAuto,
+) -> Result<String> {
+    auto.source = source.to_string();
+    if !cfg.auto_profile {
+        return Ok("automatic power profile is off ([battery] auto_profile)".into());
+    }
+    if source == "unknown" {
+        return Ok("no system battery: the power profile is left alone".into());
+    }
+    let Some(target) = cfg.profile_for(source) else {
+        return Ok(format!(
+            "on {source}: the power profile is left alone (keep)"
+        ));
+    };
+    if studio {
+        return Ok(format!(
+            "studio mode holds the power profile; {target} follows when it turns off"
+        ));
+    }
+    let state = power_profile_state()?;
+    if !state.profiles.iter().any(|p| p == target) {
+        return Err(format!("power profile {target} is not offered here").into());
+    }
+    if state.active != target {
+        powerprofilesctl(&["set", target])?;
+    }
+    Ok(format!("on {source}: power profile {target}"))
+}
+
+/// The profile studio mode puts back when it turns off: the source's when
+/// the automatic profile is on and nothing was chosen by hand, otherwise the
+/// one it found (`before`).
+fn studio_restore_profile(before: &str) -> String {
+    let cfg = Config::load().map(|c| c.battery).unwrap_or_default();
+    if power_auto_read().hold {
+        return before.to_string();
+    }
+    cfg.profile_for(&power_source())
+        .map(str::to_string)
+        .unwrap_or_else(|| before.to_string())
+}
+
+/// What the watcher does after one look at the source and studio mode.
+#[derive(Debug, PartialEq, Eq)]
+enum PowerStep {
+    Nothing,
+    /// Apply the source's profile (plugged, unplugged, or studio ended
+    /// after the source changed under it).
+    Apply,
+}
+
+/// The watcher's decision. `pending` is set when the source changed while
+/// studio mode held the profile.
+fn power_step(
+    last: &str,
+    now: &str,
+    studio_was: bool,
+    studio: bool,
+    pending: &mut bool,
+) -> PowerStep {
+    if now != last {
+        if studio {
+            *pending = true;
+            return PowerStep::Nothing;
+        }
+        *pending = false;
+        return PowerStep::Apply;
+    }
+    if studio_was && !studio && *pending {
+        *pending = false;
+        return PowerStep::Apply;
+    }
+    PowerStep::Nothing
+}
+
+/// `niructl powerprofile watch`: started by the session on laptops. Applies
+/// the profile for the source at once, then on every plug or unplug (kernel
+/// uevents, and a look every 5 seconds in case one is missed). One watcher
+/// per display.
+fn power_auto_watch(once: bool) -> Result<()> {
+    let cfg = Config::load().map(|c| c.battery).unwrap_or_default();
+    if !cfg.auto_profile {
+        println!("automatic power profile is off ([battery] auto_profile)");
+        return Ok(());
+    }
+    if program("powerprofilesctl").is_none() {
+        println!("powerprofilesctl (power-profiles-daemon) is not installed; nothing to watch");
+        return Ok(());
+    }
+    if power_source() == "unknown" {
+        println!("no system battery; nothing to watch");
+        return Ok(());
+    }
+    let display = std::env::var("DISPLAY").unwrap_or_default();
+    let name: String = display
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let lock_path = power_auto_path().with_file_name(format!("power-watch-{name}.lock"));
+    if let Some(dir) = lock_path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let _lock = match acquire_lock_at(&lock_path)? {
+        Some(file) => file,
+        None => {
+            println!("a power profile watcher already runs for this display");
+            return Ok(());
+        }
+    };
+    let uevents = DrmUevents::open();
+    let mut auto = power_auto_read();
+    auto.hold = false;
+    let mut studio = studio_is_on();
+    let mut pending = false;
+    let source = power_source();
+    match power_auto_apply(&cfg, &source, studio, &mut auto) {
+        Ok(line) => println!("{line}"),
+        Err(e) => eprintln!("niructl powerprofile watch: {e}"),
+    }
+    pending |= studio;
+    let _ = power_auto_write(&auto);
+    if once {
+        return Ok(());
+    }
+    loop {
+        match &uevents {
+            Some(u) => {
+                let mut fds = [libc::pollfd {
+                    fd: u.fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                }];
+                unsafe { libc::poll(fds.as_mut_ptr(), 1, 5000) };
+                u.drain_matching(power_uevent);
+            }
+            None => std::thread::sleep(Duration::from_secs(5)),
+        }
+        let now = power_source();
+        let studio_now = studio_is_on();
+        let last = auto.source.clone();
+        if power_step(&last, &now, studio, studio_now, &mut pending) == PowerStep::Apply {
+            let cfg = Config::load().map(|c| c.battery).unwrap_or(cfg.clone());
+            let mut next = power_auto_read();
+            next.hold = false;
+            match power_auto_apply(&cfg, &now, studio_now, &mut next) {
+                Ok(line) => println!("{line}"),
+                Err(e) => eprintln!("niructl powerprofile watch: {e}"),
+            }
+            auto = next;
+            let _ = power_auto_write(&auto);
+        } else if now != last {
+            // Studio mode holds it: remember the source, apply later.
+            auto.source = now;
+            auto.hold = false;
+            let _ = power_auto_write(&auto);
+        }
+        studio = studio_now;
+    }
+}
+
+/// A kernel uevent of the power_supply subsystem.
+fn power_uevent(message: &[u8]) -> bool {
+    message
+        .split(|byte| *byte == 0)
+        .any(|field| field == b"SUBSYSTEM=power_supply")
 }
 
 fn monitors() -> Result<()> {
@@ -6689,6 +6974,9 @@ impl studio::Effects for StudioEffects {
         power_profile_state()
             .map(|state| (state.active, state.profiles))
             .map_err(|e| e.to_string())
+    }
+    fn restore_profile(&mut self, before: &str) -> String {
+        studio_restore_profile(before)
     }
     fn set_power(&mut self, profile: &str) -> Result<()> {
         powerprofilesctl(&["set", profile])?;
@@ -8656,6 +8944,10 @@ fn run() -> Result<()> {
     if cmd == "config" {
         return config_command(&args[1..]);
     }
+    if cmd == "do" {
+        let code = do_command(&args[1..]);
+        std::process::exit(code);
+    }
     if cmd == "wallpaper" {
         let sub = args.get(1).map(String::as_str).unwrap_or("");
         if sub == "list" || sub == "status" {
@@ -8892,6 +9184,129 @@ fn run() -> Result<()> {
         wait_applied(&c, root, &atom, action, value)?;
     }
     Ok(())
+}
+
+// ── niructl do: one named NIRUWM action (`_NIRUWM_COMMAND` 23) ─────────────
+
+const DO_USAGE: &str =
+    "Usage: niructl do ACTION [ARG...] | do goto MONITOR TAG [WINDOW] | do --list [--json]";
+
+/// `niructl do --list [--json]`.
+fn do_list(json: bool) {
+    if json {
+        let list: Vec<serde_json::Value> = bindings::DO_ACTIONS
+            .iter()
+            .map(|(name, arg, description)| {
+                serde_json::json!({"name": name, "arg": arg, "description": description})
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(list));
+        return;
+    }
+    for (name, arg, description) in bindings::DO_ACTIONS {
+        let spec = if arg.is_empty() {
+            name.to_string()
+        } else {
+            format!("{name} {arg}")
+        };
+        println!("{spec:<34} {description}");
+    }
+}
+
+/// Exit status: 0 accepted, 2 refused (a program, quit, a locked screen),
+/// 1 unknown action, bad argument or no NIRUWM that answers.
+fn do_command(args: &[String]) -> i32 {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        eprintln!("{DO_USAGE}");
+        return if args.is_empty() { 1 } else { 0 };
+    }
+    if args[0] == "--list" {
+        do_list(args.iter().any(|a| a == "--json"));
+        return 0;
+    }
+    let text = args.join(" ");
+    match bindings::parse_do(&text) {
+        Err(bindings::DoError::Refused(m)) => {
+            eprintln!("niructl do: refused: {m}");
+            return 2;
+        }
+        Err(bindings::DoError::Invalid(m)) => {
+            eprintln!("niructl do: {m} (niructl do --list shows the actions)");
+            return 1;
+        }
+        Ok(_) => {}
+    }
+    match do_send(&text) {
+        Ok(answer) if answer == "ok" => 0,
+        Ok(answer) => {
+            eprintln!("niructl do: {answer}");
+            if answer.starts_with("refused") {
+                2
+            } else {
+                1
+            }
+        }
+        Err(e) => {
+            eprintln!("niructl do: {e}");
+            1
+        }
+    }
+}
+
+/// Hand the request to the running NIRUWM and wait for its answer.
+fn do_send(text: &str) -> Result<String> {
+    let (c, s) = x11rb::connect(None)?;
+    let root = c.setup().roots[s].root;
+    let check = property_u32(&c, root, atom_named(&c, "_NET_SUPPORTING_WM_CHECK")?)
+        .ok_or("no window manager is running")?;
+    if property_u32(&c, check, atom_named(&c, "_NIRUWM_DO_CONTROL")?) != Some(1) {
+        return Err(
+            "the running window manager does not take niructl do (NIRUWM 0.26); log out and in"
+                .into(),
+        );
+    }
+    // The request travels in a property of a window of our own: a client
+    // message has room for 20 bytes only.
+    let win = c.generate_id()?;
+    c.create_window(
+        0,
+        win,
+        root,
+        -1,
+        -1,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_ONLY,
+        0,
+        &CreateWindowAux::new(),
+    )?;
+    let request = atom_named(&c, "_NIRUWM_DO")?;
+    let result = atom_named(&c, "_NIRUWM_DO_RESULT")?;
+    let utf8 = atom_named(&c, "UTF8_STRING")?;
+    c.change_property8(PropMode::REPLACE, win, request, utf8, text.as_bytes())?;
+    send(
+        &c,
+        root,
+        atom_named(&c, CMD_ATOM)?,
+        [23, win, command_serial(), 0, 0],
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let answer = loop {
+        let reply = c
+            .get_property(false, win, result, AtomEnum::ANY, 0, 1024)?
+            .reply()?;
+        if reply.type_ != 0 {
+            break Some(String::from_utf8_lossy(&reply.value).to_string());
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = c.destroy_window(win);
+    let _ = c.flush();
+    answer.ok_or_else(|| "the window manager did not answer".into())
 }
 
 /// Exit status of `niructl restart-wm` when the running manager or session
@@ -11332,6 +11747,83 @@ fn battery_command(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod battery_tests {
     use super::*;
+
+    fn supply(base: &Path, name: &str, files: &[(&str, &str)]) {
+        let dir = base.join(name);
+        fs::create_dir_all(&dir).unwrap();
+        for (k, v) in files {
+            fs::write(dir.join(k), format!("{v}\n")).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_power_source_ignores_device_batteries() {
+        let base = std::env::temp_dir().join(format!("niructl-source-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        // A desktop with a wireless mouse: not on battery.
+        supply(
+            &base,
+            "hidpp_battery_0",
+            &[("type", "Battery"), ("scope", "Device")],
+        );
+        assert_eq!(power_source_in(&base), "unknown");
+        supply(&base, "BAT0", &[("type", "Battery"), ("scope", "System")]);
+        supply(&base, "AC", &[("type", "Mains"), ("online", "0")]);
+        assert_eq!(power_source_in(&base), "battery");
+        supply(&base, "AC", &[("type", "Mains"), ("online", "1")]);
+        assert_eq!(power_source_in(&base), "ac");
+        supply(&base, "AC", &[("type", "Mains"), ("online", "0")]);
+        supply(
+            &base,
+            "ucsi-source-psy-USBC000:001",
+            &[("type", "USB"), ("online", "1")],
+        );
+        assert_eq!(power_source_in(&base), "ac", "USB-C charging is AC");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn the_watcher_follows_the_source_and_lets_studio_win() {
+        let mut pending = false;
+        assert_eq!(
+            power_step("ac", "ac", false, false, &mut pending),
+            PowerStep::Nothing
+        );
+        assert_eq!(
+            power_step("ac", "battery", false, false, &mut pending),
+            PowerStep::Apply
+        );
+        // Unplugged during studio mode: nothing until it turns off.
+        assert_eq!(
+            power_step("battery", "ac", true, true, &mut pending),
+            PowerStep::Nothing
+        );
+        assert!(pending);
+        assert_eq!(
+            power_step("ac", "ac", true, true, &mut pending),
+            PowerStep::Nothing
+        );
+        assert_eq!(
+            power_step("ac", "ac", true, false, &mut pending),
+            PowerStep::Apply
+        );
+        assert!(!pending);
+        // Studio on and off without a change of source: nothing to do.
+        assert_eq!(
+            power_step("ac", "ac", true, false, &mut pending),
+            PowerStep::Nothing
+        );
+    }
+
+    #[test]
+    fn power_uevents_are_recognised() {
+        assert!(power_uevent(
+            b"change@/devices/AC\0ACTION=change\0SUBSYSTEM=power_supply\0"
+        ));
+        assert!(!power_uevent(
+            b"change@/devices/card0\0ACTION=change\0SUBSYSTEM=drm\0"
+        ));
+    }
 
     #[test]
     fn the_limit_is_written_and_full_once_is_temporary() {

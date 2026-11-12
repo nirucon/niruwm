@@ -2612,6 +2612,9 @@ fn studio_ctl(dir: &std::path::Path, bin: &std::path::Path, args: &[&str]) -> St
         .env("XDG_CONFIG_HOME", dir)
         .env("XDG_STATE_HOME", dir.join("state"))
         .env("XDG_RUNTIME_DIR", dir)
+        // No battery unless the test makes one: the result must not depend
+        // on the machine that runs it ([battery] auto_profile).
+        .env("NIRUCTL_POWER_SUPPLY", dir.join("power_supply"))
         .output()
         .unwrap();
     let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -2628,6 +2631,7 @@ fn studio_wm(dir: &std::path::Path, bin: &std::path::Path, restarted: bool) -> P
     cmd.env("XDG_CONFIG_HOME", dir)
         .env("XDG_STATE_HOME", dir.join("state"))
         .env("XDG_RUNTIME_DIR", dir)
+        .env("NIRUCTL_POWER_SUPPLY", dir.join("power_supply"))
         .env("HOME", dir)
         .env("PATH", bin)
         .stdout(Stdio::null());
@@ -2745,6 +2749,39 @@ fn studio_mode_pauses_and_restores_exactly_and_survives_a_restart() {
     let out = studio_ctl(&dir, &bin, &["studio", "off"]);
     assert_eq!(read("power"), "power-saver", "{out}");
     assert_eq!(read("dnd"), "off");
+
+    // [battery] auto_profile (on by default): unplugged, studio mode off
+    // gives the battery's profile, not the one it found on AC.
+    let supply = dir.join("power_supply");
+    for (name, files) in [
+        ("BAT0", &[("type", "Battery"), ("scope", "System")][..]),
+        ("AC", &[("type", "Mains"), ("online", "0")]),
+    ] {
+        std::fs::create_dir_all(supply.join(name)).unwrap();
+        for (k, v) in files {
+            std::fs::write(supply.join(name).join(k), format!("{v}\n")).unwrap();
+        }
+    }
+    set("power", "balanced");
+    studio_ctl(&dir, &bin, &["studio", "on"]);
+    assert_eq!(read("power"), "performance");
+    let out = studio_ctl(&dir, &bin, &["studio", "off"]);
+    assert_eq!(read("power"), "power-saver", "{out}");
+    assert!(out.contains("follows the power source"), "{out}");
+    // A profile chosen by hand holds until the next plug or unplug.
+    studio_ctl(&dir, &bin, &["powerprofile", "set", "balanced"]);
+    studio_ctl(&dir, &bin, &["studio", "on"]);
+    let out = studio_ctl(&dir, &bin, &["studio", "off"]);
+    assert_eq!(read("power"), "balanced", "{out}");
+    // While studio mode is on, `powerprofile auto` leaves it alone.
+    studio_ctl(&dir, &bin, &["studio", "on"]);
+    let out = studio_ctl(&dir, &bin, &["powerprofile", "auto"]);
+    assert!(out.contains("studio mode holds"), "{out}");
+    assert_eq!(read("power"), "performance");
+    studio_ctl(&dir, &bin, &["studio", "off"]);
+    assert_eq!(read("power"), "power-saver");
+    std::fs::remove_dir_all(&supply).unwrap();
+    set("power", "power-saver");
 
     // A DAW window turns it on and closing the last one turns it off, after
     // a grace period: a splash screen closing before the main window opens
@@ -2867,5 +2904,232 @@ fn niruidle_honours_the_session_inhibition() {
     }
     let _ = idle.0.kill();
     let _ = idle.0.wait();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Width, height and RGB bytes of a binary PPM.
+fn read_ppm(path: &std::path::Path) -> (usize, usize, Vec<u8>) {
+    let bytes = std::fs::read(path).unwrap();
+    let mut fields = Vec::new();
+    let mut i = 0;
+    while fields.len() < 4 {
+        while bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        let start = i;
+        while !bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        fields.push(String::from_utf8_lossy(&bytes[start..i]).to_string());
+    }
+    assert_eq!(fields[0], "P6");
+    let (w, h): (usize, usize) = (fields[1].parse().unwrap(), fields[2].parse().unwrap());
+    let data = bytes[i + 1..].to_vec();
+    assert_eq!(data.len(), w * h * 3);
+    (w, h, data)
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn niructl_do_switches_workspaces_goes_to_windows_and_captures_thumbnails() {
+    let dir = std::env::temp_dir().join(format!("niruwm-do-{}", std::process::id()));
+    let run_dir = dir.join("run");
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::create_dir_all(&run_dir).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    let screen_h = c.setup().roots[s].height_in_pixels;
+    let left_w = screen_w / 2;
+    let right_w = screen_w.saturating_sub(left_w);
+    let layouts = dir.join("monitors.txt");
+    std::fs::write(
+        &layouts,
+        format!("LEFT {left_w}x{screen_h}+0+0\nRIGHT {right_w}x{screen_h}+{left_w}+0\n"),
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_RUNTIME_DIR", &run_dir)
+            .env("NIRU_RANDR_EMU", &layouts)
+            .env("NIRUWM_OVERVIEW_TIMING", "1")
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        let monitors = text(&c, root, "_NIRUWM_MONITORS");
+        monitors.contains("LEFT") && monitors.contains("RIGHT")
+    });
+    let ctl = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .arg("do")
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    // The pointer on the left screen, which has the focus: a window that
+    // unmaps must not hand the focus to the screen under the pointer.
+    warp(&c, root, 100, 300);
+    assert!(ctl(&["goto", "0", "1"]).status.success());
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+
+    // A red window on workspace 1 of the left screen.
+    let red = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        red,
+        root,
+        20,
+        40,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new().background_pixel(0xff0000),
+    )
+    .unwrap();
+    c.map_window(red).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&red));
+    thread::sleep(Duration::from_millis(300));
+
+    // `niructl do tag 2` is Super+2: workspace 2 on the focused screen.
+    let out = ctl(&["tag", "2"]);
+    assert!(out.status.success(), "niructl do tag 2: {out:?}");
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+
+    // Leaving workspace 1 left a thumbnail of the left screen, red where the
+    // window was, right side up and in the right colours.
+    let thumbs = run_dir.join("niruwm/overview");
+    let thumb = thumbs.join("mon0-tag1.ppm");
+    wait(|| thumb.exists());
+    let (w, h, data) = read_ppm(&thumb);
+    assert!(w.max(h) <= 384 && w > 0 && h > 0, "{w}x{h}");
+    let scale = f64::from(left_w) / w as f64;
+    let px = |x: f64, y: f64| {
+        let (x, y) = ((x / scale) as usize, (y / scale) as usize);
+        let i = (y * w + x) * 3;
+        (data[i], data[i + 1], data[i + 2])
+    };
+    // The managed window is tiled over the whole left screen: its middle is
+    // red, and the thumbnail has the screen's aspect ratio.
+    assert_eq!(
+        px(f64::from(left_w) / 2.0, f64::from(screen_h) / 2.0),
+        (255, 0, 0)
+    );
+    let aspect = f64::from(left_w) / f64::from(screen_h);
+    assert!((w as f64 / h as f64 - aspect).abs() < 0.05);
+    let mode = std::fs::metadata(&thumb).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt as _;
+    assert_eq!(mode.mode() & 0o777, 0o600);
+
+    // Programs and quit are refused with status 2, unknown actions 1.
+    for refused in [&["shell", "xterm"][..], &["start", "xterm"], &["quit"]] {
+        let out = ctl(refused);
+        assert_eq!(out.status.code(), Some(2), "{refused:?}: {out:?}");
+    }
+    assert_eq!(ctl(&["frobnicate"]).status.code(), Some(1));
+    assert!(
+        wm.0.try_wait().unwrap().is_none(),
+        "quit must not reach the WM"
+    );
+
+    // A blue window on workspace 1 of the right screen.
+    warp(&c, root, i16::try_from(left_w).unwrap() + 100, 300);
+    assert!(ctl(&["goto", "1", "1"]).status.success());
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![10]);
+    let blue = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        blue,
+        root,
+        i16::try_from(left_w).unwrap() + 20,
+        40,
+        320,
+        240,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new().background_pixel(0x0000ff),
+    )
+    .unwrap();
+    c.map_window(blue).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&blue));
+    assert_eq!(
+        values(&c, blue, "_NET_WM_DESKTOP"),
+        vec![10],
+        "blue window placement"
+    );
+    thread::sleep(Duration::from_millis(300));
+
+    // goto: screen 1 (RIGHT), workspace 3 = global desktop 12. The right
+    // screen's thumbnail shows the right screen, not the left one.
+    assert!(ctl(&["goto", "1", "3"]).status.success());
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![12]);
+    let right_thumb = thumbs.join("mon1-tag1.ppm");
+    wait(|| right_thumb.exists());
+    let (rw, rh, rdata) = read_ppm(&right_thumb);
+    let middle = ((rh / 2) * rw + rw / 2) * 3;
+    assert_eq!(&rdata[middle..middle + 3], &[0, 0, 255]);
+    // goto with a window: back to the red one, focused.
+    warp(&c, root, 100, 300);
+    let id = format!("{red:#x}");
+    assert!(ctl(&["goto", "0", "1", &id]).status.success());
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![red]);
+    assert_eq!(ctl(&["goto", "5", "1"]).status.code(), Some(1));
+
+    // The overview action writes state.json (nirulauncher is not on PATH).
+    assert!(ctl(&["overview"]).status.success());
+    let state_path = thumbs.join("state.json");
+    wait(|| state_path.exists());
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(state["version"], 1);
+    let left = &state["monitors"][0];
+    assert_eq!(left["name"], "LEFT");
+    assert_eq!(left["focused"], true);
+    assert_eq!(left["current_tag"], 1);
+    assert_eq!(left["tags"][0]["tag"], 1);
+    assert_eq!(left["tags"][0]["thumbnail"], "mon0-tag1.ppm");
+    assert_eq!(left["tags"][0]["windows"][0]["id"], id.as_str());
+    assert_eq!(left["tags"][0]["windows"][0]["focused"], true);
+    assert_eq!(state["monitors"][1]["current_tag"], 3);
+
+    // A lock deletes every thumbnail and refuses `do`.
+    message(&c, root, root, "_NIRUWM_LOCK", [1, 0, 0, 0, 0]);
+    wait(|| !thumb.exists() && !state_path.exists());
+    assert_eq!(ctl(&["tag", "3"]).status.code(), Some(2));
+    assert_eq!(values(&c, root, "_NET_CURRENT_DESKTOP"), vec![0]);
+    message(&c, root, root, "_NIRUWM_LOCK", [0, 0, 0, 0, 0]);
+    thread::sleep(Duration::from_millis(200));
+    assert!(ctl(&["tag", "3"]).status.success());
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![2]);
+
+    // `--list --json` describes the accepted actions.
+    let out = ctl(&["--list", "--json"]);
+    let list: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(list
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["name"] == "tag" && a["arg"] == "N"));
+
+    c.destroy_window(red).unwrap();
+    c.destroy_window(blue).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }

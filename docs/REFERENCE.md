@@ -36,7 +36,36 @@ niructl urgent [--json]        # windows that asked for attention, newest last
 niructl urgent focus           # go to the newest one (Super+Shift+U)
 niructl swallow on|off|toggle|status
 niructl studio on|off|toggle|status   # studio (DAW) mode for this session
+niructl do tag 3               # any key action by name, like [[keys]] action
+niructl do goto 1 2 0x1a00007  # screen 1 (from 0), workspace 2, that window
+niructl do --list [--json]     # the actions niructl do accepts
+niructl powerprofile auto      # the profile for the power source, now
 ```
+
+`niructl do ACTION [ARG...]` runs one NIRUWM action with the names and
+argument syntax of `[[keys]] action` (`terminal`, `browser`, `tag 3`,
+`movetotag 3`, `layout monocle`, `overview`, `focusmon 1` ...), so a script or
+a voice command can do what a key does. It never runs `shell`, `start` or
+`quit` (a program given as text, or the end of the session): those exit with
+status 2, as does any request while a lock screen holds the keyboard. Exit 0
+means the window manager accepted it; 1 is an unknown action, a bad argument
+or no NIRUWM 0.26 that answers. `niructl do goto MONITOR TAG [WINDOW]` focuses
+screen MONITOR (counted from 0, as `_NIRUWM_MONITORS` lists them), shows
+workspace TAG (from 1) there and focuses window WINDOW (decimal or 0x hex)
+when given. The request travels in the `_NIRUWM_DO` property of a window
+niructl creates (`_NIRUWM_COMMAND` 23); the answer comes back in its
+`_NIRUWM_DO_RESULT`.
+
+The overview (`overview`, Super+E) shows every workspace of every screen with
+a thumbnail. When a screen leaves a workspace, NIRUWM scales that screen down
+on the X server (XRender, longest side 384 pixels) before the windows are
+hidden, and writes it as `$XDG_RUNTIME_DIR/niruwm/overview/mon<screen>-tag<N>.ppm`
+(directory 0700, files 0600; nothing is written without XDG_RUNTIME_DIR). The
+key refreshes the visible workspaces, writes `state.json` next to them and
+opens `nirulauncher --overview`. Nothing is captured while a lock screen is
+up, and every thumbnail is deleted the moment the screen locks.
+`NIRUWM_OVERVIEW_TIMING=1` in the environment of niruwm logs what each capture
+costs.
 
 `niructl urgent` reads `_NIRUWM_URGENT` (a WINDOW list on the root window,
 oldest request first); a window in a scratchpad is listed as `scratchpad`.
@@ -56,7 +85,7 @@ window, so a window manager restarted after a crash keeps the mode and the X
 server's end takes it away: the idle lock can never stay off after a logout.
 `niructl studio off` puts back only what it changed and only where nothing
 else changed it since: DND it turned on goes off, picom starts again with the
-same command line unless one runs already, the previous power profile returns
+same command line unless one runs already, the previous power profile returns (with `[battery] auto_profile`, the profile of the power source instead)
 unless you picked another one meanwhile. The keep-awake switch
 (`niructl idle`) is separate and never touched. The session runs
 `niructl studio off --session-end` at logout. With `[studio] auto_enable =
@@ -313,6 +342,7 @@ niructl audio mic-test 5 --json
 niructl bluetooth status
 niructl display preview Desk 15
 niructl powerprofile set balanced
+niructl powerprofile auto
 niructl explain
 niructl mode focus
 niructl recipe run Development
@@ -325,6 +355,20 @@ Without `dbus-send`, power actions use `systemctl` or a capability-checked
 elogind `loginctl`; rejected requests are never retried through another
 backend. Logout remains a `loginctl` session operation, and suspend still
 requires verified screen-lock readiness.
+
+The power profile follows the power source on laptops (`[battery]
+auto_profile = true`, the default): `profile_on_battery` (`power-saver`) on
+battery, `profile_on_ac` (`balanced`) on AC; `keep` or `""` leaves it alone.
+The session starts `niructl powerprofile watch` when the computer has a
+battery of its own (a wireless mouse's does not count) and
+power-profiles-daemon is installed; it applies the profile at login and on
+every plug or unplug (kernel uevents, and a look every 5 seconds).
+`niructl powerprofile set` and `next` hold until the next plug or unplug;
+`niructl powerprofile auto` applies the source's profile at once. Studio
+mode wins: nothing changes while it is on, and when it turns off it gives the
+profile of the power source at that moment (or, with a profile set by hand,
+the one it found). `niructl powerprofile status` shows `auto`, `auto_target`
+and `hold`.
 
 ## Compositor, rules and themes
 

@@ -337,6 +337,13 @@ pub trait Effects {
     /// `(active, available)` power profiles, or why there are none.
     fn power(&mut self) -> std::result::Result<(String, Vec<String>), String>;
     fn set_power(&mut self, profile: &str) -> Result<()>;
+    /// The profile to put back when studio mode ends, given the one it
+    /// found. With `[battery] auto_profile` that is the profile of the power
+    /// source now (it may have been unplugged meanwhile), unless a profile
+    /// chosen by hand holds.
+    fn restore_profile(&mut self, before: &str) -> String {
+        before.to_string()
+    }
 }
 
 /// Serialise studio commands of this display (a key pressed twice, a DAW
@@ -510,9 +517,14 @@ pub fn off(s: &Session, fx: &mut dyn Effects, opt: &Options) -> Result<Vec<Strin
         }
     }
     if let Some((before, set)) = &saved.power {
+        let back = fx.restore_profile(before);
         match fx.power() {
-            Ok((active, _)) if active == *set => match fx.set_power(before) {
-                Ok(()) => lines.push(format!("power profile: {before} again")),
+            Ok((active, _)) if active == *set && back == *set => {
+                lines.push(format!("power profile: {back} (follows the power source)"))
+            }
+            Ok((active, _)) if active == *set => match fx.set_power(&back) {
+                Ok(()) if back == *before => lines.push(format!("power profile: {before} again")),
+                Ok(()) => lines.push(format!("power profile: {back} (follows the power source)")),
                 Err(e) => lines.push(format!("power profile: {e}")),
             },
             Ok((active, _)) => lines.push(format!(
