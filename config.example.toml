@@ -333,6 +333,8 @@ position = "top"
 # Add "weather" (and optionally "sun") to enable the information panels.
 # Add "notifications" for an unread indicator backed by nirunotify.
 # Add "microphone" for input gain/mute; this does not monitor recording activity.
+# "privacy" shows a dot while an app uses the microphone, a camera or records
+# the screen (hidden otherwise); its popup names them.
 # Add "bluetooth" for adapter/device status; hidden when no adapter exists.
 # Add "powerprofile" for Power saver/Balanced/Performance when PPD is available.
 # "niruxupdate" shows a newer NIRUX release than the installed one. It asks
@@ -340,7 +342,7 @@ position = "top"
 # there is nothing newer. It never installs anything: click it for the command,
 # which you run when you can log out afterwards.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "dictation", "recording", "scratchpad", "layout", "media", "volume", "microphone", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "niruxupdate", "agent", "nirusec", "dnd", "quicksettings", "share", "clock"]
+modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "niruxupdate", "agent", "nirusec", "dnd", "quicksettings", "share", "clock"]
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).

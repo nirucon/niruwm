@@ -1053,6 +1053,7 @@ impl Default for Bar {
             modules: vec![
                 "workspaces".into(),
                 "dictation".into(),
+                "privacy".into(),
                 "recording".into(),
                 "scratchpad".into(),
                 "layout".into(),
