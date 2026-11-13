@@ -485,14 +485,23 @@ pub struct NightlightConfig {
     pub longitude: f64,
     /// Kelvin applied when night light is enabled.
     pub temperature: u32,
-    /// `manual`, `fixed` or `solar`.
+    /// `gradual` (the default), `solar`, `fixed` or `manual`.
     pub mode: String,
     /// Fixed schedule start, local time `HH:MM`.
     pub on: String,
     /// Fixed schedule end, local time `HH:MM`.
     pub off: String,
-    /// Neutral daytime temperature for solar mode.
+    /// Neutral daytime temperature for solar and gradual mode.
     pub day_temperature: u32,
+    /// Gradual mode: Kelvin at the evening start, from where the screen
+    /// glides to `temperature`.
+    pub start_temperature: u32,
+    /// Gradual mode: the evening never starts before this local time
+    /// (`HH:MM`), even when the sun sets earlier.
+    pub not_before: String,
+    /// Gradual mode: local time (`HH:MM`) the night temperature is reached,
+    /// at least one hour after the start.
+    pub deepest_at: String,
 }
 
 /// Screensaver and lock timing, stored in `[idle]`.
@@ -604,10 +613,13 @@ impl Default for NightlightConfig {
             latitude: 0.0,
             longitude: 0.0,
             temperature: 2700,
-            mode: "solar".into(),
+            mode: "gradual".into(),
             on: "20:00".into(),
             off: "07:00".into(),
             day_temperature: 6500,
+            start_temperature: 4500,
+            not_before: "19:00".into(),
+            deepest_at: "22:00".into(),
         }
     }
 }
@@ -1503,6 +1515,7 @@ impl Config {
             || !(-180.0..=180.0).contains(&self.nightlight.longitude)
             || !(1000..=10000).contains(&self.nightlight.temperature)
             || !(1000..=10000).contains(&self.nightlight.day_temperature)
+            || !(1000..=10000).contains(&self.nightlight.start_temperature)
         {
             return Err("nightlight latitude/longitude/temperature out of range".into());
         }
@@ -1521,12 +1534,20 @@ impl Config {
                 .into());
             }
         }
-        if !matches!(self.nightlight.mode.as_str(), "manual" | "fixed" | "solar") {
-            return Err("nightlight.mode must be manual, fixed or solar".into());
+        if !matches!(
+            self.nightlight.mode.as_str(),
+            "manual" | "fixed" | "solar" | "gradual"
+        ) {
+            return Err("nightlight.mode must be gradual, solar, fixed or manual".into());
         }
         if parse_clock(&self.nightlight.on).is_none() || parse_clock(&self.nightlight.off).is_none()
         {
             return Err("nightlight.on/off must be HH:MM".into());
+        }
+        if parse_clock(&self.nightlight.not_before).is_none()
+            || parse_clock(&self.nightlight.deepest_at).is_none()
+        {
+            return Err("nightlight.not_before/deepest_at must be HH:MM".into());
         }
         if self.brightness.step == 0 || self.brightness.step > 50 {
             return Err("brightness.step must be between 1 and 50".into());
@@ -2006,6 +2027,12 @@ pub fn dump() -> Result<String> {
         "day_temperature = {}\n",
         c.nightlight.day_temperature
     ));
+    out.push_str(&format!(
+        "start_temperature = {}\n",
+        c.nightlight.start_temperature
+    ));
+    out.push_str(&format!("not_before = {:?}\n", c.nightlight.not_before));
+    out.push_str(&format!("deepest_at = {:?}\n", c.nightlight.deepest_at));
     out.push_str("\n[brightness]\n");
     out.push_str(&format!("device = {:?}\n", c.brightness.device));
     out.push_str(&format!("step = {}\n", c.brightness.step));
@@ -2977,6 +3004,29 @@ cell_width = 34
         assert!(bad.validate().is_err());
         let bad: Config = toml::from_str("[brightness]\nstep = 0\n").unwrap();
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn gradual_nightlight_is_the_default_and_validates() {
+        let c = Config::default();
+        assert_eq!(c.nightlight.mode, "gradual");
+        assert_eq!(c.nightlight.start_temperature, 4500);
+        assert_eq!(c.nightlight.not_before, "19:00");
+        assert_eq!(c.nightlight.deepest_at, "22:00");
+        let c: Config = toml::from_str(
+            "[nightlight]\nmode = \"gradual\"\nstart_temperature = 5000\nnot_before = \"18:30\"\ndeepest_at = \"00:30\"\n",
+        )
+        .unwrap();
+        assert!(c.validate().is_ok());
+        for bad in [
+            "[nightlight]\nstart_temperature = 999\n",
+            "[nightlight]\nstart_temperature = 10001\n",
+            "[nightlight]\nnot_before = \"7pm\"\n",
+            "[nightlight]\ndeepest_at = \"24:00\"\n",
+        ] {
+            let c: Config = toml::from_str(bad).unwrap();
+            assert!(c.validate().is_err(), "{bad} must be refused");
+        }
     }
 
     #[test]
