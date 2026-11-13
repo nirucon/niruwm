@@ -910,6 +910,10 @@ pub struct Bar {
     /// Percent used (1-99) at which the bar's `disk` module appears. Read by
     /// NIRUBAR.
     pub disk_warn: u8,
+    /// Bar modules hidden while presenting (`niructl present on`). Read by
+    /// NIRUBAR 0.27; accepted here so the shared file loads.
+    #[allow(dead_code)]
+    pub presenting_hide: Vec<String>,
     /// Visibility of the optional microphone module. Read by NIRUBAR.
     pub microphone_visibility: String,
     /// Workspace labels shown instead of 1..10.
@@ -1049,6 +1053,27 @@ impl Bar {
     }
 }
 
+/// NIRUBAR's default `[bar] presenting_hide`: the modules that could show
+/// private status on a shared screen.
+pub fn default_presenting_hide() -> Vec<String> {
+    [
+        "media",
+        "notifications",
+        "agent",
+        "share",
+        "tailscale",
+        "updates",
+        "niruxupdate",
+        "nirusec",
+        "dictation",
+        "tasks",
+        "weather",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 impl Default for Bar {
     fn default() -> Self {
         Self {
@@ -1087,6 +1112,7 @@ impl Default for Bar {
             ],
             follow_default_modules: true,
             disk_warn: 90,
+            presenting_hide: default_presenting_hide(),
             tags: default_tags(),
             workspace_layout: None,
             microphone_visibility: "always".into(),
@@ -2845,6 +2871,16 @@ mod tests {
         assert_eq!(d.modules[disk + 1], "quicksettings");
         assert!(example.bar.follow_default_modules && d.follow_default_modules);
         assert_eq!((example.bar.disk_warn, d.disk_warn), (90, 90));
+    }
+
+    #[test]
+    fn presenting_hide_is_accepted_in_the_bar_table() {
+        let c: Config =
+            toml::from_str("[bar]\npresenting_hide = [\"media\", \"weather\"]\n").unwrap();
+        assert_eq!(c.bar.presenting_hide, ["media", "weather"]);
+        let d = Bar::default();
+        assert!(d.presenting_hide.iter().any(|m| m == "notifications"));
+        assert!(!d.presenting_hide.iter().any(|m| m == "clock"));
     }
 
     #[test]
