@@ -928,6 +928,11 @@ action = "move_float down"
 keys = "super+shift+f"
 action = "start pcmanfm"
 
+# NIRUIO: outputs, inputs, programs, cameras and the sound doctor, floating.
+[[keys]]
+keys = "super+shift+a"
+action = "shell niruio --window"
+
 [[keys]]
 keys = "super+ctrl+t"
 action = "launcher_unified"

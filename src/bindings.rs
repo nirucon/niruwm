@@ -316,6 +316,9 @@ impl Action {
         add("ctrl+alt+w", "window_hints");
         // Super+N is the night light, so the note takes Shift.
         add("super+shift+n", "quick_note");
+        // Sound, microphones and cameras: NIRUIO in its own floating window.
+        // A as in audio; Super+A is the actions view.
+        add("super+shift+a", "shell niruio --window");
         add("super+shift+b", "launcher_unified");
         // The suite launcher is also available from the old menu key.
         add("super+shift+m", "launcher_unified");
@@ -919,6 +922,10 @@ fn describe_shell(command: &str) -> Option<(&'static str, &'static str)> {
         "nirushot ocr" => (
             "Screenshots and color",
             "Copy the text in a screen region (OCR)",
+        ),
+        "niruio --window" => (
+            "Apps and launchers",
+            "Sound, microphones and cameras (NIRUIO)",
         ),
         _ => return None,
     })

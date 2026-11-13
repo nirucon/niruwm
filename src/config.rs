@@ -344,6 +344,7 @@ pub const SWALLOW_EXCLUDE: &[&str] = &[
     "nirushot",
     "niruclip",
     "nirudictate",
+    "niruio",
     "niru-agent",
     "firefox",
     "firefox-esr",

@@ -233,7 +233,7 @@ impl Wm {
         let suite_settings = class.split('\0').any(|part| {
             matches!(
                 part.to_ascii_lowercase().as_str(),
-                "niruthemeselector" | "niruwallpaper" | "nirupres"
+                "niruthemeselector" | "niruwallpaper" | "nirupres" | "niruio"
             )
         });
         // The launcher marks the agent terminal as a suite overlay so the TUI
