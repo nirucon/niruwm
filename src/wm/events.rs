@@ -107,6 +107,7 @@ impl Wm {
             // session was saved. Stop waiting after the deadline.
             self.finish_restore_if_due()?;
             self.studio_tick();
+            self.present_tick();
             self.session_hooks_tick();
         }
     }
@@ -150,7 +151,29 @@ impl Wm {
                     // notification for such a window is discarded. A window
                     // that is gone from the client list is unknown and is
                     // dropped as before.
-                    if self.hidden.contains(&e.window) {
+                    if self.kept.contains(&e.window) {
+                        // Hidden but kept mapped outside the screens: we did
+                        // not unmap it, so its client did (or a stale event
+                        // from before it was kept, then it is still mapped).
+                        let unmapped = self
+                            .c
+                            .get_window_attributes(e.window)
+                            .ok()
+                            .and_then(|cookie| cookie.reply().ok())
+                            .map(|a| a.map_state == MapState::UNMAPPED);
+                        match unmapped {
+                            Some(true) => {
+                                self.kept.remove(&e.window);
+                                self.hidden.remove(&e.window);
+                                self.withdrawn.insert(e.window);
+                            }
+                            Some(false) => {}
+                            None => {
+                                self.unmanage(e.window);
+                                self.arrange()?;
+                            }
+                        }
+                    } else if self.hidden.contains(&e.window) {
                         // expected: we unmapped it
                     } else if self.clients.iter().any(|c| c.win == e.window) {
                         // A visible managed client that is now unmapped withdrew
@@ -184,6 +207,24 @@ impl Wm {
                 // A window asks for attention, or stops asking.
                 Event::PropertyNotify(e) if e.atom == u32::from(AtomEnum::WM_HINTS) => {
                     self.note_attention(e.window)?;
+                }
+                Event::PropertyNotify(e) if e.atom == self.atom("_NIRUWM_KEEP_MAPPED") => {
+                    let keep = self.keep_mapped_property(e.window);
+                    let changed = self
+                        .clients
+                        .iter_mut()
+                        .find(|c| c.win == e.window)
+                        .filter(|c| c.keep_mapped != keep)
+                        .map(|c| c.keep_mapped = keep)
+                        .is_some();
+                    if changed {
+                        eprintln!(
+                            "niruwm: window {:#x} {} mapped while hidden",
+                            e.window,
+                            if keep { "stays" } else { "no longer stays" }
+                        );
+                        self.arrange()?;
+                    }
                 }
                 // Moving between two empty desktops stays inside the root
                 // window, so no EnterNotify arrives at the boundary. Follow

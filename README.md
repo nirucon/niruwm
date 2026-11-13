@@ -65,6 +65,11 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - Studio mode for recording (`niructl studio`): no screen saver, lock or
   popups, picom off and the performance profile while it is on, everything
   put back as it was afterwards; optionally on while REAPER is open.
+- Presenting (`niructl present on [--pid PID]|off|status`): Do Not Disturb
+  on and private bar modules hidden (`[bar] presenting_hide`) while you share
+  your screen, put back afterwards, also when the presenting program crashes.
+  A window with `_NIRUWM_KEEP_MAPPED` stays mapped outside the screens while
+  its workspace is hidden, so a video call keeps showing it. NIRUPRES uses both.
 - Calendar events in the bar: the bundled NIRUBAR (0.23) shows read-only
   ICS feeds, such as Google Calendar's secret iCal address, in the clock's
   calendar (day markers, an agenda, click to open the day in the browser),
@@ -187,6 +192,7 @@ niructl scratchpad 2 toggle
 niructl urgent                       # windows that asked for attention; `urgent focus` goes there
 niructl swallow off                  # window swallowing for this session (on|off|toggle|status)
 niructl studio on                    # studio mode: no saver/lock/popups, picom off, performance
+niructl present on --pid 1234        # presenting until process 1234 ends: DND on, private bar modules hidden
 niructl do tag 3                     # any key action by name (niructl do --list); never shell, start or quit
 niructl powerprofile auto            # the power profile for battery or AC, now
 niructl bar bottom
@@ -314,6 +320,23 @@ turns it on by itself (`auto_enable`, default off).
 power_profile = "performance"   # "keep" leaves it alone
 auto_enable = false             # true: REAPER opening turns it on
 ```
+
+### Presenting
+
+`niructl present on` turns Do Not Disturb on (remembering whether it was on)
+and sets the root property `_NIRUWM_PRESENTING`; NIRUBAR then hides the
+modules in `[bar] presenting_hide` (media, notifications, agent, share,
+tailscale, updates, niruxupdate, nirusec, dictation, tasks, weather). `off`
+puts DND back as it was; `status` prints `on` or `off`. With `--pid PID`
+presenting ends by itself within about a second of that process ending.
+It survives `niructl restart-wm` and ends at logout. NIRUPRES calls it when a
+presentation starts and ends.
+
+A window that sets `_NIRUWM_KEEP_MAPPED` (CARDINAL 1) is moved outside every
+screen instead of being unmapped while its workspace (or scratchpad) is
+hidden, so screen sharing of that window keeps live frames. It still behaves
+as hidden: no focus, not in the layout, back in place when its workspace is
+shown. See [REFERENCE.md](docs/REFERENCE.md).
 
 ### Power profile on battery and AC
 

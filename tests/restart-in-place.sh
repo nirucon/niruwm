@@ -94,8 +94,10 @@ XVFB=$!
 SESSION=""
 XEV=""
 BUS_PID=""
+PRESENTER=""
 cleanup() {
   [ -z "$XEV" ] || kill "$XEV" 2>/dev/null || :
+  [ -z "$PRESENTER" ] || kill "$PRESENTER" 2>/dev/null || :
   [ -z "$SESSION" ] || kill "$SESSION" 2>/dev/null || :
   sleep 0.5
   kill "$XVFB" 2>/dev/null || :
@@ -153,6 +155,9 @@ win() { run xdotool search --class "^$1\$" | head -n 1; }
 pointer 600 400
 ctl tag 1; open_term L1a; open_term L1b; open_term L1c
 ctl tag 2; open_term L2a
+# A window that stays mapped while hidden (NIRUPRES's audience window).
+open_term KM
+run xprop -id "$(win KM)" -f _NIRUWM_KEEP_MAPPED 32c -set _NIRUWM_KEEP_MAPPED 1
 ctl tag 3; open_term L3a; open_term L3b
 ctl layout monocle
 pointer 1900 400
@@ -192,7 +197,7 @@ ok "windows open on both screens"
 
 # One line per managed window: class, desktop, map state, geometry.
 snapshot() {
-  for class in L1a L1b L1c L2a L3a L3b R1a R1b R4a R4f SW XEyes S2 S3; do
+  for class in L1a L1b L1c L2a KM L3a L3b R1a R1b R4a R4f SW XEyes S2 S3; do
     id=$(win "$class")
     desk=$(run xprop -id "$id" _NET_WM_DESKTOP 2>/dev/null | sed 's/.*= //')
     info=$(run xwininfo -id "$id" 2>/dev/null)
@@ -209,12 +214,22 @@ snapshot() {
   echo "layout $(prop _NIRUWM_LAYOUT)"
   echo "monitors $(prop _NIRUWM_MONITORS)"
   echo "scratch $(prop _NIRUWM_SCRATCHPADS | tr '\n' ' ')"
+  echo "presenting $(prop _NIRUWM_PRESENTING) $(ctl present status)"
 }
+# Presenting, watching a process, outlives every restart below.
+sleep 100000 &
+PRESENTER=$!
+ctl present on --pid "$PRESENTER" --quiet || fail "present on failed"
+
 BEFORE=$(snapshot)
 printf '%s\n' "$BEFORE" > "$T/before"
 printf '%s\n' "$BEFORE" | grep -q "^S2 .*IsUnMapped" || fail "S2 should start hidden"
 printf '%s\n' "$BEFORE" | grep -q "^S3 .*IsViewable" || fail "S3 should start shown"
 printf '%s\n' "$BEFORE" | grep -q "^SW .*IsUnMapped" || fail "SW should start swallowed"
+printf '%s\n' "$BEFORE" | grep -q "^KM desk=1 IsViewable" || fail "KM (keep mapped, hidden workspace) should stay mapped"
+km_x=$(run xwininfo -id "$(win KM)" | awk -F: '/Absolute upper-left X/{gsub(/ /,"",$2); print $2}')
+[ "$km_x" -ge 2560 ] || fail "KM should be outside both screens, x=$km_x"
+printf '%s\n' "$BEFORE" | grep -q "^presenting 1 on$" || fail "presenting should be on"
 HIDDEN=$(printf '%s\n' "$BEFORE" | awk '$3 == "IsUnMapped" {print $1}' | tr '\n' ' ')
 echo "    hidden before restart: $HIDDEN"
 
@@ -224,6 +239,9 @@ mine() {
   for pid in $(pgrep -u "$(id -u)" "$@" 2>/dev/null); do
     tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "HOME=$H" && echo "$pid"
   done
+  # A host that runs its own session (nirunotify of the real login) must
+  # not end the test under set -e when none of the processes is ours.
+  return 0
 }
 nightlight_watchers() { mine -f "niructl nightlight watch" | grep -c . || :; }
 [ "$(nightlight_watchers)" -eq 1 ] || fail "one night-light watcher at login, found $(nightlight_watchers)"
@@ -292,6 +310,20 @@ while [ "$r" -le "$ROUNDS" ]; do
   ok "round $r: generation $gen running, every window kept, hidden windows never mapped, helpers replaced only when changed"
   r=$((r + 1))
 done
+
+# ── Presenting ends with its process, also after restarts ─────────────────
+kill "$PRESENTER"
+i=0
+until [ "$(ctl present status)" = off ]; do
+  i=$((i + 1)); [ "$i" -gt 50 ] && fail "presenting did not end with its process after $ROUNDS restarts"
+  sleep 0.1
+done
+PRESENTER=""
+! prop _NIRUWM_PRESENTING | grep -qx 1 || fail "presenting property left on the root"
+ctl present on --quiet
+BEFORE=$(snapshot)
+printf '%s\n' "$BEFORE" > "$T/before"
+ok "presenting survived $ROUNDS restarts and ended when its process did"
 
 # ── A broken new manager: the session goes back to the previous one ───────
 C="$H/.local/share/nirux/generations/C/bin"

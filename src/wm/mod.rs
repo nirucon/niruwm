@@ -100,6 +100,10 @@ pub(crate) struct Client {
     /// terminal is hidden, belongs to no workspace and is not focusable until
     /// that window closes. See `swallow.rs`.
     swallowed_by: Option<Window>,
+    /// `_NIRUWM_KEEP_MAPPED` is 1: hiding moves the window outside every
+    /// screen instead of unmapping it, so a screen capture of it keeps
+    /// getting frames (NIRUPRES's audience window).
+    keep_mapped: bool,
 }
 
 impl Client {
@@ -260,6 +264,13 @@ pub(crate) struct Wm {
     children: Vec<Child>,
     helpers: HelperPool,
     pub(crate) hidden: HashSet<Window>,
+    /// Hidden windows that stay mapped outside every screen
+    /// (`_NIRUWM_KEEP_MAPPED`). Always a subset of `hidden`.
+    pub(crate) kept: HashSet<Window>,
+    /// When the presenting state file was last looked at, and the watched
+    /// process whose end already started `niructl present off`.
+    present_checked: std::time::Instant,
+    present_off_for: Option<(u32, std::time::Instant)>,
     /// Parents that unmapped themselves rather than being hidden by the WM.
     pub(crate) withdrawn: HashSet<Window>,
     /// The client an active Super+drag owns. While this is set, arrange must
@@ -490,6 +501,8 @@ impl Wm {
             "_NIRUWM_SWALLOW",
             "_NIRUWM_SWALLOWED_BY",
             "_NIRUWM_STUDIO",
+            "_NIRUWM_KEEP_MAPPED",
+            "_NIRUWM_PRESENTING",
             "_NET_WM_STATE_MODAL",
             "_NET_WM_WINDOW_OPACITY",
             "_NIRUWM_WALLPAPER_STATE",
@@ -524,6 +537,9 @@ impl Wm {
             children: Vec::new(),
             helpers: HelperPool::new(4),
             hidden: HashSet::new(),
+            kept: HashSet::new(),
+            present_checked: std::time::Instant::now(),
+            present_off_for: None,
             withdrawn: HashSet::new(),
             dragging: None,
             focus_dirty: false,
@@ -634,6 +650,7 @@ impl Wm {
         if restarted && restart_state.is_none() {
             eprintln!("niruwm: started again after a crash; keeping the open windows");
         }
+        wm.present_startup();
         if wm.cfg.restore_session && !restarted {
             if let Err(e) = wm.restore_session() {
                 eprintln!("niruwm: could not restore the session: {e}");
@@ -1502,6 +1519,61 @@ impl Wm {
         if started {
             self.studio_off_at = None;
             self.studio_auto = false;
+        }
+    }
+
+    /// A presenting state file without `_NIRUWM_PRESENTING` on the root is
+    /// from an earlier X session: nothing of it applies here.
+    fn present_startup(&mut self) {
+        let display = std::env::var("DISPLAY").unwrap_or_default();
+        if crate::present::read(&display).is_some()
+            && !crate::present::parse_property(&self.values(self.root, "_NIRUWM_PRESENTING"))
+        {
+            eprintln!("niruwm: presenting state from an earlier session removed");
+            crate::present::remove(&display);
+        }
+    }
+
+    /// About once a second: when the process `niructl present on --pid`
+    /// watches has ended, turn presenting off (DND back, bar modules back).
+    /// One small file read in the runtime directory; nothing at all while
+    /// not presenting.
+    pub(crate) fn present_tick(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.present_checked) < std::time::Duration::from_millis(900) {
+            return;
+        }
+        self.present_checked = now;
+        let display = std::env::var("DISPLAY").unwrap_or_default();
+        let Some(state) = crate::present::read(&display) else {
+            self.present_off_for = None;
+            return;
+        };
+        let Some(pid) = state.pid else { return };
+        if !crate::present::watched_gone(&state, crate::present::process_start(pid)) {
+            return;
+        }
+        // Started already for this process: give it time before trying again.
+        if self
+            .present_off_for
+            .is_some_and(|(p, at)| p == pid && now.duration_since(at).as_secs() < 10)
+        {
+            return;
+        }
+        let started = self.spawn_helper(
+            "present-off",
+            &[
+                "niructl".into(),
+                "present".into(),
+                "off".into(),
+                "--if-pid".into(),
+                pid.to_string(),
+                "--quiet".into(),
+            ],
+        );
+        if started {
+            eprintln!("niruwm: presenting process {pid} ended; presenting off");
+            self.present_off_for = Some((pid, now));
         }
     }
 

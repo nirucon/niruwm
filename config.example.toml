@@ -355,6 +355,11 @@ modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "lay
 follow_default_modules = true
 # Percent used (1-99) at which the "disk" module appears. Default 90.
 disk_warn = 90
+# While you present (`niructl present on`; NIRUPRES does it for you) these
+# modules disappear from the bar, so a shared screen shows no media titles,
+# notifications, updates or other private status. They come back when
+# presenting ends. Set [] to keep them all. Read by nirubar 0.27.
+presenting_hide = ["media", "notifications", "agent", "share", "tailscale", "updates", "niruxupdate", "nirusec", "dictation", "tasks", "weather"]
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).

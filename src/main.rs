@@ -8,6 +8,8 @@ mod keyboard;
 mod layout;
 mod logcap;
 mod monitor;
+#[allow(dead_code)] // the present command itself runs in niructl
+mod present;
 mod replay;
 mod session_state;
 mod wallpaper;

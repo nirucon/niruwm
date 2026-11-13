@@ -24,6 +24,9 @@ mod layout;
 #[path = "../monitor.rs"]
 #[allow(dead_code)]
 mod monitor;
+#[path = "../present.rs"]
+#[allow(dead_code)] // the pid watch runs in NIRUWM
+mod present;
 #[path = "../session_state.rs"]
 #[allow(dead_code)] // niructl reads the list, it never writes one
 mod session_state;
@@ -65,6 +68,7 @@ action list [--json]|save NAME -- CMD [ARG...]|run NAME|delete NAME|rename OLD N
 layout show|save | \
 scratchpad [N] [toggle|show|hide]|send N|unscratch|list [--json] | \
 urgent [list|--json|focus] | swallow on|off|toggle|status | studio on|off|toggle|status | \
+present on [--pid PID]|off|status | \
 powerprofile status|list|set NAME|next|auto|watch | \
 do ACTION [ARG...]|do goto MONITOR TAG [WINDOW]|do --list [--json] | \
 lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
@@ -6957,6 +6961,18 @@ fn recipe(
     Ok(())
 }
 
+/// Presenting's DND through the same helpers as `niructl dnd`.
+struct PresentDnd;
+
+impl present::Dnd for PresentDnd {
+    fn is_on(&mut self) -> Option<bool> {
+        dnd_is_on()
+    }
+    fn apply(&mut self, on: bool) -> Result<()> {
+        dnd_apply(on)
+    }
+}
+
 /// Studio mode's effects through niructl's own DND and power helpers.
 struct StudioEffects;
 
@@ -8995,6 +9011,10 @@ fn run() -> Result<()> {
 
     if cmd == "studio" {
         return studio::command(&c, root, &args[1..], &mut StudioEffects);
+    }
+
+    if cmd == "present" {
+        return present::command(&c, root, &args[1..], &mut PresentDnd);
     }
 
     if cmd == "restart-wm" {

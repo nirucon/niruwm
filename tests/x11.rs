@@ -3133,3 +3133,256 @@ fn niructl_do_switches_workspaces_goes_to_windows_and_captures_thumbnails() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+fn set_keep_mapped(c: &RustConnection, w: Window, on: bool) {
+    let a = atom(c, "_NIRUWM_KEEP_MAPPED");
+    if on {
+        c.change_property32(PropMode::REPLACE, w, a, AtomEnum::CARDINAL, &[1])
+            .unwrap();
+    } else {
+        c.delete_property(w, a).unwrap();
+    }
+    c.flush().unwrap();
+}
+
+/// Entirely right of the screen: the parked place of a kept-mapped window.
+fn parked(c: &RustConnection, w: Window, screen_w: u16) -> bool {
+    let reply = c
+        .translate_coordinates(w, c.setup().roots[0].root, 0, 0)
+        .unwrap()
+        .reply()
+        .unwrap();
+    i32::from(reply.dst_x) >= i32::from(screen_w)
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn keep_mapped_windows_stay_mapped_outside_the_screen_while_hidden() {
+    let dir = std::env::temp_dir().join(format!("niruwm-keep-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+
+    // The audience window asks before it maps; a plain window beside it.
+    let audience = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        audience,
+        root,
+        10,
+        10,
+        640,
+        360,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        audience,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"nirupres-audience\0NIRUPRES\0",
+    )
+    .unwrap();
+    set_keep_mapped(&c, audience, true);
+    c.map_window(audience).unwrap();
+    c.flush().unwrap();
+    let plain = create(&c, root, b"plain\0Plain\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![audience, plain]);
+    wait(|| mapped(&c, audience) && mapped(&c, plain));
+    let shown = geometry(&c, audience);
+    assert!(!parked(&c, audience, screen_w));
+
+    // Workspace 2: the plain window unmaps, the audience window stays mapped
+    // outside the screen at its own size, and has no focus.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 1, 0, 0, 0]);
+    wait(|| !mapped(&c, plain));
+    wait(|| parked(&c, audience, screen_w));
+    assert!(mapped(&c, audience), "a kept window is never unmapped");
+    let g = geometry(&c, audience);
+    assert_eq!((g.2, g.3), (shown.2, shown.3), "parked at its own size");
+    assert_ne!(values(&c, root, "_NET_ACTIVE_WINDOW"), vec![audience]);
+    let focus = c.get_input_focus().unwrap().reply().unwrap().focus;
+    assert_ne!(focus, audience, "keyboard focus left the hidden window");
+    // Still a window of workspace 1 for everyone else.
+    assert_eq!(values(&c, audience, "_NET_WM_DESKTOP"), vec![0]);
+
+    // Back on workspace 1 it returns to its place in the layout.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| mapped(&c, plain));
+    wait(|| geometry(&c, audience) == shown);
+
+    // The property removed while hidden: unmapped then. Set again while
+    // hidden: mapped again, outside the screen.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 1, 0, 0, 0]);
+    wait(|| parked(&c, audience, screen_w));
+    set_keep_mapped(&c, audience, false);
+    wait(|| !mapped(&c, audience));
+    set_keep_mapped(&c, audience, true);
+    wait(|| mapped(&c, audience));
+    assert!(parked(&c, audience, screen_w), "mapped outside the screen");
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| geometry(&c, audience) == shown);
+
+    // A hidden scratchpad with the property stays mapped too.
+    message(&c, root, root, "_NIRUWM_COMMAND", [18, 2, audience, 0, 0]);
+    wait(|| text(&c, root, "_NIRUWM_SCRATCHPADS").contains(&format!("2\thidden\t{audience}")));
+    wait(|| parked(&c, audience, screen_w));
+    assert!(mapped(&c, audience));
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 2, 0, 0, 0]);
+    wait(|| !parked(&c, audience, screen_w));
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 2, 0, 0, 0]);
+    wait(|| parked(&c, audience, screen_w));
+    message(&c, root, root, "_NIRUWM_COMMAND", [15, 2, 1, 0, 0]);
+    wait(|| !parked(&c, audience, screen_w));
+    message(&c, root, root, "_NIRUWM_COMMAND", [17, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+
+    // Its client withdraws it while it is parked: it is gone from the
+    // workspace and does not come back by itself.
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 1, 0, 0, 0]);
+    wait(|| parked(&c, audience, screen_w));
+    c.unmap_window(audience).unwrap();
+    c.flush().unwrap();
+    wait(|| !mapped(&c, audience));
+    message(&c, root, root, "_NIRUWM_COMMAND", [13, 0, 0, 0, 0]);
+    wait(|| mapped(&c, plain));
+    thread::sleep(Duration::from_millis(200));
+    assert!(!mapped(&c, audience), "a withdrawn window stays withdrawn");
+    // Mapping it again brings it back.
+    c.map_window(audience).unwrap();
+    c.flush().unwrap();
+    wait(|| mapped(&c, audience) && !parked(&c, audience, screen_w));
+
+    c.destroy_window(audience).unwrap();
+    c.destroy_window(plain).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn present_remembers_dnd_and_ends_when_the_watched_process_ends() {
+    let dir = std::env::temp_dir().join(format!("niruwm-present-{}", std::process::id()));
+    let bin = dir.join("bin");
+    let runtime = dir.join("run");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::create_dir_all(&runtime).unwrap();
+    // A notification provider that keeps DND in a file.
+    let dnd = dir.join("dnd");
+    std::fs::write(&dnd, "off").unwrap();
+    std::fs::write(
+        bin.join("nirunotify"),
+        format!(
+            "#!/bin/sh\nf='{}'\ncase \"$2\" in\n  on|off) printf %s \"$2\" > \"$f\" ;;\n  status) echo \"dnd $(cat \"$f\")\" ;;\nesac\n",
+            dnd.display()
+        ),
+    )
+    .unwrap();
+    let niructl = std::path::PathBuf::from(env!("CARGO_BIN_EXE_niructl"));
+    std::os::unix::fs::symlink(&niructl, bin.join("niructl")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        bin.join("nirunotify"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("HOME", &dir)
+            .env("PATH", &path)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let ctl = |args: &[&str]| -> String {
+        let out = Command::new(&niructl)
+            .args(args)
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_RUNTIME_DIR", &runtime)
+            .env("HOME", &dir)
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "niructl {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let dnd_now = || std::fs::read_to_string(&dnd).unwrap();
+
+    assert_eq!(ctl(&["present", "status"]), "off");
+    // By hand: DND on while presenting, off again after.
+    ctl(&["present", "on"]);
+    assert_eq!(ctl(&["present", "status"]), "on");
+    assert_eq!(values(&c, root, "_NIRUWM_PRESENTING"), vec![1]);
+    assert_eq!(dnd_now(), "on");
+    ctl(&["present", "off"]);
+    assert_eq!(ctl(&["present", "status"]), "off");
+    assert!(values(&c, root, "_NIRUWM_PRESENTING").is_empty());
+    assert_eq!(dnd_now(), "off");
+
+    // DND that was on stays on.
+    std::fs::write(&dnd, "on").unwrap();
+    ctl(&["present", "on"]);
+    ctl(&["present", "off"]);
+    assert_eq!(dnd_now(), "on");
+    std::fs::write(&dnd, "off").unwrap();
+
+    // A process that is not running is refused.
+    let out = Command::new(&niructl)
+        .args(["present", "on", "--pid", "999999999"])
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+
+    // Watched: ends by itself shortly after the process ends.
+    let mut sleeper = Command::new("sleep").arg("60").spawn().unwrap();
+    let pid = sleeper.id().to_string();
+    ctl(&["present", "on", "--pid", &pid]);
+    assert_eq!(dnd_now(), "on");
+    thread::sleep(Duration::from_millis(2500));
+    assert_eq!(ctl(&["present", "status"]), "on", "still running: still on");
+    sleeper.kill().unwrap();
+    sleeper.wait().unwrap();
+    let end = Instant::now() + Duration::from_secs(8);
+    while ctl(&["present", "status"]) != "off" {
+        assert!(
+            Instant::now() < end,
+            "presenting did not end with its process"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(dnd_now(), "off", "DND restored");
+    let leftovers: Vec<String> = std::fs::read_dir(runtime.join("niruwm"))
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with("presenting-") && !n.ends_with(".lock"))
+        .collect();
+    assert!(leftovers.is_empty(), "state file removed: {leftovers:?}");
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -36,6 +36,7 @@ niructl urgent [--json]        # windows that asked for attention, newest last
 niructl urgent focus           # go to the newest one (Super+Shift+U)
 niructl swallow on|off|toggle|status
 niructl studio on|off|toggle|status   # studio (DAW) mode for this session
+niructl present on [--pid PID]|off|status   # presenting: DND on, private bar modules hidden
 niructl do tag 3               # any key action by name, like [[keys]] action
 niructl do goto 1 2 0x1a00007  # screen 1 (from 0), workspace 2, that window
 niructl do --list [--json]     # the actions niructl do accepts
@@ -92,6 +93,32 @@ unless you picked another one meanwhile. The keep-awake switch
 true` the first window of a `daw_classes` class (REAPER by default) turns the
 mode on and closing the last one turns it off, unless you turned it on by
 hand. `~/.config/picom.conf` is never edited.
+
+`niructl present on` starts presenting: it remembers whether Do Not Disturb
+was on, turns DND on (through the same provider as `niructl dnd`) and sets the
+root property `_NIRUWM_PRESENTING` (CARDINAL 1). NIRUBAR 0.27 then hides the
+modules listed in `[bar] presenting_hide` (media, notifications, agent, share,
+tailscale, updates, niruxupdate, nirusec, dictation, tasks and weather by
+default). `niructl present off` puts DND back as it was and deletes the
+property; `niructl present status` prints `on` or `off`. With `--pid PID`
+presenting ends by itself when that process ends: NIRUWM checks about once a
+second and runs `niructl present off --if-pid PID`, so a presentation that
+crashes never leaves DND on. A second `on` keeps the DND state the first one
+found and watches the new PID. The state (watched PID and its start time, DND
+before) is kept in `$XDG_RUNTIME_DIR/niruwm/presenting-<display>` (0600), so
+presenting survives `niructl restart-wm`; the session runs
+`niructl present off --session-end` at logout. NIRUPRES does all of this for
+you when a presentation starts and ends.
+
+A window that sets the property `_NIRUWM_KEEP_MAPPED` (CARDINAL 1, read when
+the window is managed and whenever it changes) is never unmapped when NIRUWM
+hides it: on another workspace, a hidden Scroll column, a hidden scratchpad
+or after its screen went away it is moved outside every screen (to the right
+of the whole desktop, same size) and stays mapped, so a browser sharing that
+window in a video call keeps getting live frames. In every other way it is
+hidden: it cannot be focused or clicked from another workspace and it is not
+part of the visible layout; showing its workspace puts it back in place.
+NIRUPRES's audience window sets it.
 
 `niruthemeselector` is the graphical front end for themes: it previews
 wallpaper and palette, applies through the same path and manages user imports

@@ -28,6 +28,11 @@ impl Wm {
             .unwrap_or_default()
     }
 
+    /// `_NIRUWM_KEEP_MAPPED` is CARDINAL 1 on the window.
+    pub(crate) fn keep_mapped_property(&self, w: Window) -> bool {
+        crate::present::parse_property(&self.values(w, "_NIRUWM_KEEP_MAPPED"))
+    }
+
     fn size_hints(&self, w: Window) -> SizeHints {
         let Ok(cookie) = self.c.get_property(
             false,
@@ -384,6 +389,7 @@ impl Wm {
         let initial_fullscreen = self
             .values(w, "_NET_WM_STATE")
             .contains(&self.atom("_NET_WM_STATE_FULLSCREEN"));
+        let keep_mapped = self.keep_mapped_property(w);
         let client = Client {
             win: w,
             monitor,
@@ -412,6 +418,7 @@ impl Wm {
             urgent: false,
             urgent_serial: 0,
             swallowed_by: None,
+            keep_mapped,
         };
         let mut client = client;
         if let Some((_, _, _, _, true, geom)) = swallowed {
@@ -570,6 +577,22 @@ impl Wm {
                 };
             }
         }
+        // A floating window adopted outside every screen was parked there
+        // (`_NIRUWM_KEEP_MAPPED`) by a manager that crashed: bring it back
+        // to the middle of its screen rather than keep it unreachable.
+        if self.adopting {
+            let screens: Vec<Rect> = self.monitors.iter().map(|m| m.rect).collect();
+            let area = self.monitor_area(monitor, self.work_area());
+            if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                if c.floating
+                    && !screens.is_empty()
+                    && !screens.iter().any(|r| overlaps(c.geom, *r))
+                {
+                    c.geom.x = area.x + (area.w as i16 - c.geom.w.min(area.w) as i16) / 2;
+                    c.geom.y = area.y + (area.h as i16 - c.geom.h.min(area.h) as i16) / 2;
+                }
+            }
+        }
         if keep_hidden {
             // Hidden before the restart (another workspace, a hidden
             // scratchpad, a swallowed terminal): arrange() maps it when it is
@@ -621,6 +644,7 @@ impl Wm {
         self.studio_window_removed(w);
         self.withdrawn.remove(&w);
         self.hidden.remove(&w);
+        self.kept.remove(&w);
         self.docks.remove(&w);
         self.remember_gone(w);
         if self.dragging == Some(w) {
@@ -1402,6 +1426,8 @@ impl Wm {
         let recent_tray = self.tray_activation_recent();
         let mut dismiss_orphans = Vec::new();
         let mut unmap = Vec::new();
+        // Hidden windows with `_NIRUWM_KEEP_MAPPED`: (window, map it again).
+        let mut park = Vec::new();
         for c in &self.clients {
             let shown = visible.contains(&c.win);
             if !shown && c.orphan && !recent_tray {
@@ -1412,10 +1438,35 @@ impl Wm {
                 // by the WM; a later MapRequest is what brings it back.
                 continue;
             }
-            if !shown && self.hidden.insert(c.win) {
-                unmap.push(c.win);
-            } else if shown && self.hidden.remove(&c.win) {
-                self.c.map_window(c.win)?;
+            if shown {
+                if self.hidden.remove(&c.win) {
+                    self.kept.remove(&c.win);
+                    self.c.map_window(c.win)?;
+                }
+                continue;
+            }
+            let newly_hidden = self.hidden.insert(c.win);
+            match hide_action(newly_hidden, self.kept.contains(&c.win), c.keep_mapped) {
+                Hide::Unmap => {
+                    self.kept.remove(&c.win);
+                    unmap.push(c.win);
+                }
+                Hide::Park { map } => {
+                    self.kept.insert(c.win);
+                    park.push((c.win, map));
+                }
+                Hide::Nothing => {}
+            }
+        }
+        // Outside every screen, to the right of the whole desktop, at the
+        // window's own size: a capture of it keeps its resolution. Moved
+        // before it is mapped again, so it never shows up on a screen.
+        let parked_x = parked_x(self.monitors.iter().map(|m| m.rect));
+        for (w, map) in park {
+            self.c
+                .configure_window(w, &ConfigureWindowAux::new().x(parked_x).y(0))?;
+            if map {
+                self.c.map_window(w)?;
             }
         }
         // Map first, then unmap: replacing one scratchpad with another (or
@@ -2103,6 +2154,56 @@ impl Wm {
     }
 }
 
+/// Whether two rectangles share at least one pixel.
+fn overlaps(a: Rect, b: Rect) -> bool {
+    let (ax2, ay2) = (
+        i32::from(a.x) + i32::from(a.w),
+        i32::from(a.y) + i32::from(a.h),
+    );
+    let (bx2, by2) = (
+        i32::from(b.x) + i32::from(b.w),
+        i32::from(b.y) + i32::from(b.h),
+    );
+    i32::from(a.x) < bx2 && i32::from(b.x) < ax2 && i32::from(a.y) < by2 && i32::from(b.y) < ay2
+}
+
+/// What hiding does with one window that is not shown.
+#[derive(Debug, PartialEq, Eq)]
+enum Hide {
+    /// Unmap it (the normal case).
+    Unmap,
+    /// Keep it mapped outside every screen; `map` when it is unmapped now
+    /// (hidden before it asked to stay mapped).
+    Park { map: bool },
+    /// Already hidden the right way.
+    Nothing,
+}
+
+/// `newly_hidden`: it was shown until now. `parked`: it is hidden and kept
+/// mapped already. `keep_mapped`: it has `_NIRUWM_KEEP_MAPPED`.
+fn hide_action(newly_hidden: bool, parked: bool, keep_mapped: bool) -> Hide {
+    match (keep_mapped, newly_hidden, parked) {
+        // It stays mapped: from shown, or already parked (move it again, the
+        // screens may have changed).
+        (true, true, _) | (true, false, true) => Hide::Park { map: false },
+        // Hidden (unmapped) before it asked to stay mapped.
+        (true, false, false) => Hide::Park { map: true },
+        // Asked to stop staying mapped while parked, or hidden just now.
+        (false, _, true) | (false, true, false) => Hide::Unmap,
+        (false, false, false) => Hide::Nothing,
+    }
+}
+
+/// Where a kept-mapped hidden window goes: 100 pixels to the right of the
+/// rightmost screen edge, so no part of it is on any screen.
+fn parked_x(screens: impl Iterator<Item = Rect>) -> i32 {
+    let right = screens
+        .map(|r| i32::from(r.x) + i32::from(r.w))
+        .max()
+        .unwrap_or(0);
+    right.max(0) + 100
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2160,7 +2261,46 @@ mod tests {
             urgent: false,
             urgent_serial: 0,
             swallowed_by: None,
+            keep_mapped: false,
         }
+    }
+
+    #[test]
+    fn hiding_parks_kept_windows_and_unmaps_the_rest() {
+        // Shown until now.
+        assert_eq!(hide_action(true, false, false), Hide::Unmap);
+        assert_eq!(hide_action(true, false, true), Hide::Park { map: false });
+        // Hidden already, the same way as before.
+        assert_eq!(hide_action(false, false, false), Hide::Nothing);
+        assert_eq!(hide_action(false, true, true), Hide::Park { map: false });
+        // The property changed while hidden.
+        assert_eq!(hide_action(false, false, true), Hide::Park { map: true });
+        assert_eq!(hide_action(false, true, false), Hide::Unmap);
+    }
+
+    #[test]
+    fn parked_windows_are_right_of_every_screen() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        assert_eq!(parked_x([r(0, 0, 1920, 1080)].into_iter()), 2020);
+        // Docked: a laptop panel left of two monitors, one above the other.
+        let screens = [
+            r(0, 200, 1366, 768),
+            r(1366, 0, 2560, 1440),
+            r(3926, 0, 1920, 1080),
+        ];
+        let x = parked_x(screens.into_iter());
+        assert_eq!(x, 5946);
+        let parked = r(x as i16, 0, 1920, 1080);
+        assert!(!screens.iter().any(|s| overlaps(parked, *s)));
+        assert_eq!(parked_x(std::iter::empty()), 100);
+    }
+
+    #[test]
+    fn overlap_needs_a_shared_pixel() {
+        let r = |x, y, w, h| Rect { x, y, w, h };
+        assert!(overlaps(r(0, 0, 10, 10), r(9, 9, 10, 10)));
+        assert!(!overlaps(r(0, 0, 10, 10), r(10, 0, 10, 10)));
+        assert!(!overlaps(r(2020, 0, 800, 600), r(0, 0, 1920, 1080)));
     }
 
     #[test]

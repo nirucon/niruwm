@@ -13,7 +13,7 @@ PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.27.1'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.28.0'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -276,6 +276,7 @@ cleanup() {
   # anyway; this puts DND and the power profile back while NIRUNOTIFY is
   # still running. The compositor is stopped just below in any case.
   command -v niructl >/dev/null 2>&1 && niructl studio off --session-end --quiet >/dev/null 2>&1 || :
+  command -v niructl >/dev/null 2>&1 && niructl present off --session-end --quiet >/dev/null 2>&1 || :
   command -v niructl >/dev/null 2>&1 && niructl compositor off --quiet >/dev/null 2>&1 || :
   # The sleep-lock helper has its own child inhibitor and monitor. Give it a
   # TERM first so its trap can release them, then make sure the direct child

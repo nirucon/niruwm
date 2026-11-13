@@ -2871,6 +2871,7 @@ mod tests {
         assert_eq!(d.modules[disk + 1], "quicksettings");
         assert!(example.bar.follow_default_modules && d.follow_default_modules);
         assert_eq!((example.bar.disk_warn, d.disk_warn), (90, 90));
+        assert_eq!(example.bar.presenting_hide, d.presenting_hide);
     }
 
     #[test]
