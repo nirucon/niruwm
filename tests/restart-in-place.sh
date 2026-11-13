@@ -305,6 +305,18 @@ while [ "$r" -le "$ROUNDS" ]; do
       fail "round 2: the missing night-light watcher was not started"
   fi
   [ "$(mine -x niruidle | wc -l)" -eq 1 ] || fail "round $r: more than one niruidle: $(ps -o pid,ppid,stat,lstart,args -p "$(mine -x niruidle | tr "\n" "," | sed "s/,$//")")"
+  # Every helper logs to the session log, also when a restart started it,
+  # and PATH does not grow with the restarts.
+  LOG_REAL=$(readlink -f "$H/.local/state/niruwm/session.log")
+  for pid in $(mine -x niruwm) $(mine -x niruidle) $(mine -x nirunotify) $(mine -f "niructl nightlight watch"); do
+    fd2=$(readlink "/proc/$pid/fd/2" 2>/dev/null || :)
+    [ "$fd2" = "$LOG_REAL" ] || fail "round $r: $(tr '\0' ' ' < "/proc/$pid/cmdline") logs to '$fd2', not the session log"
+  done
+  for pid in $(mine -x niruwm) $(mine -x niruidle); do
+    p=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^PATH=//p')
+    dups=$(printf '%s\n' "$p" | tr ':' '\n' | sort | uniq -d)
+    [ -z "$dups" ] || fail "round $r: PATH has repeated entries ($dups): $p"
+  done
   bars=$(run xwininfo -root -tree | grep -c NIRUBAR || :)
   [ "$bars" -eq 2 ] || fail "round $r: $bars bars instead of 2"
   ok "round $r: generation $gen running, every window kept, hidden windows never mapped, helpers replaced only when changed"

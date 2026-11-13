@@ -35,6 +35,8 @@ mod bindings;
 #[allow(dead_code)] // shared with niructl/niruwm; only the [idle] reader is used here
 #[path = "../config.rs"]
 mod config;
+#[path = "../idle_bus.rs"]
+mod idle_bus;
 #[allow(dead_code)]
 #[path = "../layout.rs"]
 mod layout;
@@ -53,6 +55,8 @@ struct Settings {
     dpms_after: u64,
     /// Deprecated compatibility input; never used to terminate a locker.
     lock_timeout: u64,
+    /// `[idle] honor_app_inhibit`: programs may pause the ladder over D-Bus.
+    honor_apps: bool,
 }
 
 fn config_path() -> std::path::PathBuf {
@@ -78,6 +82,7 @@ fn load_settings() -> Settings {
         lock_after: 15,
         dpms_after: 15,
         lock_timeout: 0,
+        honor_apps: true,
     };
     // The shared NIRU config owns these values. The old
     // ~/.config/niruui/screensaver.toml is read only for values the shared
@@ -88,6 +93,7 @@ fn load_settings() -> Settings {
         s.screen = u64::from(idle.screensaver_timeout);
         s.lock_after = u64::from(idle.lock_after_screensaver);
         s.dpms_after = u64::from(idle.dpms_off_after_lock);
+        s.honor_apps = idle.honor_app_inhibit;
     }
     let Ok(text) = std::fs::read_to_string(config_path()) else {
         return s;
@@ -280,6 +286,20 @@ fn session_inhibit_value(value: &[u8]) -> bool {
     !String::from_utf8_lossy(value).trim().is_empty()
 }
 
+/// Write (or with no text, remove) the root property that lists the programs
+/// holding a request, one `app<TAB>reason` line each.
+fn publish_app_inhibitors(conn: &RustConnection, root: Window, atom: Atom, utf8: Atom, text: &str) {
+    if atom == 0 {
+        return;
+    }
+    if text.is_empty() {
+        let _ = conn.delete_property(root, atom);
+    } else if utf8 != 0 {
+        let _ = conn.change_property8(PropMode::REPLACE, root, atom, utf8, text.as_bytes());
+    }
+    let _ = conn.flush();
+}
+
 /// Keep the X server's own blanking and DPMS timers at zero.
 ///
 /// NIRUIDLE owns the ladder (screensaver, lock, display off). The server's
@@ -353,8 +373,12 @@ fn main() {
     let mut settings = load_settings();
     if arg == "--config" {
         println!(
-            "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking\nlegacy lock_timeout_minutes: {} (ignored; never terminate a locker)",
-            settings.screen, settings.lock_after, settings.dpms_after, settings.lock_timeout
+            "screensaver after {} min\nlock {} min later\ndisplay off {} min after locking\nprograms may pause the ladder: {}\nlegacy lock_timeout_minutes: {} (ignored; never terminate a locker)",
+            settings.screen,
+            settings.lock_after,
+            settings.dpms_after,
+            if settings.honor_apps { "yes" } else { "no" },
+            settings.lock_timeout
         );
         return;
     }
@@ -434,10 +458,28 @@ fn main() {
     let features = intern(b"_NIRUIDLE_FEATURES");
     let utf8 = intern(b"UTF8_STRING");
     if features != 0 && utf8 != 0 {
-        let _ = conn.change_property8(PropMode::REPLACE, root, features, utf8, b"session-inhibit");
+        let _ = conn.change_property8(
+            PropMode::REPLACE,
+            root,
+            features,
+            utf8,
+            b"session-inhibit app-inhibit",
+        );
         let _ = conn.flush();
     }
     let mut external_locked = false;
+    // Programs that asked the screensaver to wait (org.freedesktop.ScreenSaver).
+    // `_NIRUIDLE_APP_INHIBIT` on the root lists them for `niructl idle status`;
+    // like the session property it vanishes with the X server.
+    let app_inhibit_atom = intern(b"_NIRUIDLE_APP_INHIBIT");
+    if app_inhibit_atom != 0 {
+        let _ = conn.delete_property(root, app_inhibit_atom);
+    }
+    let mut bus = settings.honor_apps.then(idle_bus::start);
+    if !settings.honor_apps {
+        eprintln!("niruidle: [idle] honor_app_inhibit = false: requests from programs are ignored");
+    }
+    let mut published = (0u64, settings.honor_apps);
 
     loop {
         // `niructl timing set` writes the shared file. Pick the new values up
@@ -454,9 +496,34 @@ fn main() {
                 .saturating_mul(60);
             config_stamp = stamp;
             eprintln!(
-                "niruidle: timing reloaded: screen after {} min, lock {} min later, display off {} min after that",
-                settings.screen, settings.lock_after, settings.dpms_after
+                "niruidle: timing reloaded: screen after {} min, lock {} min later, display off {} min after that{}",
+                settings.screen,
+                settings.lock_after,
+                settings.dpms_after,
+                if settings.honor_apps { "" } else { "; requests from programs are ignored" }
             );
+            if settings.honor_apps && bus.is_none() {
+                bus = Some(idle_bus::start());
+            }
+        }
+        // Requests from programs, as one snapshot per tick: the bus thread
+        // answers calls at once, the ladder looks at the table here.
+        let mut apps: Option<(usize, String)> = None;
+        if let Some(handle) = &bus {
+            let mut shared = idle_bus::lock(handle);
+            shared.saver_active = saver_child.is_some() || blanked || locker_child.is_some();
+            if std::mem::take(&mut shared.activity) {
+                let _ = conn.force_screen_saver(ScreenSaver::RESET);
+            }
+            if settings.honor_apps && !shared.inhibitors.is_empty() {
+                apps = Some((shared.inhibitors.len(), shared.inhibitors.summary()));
+            }
+            if (shared.generation, settings.honor_apps) != published {
+                published = (shared.generation, settings.honor_apps);
+                let text = apps.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
+                drop(shared);
+                publish_app_inhibitors(&conn, root, app_inhibit_atom, utf8, text);
+            }
         }
         keep_x_timers_off(&conn);
         reap(&mut saver_child);
@@ -473,15 +540,26 @@ fn main() {
         // active, reset the X idle clock so no saver or locker fires, and undo
         // any display-off state niruidle itself set.
         let by_file = inhibit_active_from(&inhibit, now_secs());
-        if by_file || session_inhibit_active(&conn, root, session_inhibit) {
+        let by_session = !by_file && session_inhibit_active(&conn, root, session_inhibit);
+        if by_file || by_session || apps.is_some() {
             file_inhibited |= by_file;
             if !inhibited {
-                eprintln!(
-                    "niruidle: idle inhibition on{}",
-                    if by_file { "" } else { " (session)" }
-                );
+                let source = if by_file {
+                    String::new()
+                } else if by_session {
+                    " (session)".to_string()
+                } else {
+                    let n = apps.as_ref().map(|(n, _)| *n).unwrap_or(0);
+                    format!(" ({n} program request{})", if n == 1 { "" } else { "s" })
+                };
+                eprintln!("niruidle: idle inhibition on{source}");
                 stop_saver(&mut saver_child);
-                if display_off {
+                // A program's request does not wake a display that went dark
+                // behind the lock: a video starting in a background tab must
+                // not light up a locked screen.
+                let locked_now =
+                    locker_child.is_some() || lock_ready_window(&conn, root, lock_ready).is_some();
+                if display_off && (by_file || by_session || !locked_now) {
                     xset_dpms("on");
                     display_off = false;
                 }
@@ -579,6 +657,7 @@ mod tests {
             lock_after,
             dpms_after: 15,
             lock_timeout: 0,
+            honor_apps: true,
         }
     }
 

@@ -59,6 +59,7 @@
 #   [idle] screensaver_timeout    minutes idle -> screensaver   default 15
 #   [idle] lock_after_screensaver minutes screensaver -> lock   default 15
 #   [idle] dpms_off_after_lock    minutes lock -> display off   default 15
+#   [idle] honor_app_inhibit      programs may pause the ladder default true
 #
 # They are documented in full in their own sections further down.
 
@@ -290,6 +291,24 @@ workspaces = 10
 #                           screens keep the laptop awake (docked; logind
 #                           ignores the lid then, so it does not sleep).
 #                           Undocked, the lid suspends and locks as before.
+#   honor_app_inhibit       true (default) lets programs ask the screensaver
+#                           to wait: a browser playing a video or holding a
+#                           call (Chromium, Helium, Firefox, Teams in the
+#                           browser), mpv, VLC and others use the standard
+#                           org.freedesktop.ScreenSaver service on the
+#                           session bus, which NIRUIDLE provides. While any
+#                           program holds such a request, the screensaver,
+#                           the idle lock and display-off all wait, exactly
+#                           as with `niructl idle on`; the timers start
+#                           again from zero when the last request ends or
+#                           the program exits. This means the screen does
+#                           not lock on its own while, for example, a video
+#                           plays in a browser tab you left open (GNOME and
+#                           KDE behave the same). Super+Escape and
+#                           `niructl lock` still lock at once, and lid close
+#                           and suspend still lock. `niructl idle status`
+#                           lists the programs that hold a request.
+#                           false ignores every program's request.
 #
 # Defaults: 15, 15, 15.
 # A value above 1440 (one day) is rejected. At runtime, an out-of-range
@@ -306,6 +325,7 @@ screensaver_timeout = 15
 lock_after_screensaver = 15
 dpms_off_after_lock = 15
 lock_on_lid_close = true
+honor_app_inhibit = true
 
 # ── Bar ─────────────────────────────────────────────────────────────────────
 [bar]

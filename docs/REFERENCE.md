@@ -135,7 +135,32 @@ screensaver_timeout = 15      # idle minutes before the screensaver
 lock_after_screensaver = 15   # screensaver minutes before locking; 0 locks at screensaver_timeout
 dpms_off_after_lock = 15      # minutes after locking before the display sleeps
 lock_on_lid_close = true      # docked: lock (no sleep) when the lid is closed
+honor_app_inhibit = true      # programs may ask the screensaver to wait
 ```
+
+Programs ask the screensaver to wait through the standard session bus
+service `org.freedesktop.ScreenSaver` (`Inhibit(application, reason)` returns a
+cookie, `UnInhibit(cookie)` ends the request; also `GetActive` and
+`SimulateUserActivity`, at `/org/freedesktop/ScreenSaver` and `/ScreenSaver`).
+Chromium and Helium (video, calls such as Teams in the browser), Firefox, mpv
+and VLC use it. `niruidle` owns the name when no other program does; it never
+takes it from another owner and logs who has it. While any request is held,
+the screensaver, the idle lock and display-off wait, as with `niructl idle on`,
+and the timers start again from zero when the last request ends. A request
+ends with `UnInhibit` or when the program leaves the bus (it exited or
+crashed). The session log shows `niruidle: app inhibit on: APP (REASON)` and
+`niruidle: app inhibit off: APP`; `niructl idle status` lists the current
+requests as `app inhibit: APP (REASON)` lines after its first line.
+
+Be aware of what this means: a video left playing in a browser tab keeps the
+screen from locking on its own, exactly as on GNOME or KDE. Locking by hand
+(Super+Escape, `niructl lock`), closing the lid and suspending still lock. A
+request that starts while the screen is already locked does not turn a dark
+display back on. Set `honor_app_inhibit = false` to ignore every request.
+Without a session bus nothing changes: the ladder runs on its timers alone.
+Requests are held by the running `niruidle`; when a restart in place replaces
+it (a new version was installed), programs that held one ask again the next
+time they start playing.
 
 `niruidle` owns both timers in one process, so the ladder
 active -> screensaver -> locked has a single timer on each step. `niructl timing

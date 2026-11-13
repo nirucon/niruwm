@@ -9,11 +9,30 @@
 set -eu
 
 SELF_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
-PATH="$SELF_DIR:$HOME/.local/bin:$PATH"
+# PATH with each directory once, in the order of first appearance, and no
+# empty entries (an empty entry means the current directory). A restart in
+# place runs this script again in the same environment, so a plain prepend
+# grew PATH by two entries on every restart (one laptop had 30 copies of
+# ~/.local/bin after a day of updates).
+dedupe_path() {
+  dp_out=""
+  dp_ifs=$IFS
+  IFS=:
+  set -f
+  for dp_dir in $1; do
+    [ -n "$dp_dir" ] || continue
+    case ":$dp_out:" in *":$dp_dir:"*) continue ;; esac
+    dp_out="${dp_out:+$dp_out:}$dp_dir"
+  done
+  set +f
+  IFS=$dp_ifs
+  printf '%s\n' "$dp_out"
+}
+PATH=$(dedupe_path "$SELF_DIR:$HOME/.local/bin:$PATH")
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.28.0'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.29.0'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -327,7 +346,7 @@ start_dunst() {
 # succeed on a machine where nothing else was running.
 start_nirunotify() {
   command -v nirunotify >/dev/null 2>&1 || return 1
-  nirunotify >/dev/null 2>&1 & NOTIFY_PID=$!
+  nirunotify >>"$WM_LOG" 2>&1 & NOTIFY_PID=$!
   # Notifications are optional. Do not add a five-second gate before the WM on
   # hosts without busctl or with a slow session bus.
   command -v busctl >/dev/null 2>&1 || return 0
@@ -416,7 +435,7 @@ esac
 # every gammastep call and re-applies after resume or output changes.
 # 0.25.2: a file without a mode gets the default, which follows the sun.
 if nightlight_wanted; then
-  niructl nightlight watch >/dev/null 2>&1 & NIGHTLIGHT_PID=$!
+  niructl nightlight watch >>"$WM_LOG" 2>&1 & NIGHTLIGHT_PID=$!
 fi
 
 # ── Power profile follows the power source ──────────────────────────────────
@@ -457,7 +476,7 @@ for pid in $(pgrep -u "$(id -u)" -x niruidle 2>/dev/null); do
   kill "$pid" 2>/dev/null || :
 done
 if [ "$START_IDLE" = 1 ] && [ -n "$NIRUIDLE_BIN" ]; then
-  "$NIRUIDLE_BIN" >/dev/null 2>&1 & IDLE_PID=$!
+  "$NIRUIDLE_BIN" >>"$WM_LOG" 2>&1 & IDLE_PID=$!
 elif [ "$START_IDLE" = 1 ]; then
   # Fallback for an install without niruidle: lock on a plain timeout so the
   # screen is never left unlocked forever.
@@ -683,8 +702,8 @@ start_helper() {
     NOTIFY_PID) start_nirunotify || : ;;
     CLIPBOARD_PID) niruclipboard daemon >>"$WM_LOG" 2>&1 & CLIPBOARD_PID=$! ;;
     GESTURES_PID) nirugestured daemon >>"$WM_LOG" 2>&1 & GESTURES_PID=$! ;;
-    IDLE_PID) niruidle >/dev/null 2>&1 & IDLE_PID=$! ;;
-    NIGHTLIGHT_PID) niructl nightlight watch >/dev/null 2>&1 & NIGHTLIGHT_PID=$! ;;
+    IDLE_PID) niruidle >>"$WM_LOG" 2>&1 & IDLE_PID=$! ;;
+    NIGHTLIGHT_PID) niructl nightlight watch >>"$WM_LOG" 2>&1 & NIGHTLIGHT_PID=$! ;;
     DISPLAY_WATCH_PID) niructl display watch --quiet >>"$WM_LOG" 2>&1 & DISPLAY_WATCH_PID=$! ;;
     NIRUSHARE_PID) nirushare serve >>"$LOG_DIR/nirushare.log" 2>&1 & NIRUSHARE_PID=$! ;;
     POWER_PID) niructl powerprofile watch >>"$WM_LOG" 2>&1 & POWER_PID=$! ;;
@@ -703,7 +722,14 @@ refresh_helpers() {
     eval "rh_old=\${SUM_$rh_var:-}"
     rh_new=$(program_sum "$rh_name")
     [ -n "$rh_new" ] || continue
-    [ "$rh_old" != "$rh_new" ] || continue
+    # Also replace a helper that an older script started with its messages
+    # thrown away (niruidle, nirunotify and the night-light watcher before
+    # 0.29.0), so its log reaches the session log without a new login.
+    rh_mute=0
+    if [ "$WM_LOG" != /dev/null ] && [ "$(readlink "/proc/$rh_pid/fd/2" 2>/dev/null)" = /dev/null ]; then
+      rh_mute=1
+    fi
+    [ "$rh_old" != "$rh_new" ] || [ "$rh_mute" = 1 ] || continue
     if [ "$rh_var" = IDLE_PID ] && { on_this_display nirulock || on_this_display niruscreensaver; }; then
       log "restart: niruidle keeps running while the screen is locked or the screensaver is up"
       continue

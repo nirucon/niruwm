@@ -27,6 +27,8 @@ jobs:
       - run: cargo test --locked
       - name: Clipboard daemon syntax
         run: python3 -m py_compile session/niruclipboard
+      - name: Session PATH stays the same across restarts in place
+        run: sh tests/session-path.sh
 
       - name: Key overrides, helper reaping and fullscreen regressions
         run: |
@@ -83,7 +85,7 @@ jobs:
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
             -S warning -s sh -e SC1007 /src/install.sh /src/session/niruwm-session \
-            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh /src/tests/nightlight.sh /src/tests/restart-in-place.sh
+            /src/tests/session-smoke.sh /src/tests/session-startup.sh /src/tests/wallpaper-session.sh /src/tests/keyboard-smoke.sh /src/tests/install-smoke.sh /src/tests/power-actions.sh /src/tests/config-repair.sh /src/tests/release-source.sh /src/tests/suite-config.sh /src/tests/nightlight.sh /src/tests/restart-in-place.sh /src/tests/session-path.sh /src/tests/idle-app-inhibit.sh
 
   session:
     needs: verify

@@ -845,6 +845,48 @@ fn xset(args: &[&str]) {
         .status();
 }
 
+/// Who else pauses the idle ladder in this session: the session property
+/// (studio mode) and the programs NIRUIDLE lists in `_NIRUIDLE_APP_INHIBIT`.
+fn idle_holders() -> Vec<String> {
+    let Ok((c, screen)) = x11rb::connect(None) else {
+        return Vec::new();
+    };
+    let root = c.setup().roots[screen].root;
+    let text = |name: &str| -> Option<String> {
+        let atom = atom_named(&c, name).ok()?;
+        let reply = c
+            .get_property(false, root, atom, AtomEnum::ANY, 0, 16 * 1024)
+            .ok()?
+            .reply()
+            .ok()?;
+        let value = String::from_utf8_lossy(&reply.value).trim().to_string();
+        (!value.is_empty()).then_some(value)
+    };
+    let mut lines = Vec::new();
+    if let Some(holder) = text(studio::IDLE_INHIBIT) {
+        lines.push(format!("session inhibit: {holder}"));
+    }
+    if let Some(apps) = text("_NIRUIDLE_APP_INHIBIT") {
+        lines.extend(apps_from_property(&apps));
+    }
+    lines
+}
+
+/// `app<TAB>reason` lines from NIRUIDLE as `app inhibit: app (reason)`.
+fn apps_from_property(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let (app, reason) = line.split_once('\t').unwrap_or((line, ""));
+            if reason.trim().is_empty() {
+                format!("app inhibit: {}", app.trim())
+            } else {
+                format!("app inhibit: {} ({})", app.trim(), reason.trim())
+            }
+        })
+        .collect()
+}
+
 fn idle(args: &[String]) -> Result<()> {
     let action = args.first().map(String::as_str).unwrap_or("status");
     let minutes = args.get(1).map(|v| v.parse::<u64>());
@@ -885,14 +927,21 @@ fn idle(args: &[String]) -> Result<()> {
                 );
             }
         }
-        "status" => match idle_until() {
-            Some(0) => println!("idle on (no expiry)"),
-            Some(until) => {
-                let left = until.saturating_sub(now_secs());
-                println!("idle on, {} min remaining", left.div_ceil(60));
+        "status" => {
+            match idle_until() {
+                Some(0) => println!("idle on (no expiry)"),
+                Some(until) => {
+                    let left = until.saturating_sub(now_secs());
+                    println!("idle on, {} min remaining", left.div_ceil(60));
+                }
+                None => println!("idle off"),
             }
-            None => println!("idle off"),
-        },
+            // The first line stays as it was for scripts; what else pauses
+            // the idle ladder follows on lines of its own.
+            for line in idle_holders() {
+                println!("{line}");
+            }
+        }
         _ => return Err("idle needs on, off, toggle or status".into()),
     }
     Ok(())
@@ -10694,6 +10743,15 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn idle_status_lists_programs_from_niruidle() {
+        assert_eq!(
+            super::apps_from_property("Helium\tPlaying video\nmpv\t\n\n"),
+            vec!["app inhibit: Helium (Playing video)", "app inhibit: mpv"]
+        );
+        assert!(super::apps_from_property("").is_empty());
+    }
+
     #[test]
     fn autostart_decision_respects_restore_session() {
         assert!(!autostart_suppressed(false, true));

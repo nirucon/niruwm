@@ -2870,11 +2870,17 @@ fn niruidle_honours_the_session_inhibition() {
             .env("XDG_STATE_HOME", dir.join("state"))
             .env("HOME", &dir)
             .env("PATH", "/nonexistent")
+            // Never the session bus of whoever runs the tests.
+            .env_remove("DBUS_SESSION_BUS_ADDRESS")
             .stderr(log)
             .spawn()
             .unwrap(),
     );
-    wait(|| text(&c, root, "_NIRUIDLE_FEATURES") == "session-inhibit");
+    wait(|| {
+        text(&c, root, "_NIRUIDLE_FEATURES")
+            .split_whitespace()
+            .any(|f| f == "session-inhibit")
+    });
     c.change_property8(
         PropMode::REPLACE,
         root,

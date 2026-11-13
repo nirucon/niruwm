@@ -517,6 +517,10 @@ pub struct IdleConfig {
     /// Lock when the lid is closed while other screens keep the machine
     /// awake (docked). Undocked, logind suspends and the session locks first.
     pub lock_on_lid_close: bool,
+    /// Let programs (browsers playing video, calls, mpv, VLC) pause the
+    /// screensaver, lock and display-off through `org.freedesktop.ScreenSaver`
+    /// on the session bus. `false` ignores their requests.
+    pub honor_app_inhibit: bool,
 }
 
 impl Default for IdleConfig {
@@ -526,6 +530,7 @@ impl Default for IdleConfig {
             lock_after_screensaver: 15,
             dpms_off_after_lock: 15,
             lock_on_lid_close: true,
+            honor_app_inhibit: true,
         }
     }
 }
@@ -557,6 +562,7 @@ impl IdleConfig {
             lock_after_screensaver: self.lock_after_screensaver.min(Self::MAX_MINUTES),
             dpms_off_after_lock: self.dpms_off_after_lock.min(Self::MAX_MINUTES),
             lock_on_lid_close: self.lock_on_lid_close,
+            honor_app_inhibit: self.honor_app_inhibit,
         }
     }
 
@@ -3074,12 +3080,14 @@ cell_width = 34
             lock_after_screensaver: 99_999,
             dpms_off_after_lock: 0,
             lock_on_lid_close: false,
+            honor_app_inhibit: false,
         };
         let safe = already.safe();
         assert_eq!(safe.screensaver_timeout, 15, "bad timeout falls back");
         assert_eq!(safe.lock_after_screensaver, IdleConfig::MAX_MINUTES);
         assert_eq!(safe.dpms_off_after_lock, 0, "0 keeps the display on");
         assert!(!safe.lock_on_lid_close, "an explicit false is kept");
+        assert!(!safe.honor_app_inhibit, "an explicit false is kept");
     }
 
     #[test]
@@ -3101,6 +3109,15 @@ cell_width = 34
         let c: Config = toml::from_str("[battery]\nprofile_on_ac = \"turbo\"\n").unwrap();
         assert!(c.validate().is_err());
         let c: Config = toml::from_str("[battery]\nprofile_on_battery = \"\"\n").unwrap();
+        assert!(c.validate().is_ok());
+    }
+
+    #[test]
+    fn programs_may_pause_the_idle_ladder_unless_turned_off() {
+        let c: Config = toml::from_str("[idle]\nscreensaver_timeout = 5\n").unwrap();
+        assert!(c.idle.honor_app_inhibit, "on by default");
+        let c: Config = toml::from_str("[idle]\nhonor_app_inhibit = false\n").unwrap();
+        assert!(!c.idle.honor_app_inhibit);
         assert!(c.validate().is_ok());
     }
 
