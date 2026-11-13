@@ -107,6 +107,7 @@ impl Wm {
             // session was saved. Stop waiting after the deadline.
             self.finish_restore_if_due()?;
             self.studio_tick();
+            self.session_hooks_tick();
         }
     }
 

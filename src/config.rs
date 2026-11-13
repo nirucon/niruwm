@@ -902,6 +902,14 @@ pub struct Bar {
     pub separator: String,
     /// Modules to show, in order: workspaces, network, battery, clock.
     pub modules: Vec<String>,
+    /// `true` (default) lets `nirux update` replace `modules` with the
+    /// shipped default list; `false` keeps the user's own list. Read by
+    /// nirux; accepted here so the shared file loads.
+    #[allow(dead_code)]
+    pub follow_default_modules: bool,
+    /// Percent used (1-99) at which the bar's `disk` module appears. Read by
+    /// NIRUBAR.
+    pub disk_warn: u8,
     /// Visibility of the optional microphone module. Read by NIRUBAR.
     pub microphone_visibility: String,
     /// Workspace labels shown instead of 1..10.
@@ -1067,14 +1075,18 @@ impl Default for Bar {
                 "wifi".into(),
                 "mode".into(),
                 "battery".into(),
+                "updates".into(),
                 "niruxupdate".into(),
                 "agent".into(),
                 "nirusec".into(),
                 "dnd".into(),
+                "disk".into(),
                 "quicksettings".into(),
                 "share".into(),
                 "clock".into(),
             ],
+            follow_default_modules: true,
+            disk_warn: 90,
             tags: default_tags(),
             workspace_layout: None,
             microphone_visibility: "always".into(),
@@ -1535,6 +1547,9 @@ impl Config {
                 return Err("autostart.apps command must not be empty".into());
             }
         }
+        if !(1..=99).contains(&self.bar.disk_warn) {
+            return Err("bar.disk_warn must be between 1 and 99".into());
+        }
         if self.bar.tags.len() > 10 {
             return Err("bar.tags has more than ten entries".into());
         }
@@ -1985,6 +2000,11 @@ pub fn dump() -> Result<String> {
     }
     out.push_str("\n[bar]\n");
     out.push_str(&format!("modules = {:?}\n", c.bar.modules));
+    out.push_str(&format!(
+        "follow_default_modules = {}\n",
+        c.bar.follow_default_modules
+    ));
+    out.push_str(&format!("disk_warn = {}\n", c.bar.disk_warn));
     out.push_str(&format!("tags = {:?}\n", c.bar.tags));
     out.push_str(&format!("date_format = {:?}\n", c.bar.date_format));
     out.push_str(&format!("time_format = {:?}\n", c.bar.time_format));
@@ -2813,6 +2833,33 @@ mod tests {
         // this test fails instead of leaving NIRUWM unable to start.
         let example = include_str!("../config.example.toml");
         toml::from_str::<Config>(example).expect("config.example.toml must parse in NIRUWM");
+    }
+
+    #[test]
+    fn the_example_and_the_defaults_have_the_same_bar_modules() {
+        let example: Config = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        let d = Bar::default();
+        assert_eq!(example.bar.modules, d.modules);
+        assert!(d.modules.iter().any(|m| m == "updates"));
+        let disk = d.modules.iter().position(|m| m == "disk").unwrap();
+        assert_eq!(d.modules[disk + 1], "quicksettings");
+        assert!(example.bar.follow_default_modules && d.follow_default_modules);
+        assert_eq!((example.bar.disk_warn, d.disk_warn), (90, 90));
+    }
+
+    #[test]
+    fn follow_default_modules_and_disk_warn_parse_and_validate() {
+        let c: Config =
+            toml::from_str("[bar]\nfollow_default_modules = false\ndisk_warn = 75\n").unwrap();
+        assert!(!c.bar.follow_default_modules);
+        assert_eq!(c.bar.disk_warn, 75);
+        assert!(c.validate().is_ok());
+        for bad in [0u8, 100] {
+            let mut c = Config::default();
+            c.bar.disk_warn = bad;
+            assert!(c.validate().is_err(), "disk_warn = {bad} must be refused");
+        }
+        assert!(toml::from_str::<Config>("[bar]\ndisk_warn = 300\n").is_err());
     }
 
     #[test]

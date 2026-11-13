@@ -170,6 +170,22 @@ seconds, the session runs the previous one again.
 - The log says `restart in place requested`, `restart: replaced helpers: ...`
   and `restarted in place from NIRUWM X; N of M windows adopted`.
 
+### NIRUX hooks: what's new and after sleep
+
+When `nirux` is in PATH, NIRUWM starts two NIRUX commands itself, detached,
+with no output in the session:
+
+- `nirux whats-new --notify`, once, about 8 seconds after a fresh session
+  start (after NIRUNOTIFY is up). Not after a restart in place or a crash
+  restart. nirux decides whether a notice is shown.
+- `nirux resume-check --notify`, 3 seconds after NIRUWM notices that the
+  machine slept, at most once a minute. Sleep is noticed on the event loop's
+  one-second tick: CLOCK_BOOTTIME minus CLOCK_MONOTONIC (the time spent
+  suspended) grows by more than 5 seconds. It also runs while the screen is
+  locked, so the network can come back before you unlock; NIRUNOTIFY keeps
+  notices off the lock screen.
+
+Without `nirux` nothing is started and nothing is reported.
 
 ## Theme wallpapers
 

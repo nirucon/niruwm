@@ -65,6 +65,10 @@ done
 # runs without touching any real display's gamma.
 printf '#!/bin/sh\nexit 0\n' > "$H/.local/bin/gammastep"
 chmod 755 "$H/.local/bin/gammastep"
+# A stand-in nirux that records how NIRUWM called it: `whats-new --notify`
+# once after the fresh start, never again after a restart in place.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/nirux.calls"\n' "$T" > "$H/.local/bin/nirux"
+chmod 755 "$H/.local/bin/nirux"
 switch_to() {
   ln -sfn "generations/$1" "$H/.local/share/nirux/current.new"
   mv -T "$H/.local/share/nirux/current.new" "$H/.local/share/nirux/current"
@@ -351,6 +355,18 @@ sleep 0.5
 AFTER=$(snapshot)
 [ "$AFTER" = "$BEFORE" ] || { printf '%s\n' "$AFTER" > "$T/after"; diff "$T/before" "$T/after" || :; fail "state changed across the deferred restart"; }
 ok "state kept across the deferred restart"
+
+# ── nirux hooks: what's new once per login, no resume check without sleep ──
+i=0
+until grep -q whats-new "$T/nirux.calls" 2>/dev/null; do
+  i=$((i + 1)); [ "$i" -gt 150 ] && fail "nirux whats-new --notify was never started"
+  sleep 0.1
+done
+sleep 1
+# The session script calls nirux too (startup sound); only NIRUWM's hooks count.
+calls=$(grep -E '^(whats-new|resume-check)' "$T/nirux.calls" || :)
+[ "$calls" = "whats-new --notify" ] || fail "unexpected nirux calls after $ROUNDS restarts: $calls"
+ok "nirux whats-new --notify ran once, not again after $ROUNDS restarts"
 
 # ── A manager without the session contract says so ─────────────────────────
 run sh -c "$H/.local/bin/niructl restart-wm --check" >/dev/null 2>&1 || fail "--check refused a capable manager"

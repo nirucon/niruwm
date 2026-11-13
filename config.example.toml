@@ -321,7 +321,7 @@ position = "top"
 #   media       the playing track, scrolling when it is long
 #   volume      speaker and percentage; click opens information
 #   network     wired or wireless link
-#   updates     packages that can be upgraded
+#   updates     system packages that can be upgraded (count, hidden at 0)
 #   pulse       cpu and memory, with a graph in the panel
 #   uptime      how long the machine has been on
 #   sun         sunrise and sunset, from top-level coordinates above
@@ -340,9 +340,21 @@ position = "top"
 # "niruxupdate" shows a newer NIRUX release than the installed one. It asks
 # GitHub once a day, keeps the answer in ~/.cache/nirubar, and is silent when
 # there is nothing newer. It never installs anything: click it for the command,
-# which you run when you can log out afterwards.
+# which you run when you can log out afterwards. With "niruxupdate" also in
+# the list, "updates" counts only system packages and leaves the NIRUX notice
+# to "niruxupdate".
+# "disk" is a red disk icon with the percentage used, shown only when / or
+# your home filesystem is at or above `disk_warn` percent full (hidden
+# otherwise). Its popup lists used/free/total; a click opens a terminal with
+# `nirux clean`, which asks once before freeing anything.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "niruxupdate", "agent", "nirusec", "dnd", "quicksettings", "share", "clock"]
+modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "updates", "niruxupdate", "agent", "nirusec", "dnd", "disk", "quicksettings", "share", "clock"]
+# true (default): `nirux update` keeps `modules` on the default list above, so
+# new modules arrive by themselves (your old file is kept in the config history:
+# `niructl config undo`). false: your own `modules` list is never changed.
+follow_default_modules = true
+# Percent used (1-99) at which the "disk" module appears. Default 90.
+disk_warn = 90
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).

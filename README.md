@@ -54,6 +54,11 @@ display manager starts), `niruclipboard` (clipboard history helper) and
   replaced; a lock screen is never touched, and while the screen is locked
   the restart waits for the unlock. If the new manager fails at once, the
   session goes back to the previous one.
+- NIRUX hooks: at the first login after a NIRUX update, `nirux whats-new
+  --notify` shows what changed (once, about 8 seconds after the session
+  starts, never after a restart in place). After the machine wakes from
+  sleep, `nirux resume-check --notify` checks the network, Tailscale, sound
+  and screens, also while the screen is locked. Without NIRUX nothing runs.
 - Window rules for floating, centering, workspace, sticky and compositor opacity.
 - Session save/restore, autostart, workspace recipes and focus/presentation
   modes through `niructl`.
@@ -323,6 +328,21 @@ unplug; `niructl powerprofile auto` goes back to the automatic one.
 auto_profile = true                  # false: the profile is left alone
 profile_on_battery = "power-saver"   # performance, balanced, power-saver or "keep"
 profile_on_ac = "balanced"
+```
+
+### Bar modules and the disk warning
+
+The default bar shows `updates` (system packages that can be upgraded) and
+`disk`, a red disk icon with the percentage that appears only when `/` or your
+home filesystem is `disk_warn` percent full or more; clicking it opens
+`nirux clean`. With NIRUX, `nirux update` keeps `[bar] modules` on the default
+list, so new modules arrive by themselves (your previous file is kept for
+`niructl config undo`); `follow_default_modules = false` keeps your own list.
+
+```toml
+[bar]
+follow_default_modules = true   # false: nirux update never changes modules
+disk_warn = 90                  # percent used (1-99) at which "disk" appears
 ```
 
 The default workspace labels are numbers 1 to 10; to use icons or names, edit

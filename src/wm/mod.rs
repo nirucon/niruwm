@@ -5,6 +5,7 @@ mod keys;
 mod mouse;
 mod overview;
 mod scratch;
+mod session_hooks;
 mod swallow;
 pub(crate) use scratch::ScratchOp;
 
@@ -343,6 +344,8 @@ pub(crate) struct Wm {
     pub(crate) restart_saved: HashMap<Window, restart::SavedClient>,
     /// Workspace thumbnails for the overview (Super+E).
     pub(crate) overview: overview::Overview,
+    /// `nirux whats-new` after login and `nirux resume-check` after sleep.
+    pub(crate) session_hooks: session_hooks::SessionHooks,
 }
 
 impl Wm {
@@ -557,6 +560,7 @@ impl Wm {
             restart_requested: false,
             restart_saved: HashMap::new(),
             overview: overview::Overview::default(),
+            session_hooks: session_hooks::SessionHooks::default(),
         };
         let (monitors, multi) = randr::read(&wm.c, root, screen_w, screen_h, &wm.monitor_cfg);
         wm.wallpaper.set_outputs(randr::outputs(&wm.c, root));
@@ -566,6 +570,7 @@ impl Wm {
         // A manager started again after a crash keeps the switch the user
         // set with `niructl swallow`, which the root window still carries.
         let restarted = std::env::var_os("NIRUWM_RESTARTED").is_some_and(|v| v == "1");
+        wm.session_hooks = session_hooks::SessionHooks::new(!restarted, std::time::Instant::now());
         wm.swallow_enabled = if restarted {
             swallow::published_switch(&wm).unwrap_or(wm.cfg.swallow.enabled)
         } else {
@@ -1502,6 +1507,34 @@ impl Wm {
 
     pub(crate) fn spawn_helper(&mut self, key: &str, program: &[String]) -> bool {
         self.helpers.spawn(key, program)
+    }
+
+    /// Once a tick: start `nirux whats-new` or `nirux resume-check` when due.
+    /// Runs while the screen is locked too: the network should be back
+    /// before the user unlocks, and nirunotify keeps notices off the lock.
+    pub(crate) fn session_hooks_tick(&mut self) {
+        let due = self
+            .session_hooks
+            .tick(std::time::Instant::now(), session_hooks::suspended_offset());
+        if due.is_empty() {
+            return;
+        }
+        // No NIRUX here (a plain NIRUWM install): nothing to run, nothing to say.
+        let Some(nirux) = session_hooks::find_nirux() else {
+            return;
+        };
+        for hook in due {
+            use std::os::unix::process::CommandExt;
+            match Command::new(&nirux)
+                .args(hook.args())
+                .stdin(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
+            {
+                Ok(child) => self.children.push(child),
+                Err(e) => eprintln!("niruwm: cannot start nirux {}: {e}", hook.args()[0]),
+            }
+        }
     }
 
     pub(crate) fn reap_children(&mut self) {
