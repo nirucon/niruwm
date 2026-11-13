@@ -32,7 +32,7 @@ PATH=$(dedupe_path "$SELF_DIR:$HOME/.local/bin:$PATH")
 export PATH
 
 case "${1:-}" in
-  --version) printf '%s\n' 'NIRUWM session 0.29.0'; exit 0 ;;
+  --version) printf '%s\n' 'NIRUWM session 0.30.0'; exit 0 ;;
   --help) printf '%s\n' 'Usage: niruwm-session (from startx or a display manager)'; exit 0 ;;
 esac
 
@@ -371,10 +371,11 @@ config_value() {
     }
   ' "$CONFIG_HOME/niruwm/config.toml" 2>/dev/null || :
 }
-# Fixed or solar night light (the default) has a watcher; manual has none.
+# 0.30.0: the night-light watcher always runs. It re-reads the config when the
+# file changes, and in manual mode it waits without touching the gamma, so a
+# switch from manual to a schedule needs no new login.
 nightlight_wanted() {
-  [ "$(config_value nightlight mode)" != manual ] &&
-    command -v niructl >/dev/null 2>&1 && command -v gammastep >/dev/null 2>&1
+  command -v niructl >/dev/null 2>&1 && command -v gammastep >/dev/null 2>&1
 }
 # A battery of the computer itself, not of a wireless mouse (scope Device).
 has_system_battery() {
@@ -431,9 +432,9 @@ case "$NOTIFICATION_PROVIDER" in
 esac
 
 # ── Night-light schedule ────────────────────────────────────────────────────
-# Manual mode does nothing here. Fixed/solar mode (the default) starts one watcher that owns
-# every gammastep call and re-applies after resume or output changes.
-# 0.25.2: a file without a mode gets the default, which follows the sun.
+# One watcher owns every scheduled gammastep call (gradual, the default, solar
+# or fixed) and re-applies after resume or output changes. In manual mode it
+# only waits for the config to change. 0.30.0: edits apply within seconds.
 if nightlight_wanted; then
   niructl nightlight watch >>"$WM_LOG" 2>&1 & NIGHTLIGHT_PID=$!
 fi

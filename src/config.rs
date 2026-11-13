@@ -3027,6 +3027,9 @@ cell_width = 34
             let c: Config = toml::from_str(bad).unwrap();
             assert!(c.validate().is_err(), "{bad} must be refused");
         }
+        // The shipped example uses the default mode.
+        let example = Config::from_text(include_str!("../config.example.toml")).unwrap();
+        assert_eq!(example.nightlight.mode, "gradual");
     }
 
     #[test]

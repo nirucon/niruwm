@@ -24,6 +24,8 @@ mod layout;
 #[path = "../monitor.rs"]
 #[allow(dead_code)]
 mod monitor;
+#[path = "../nightlight.rs"]
+mod nightlight;
 #[path = "../present.rs"]
 #[allow(dead_code)] // the pid watch runs in NIRUWM
 mod present;
@@ -337,12 +339,7 @@ fn nightlight_state() -> std::path::PathBuf {
     base.join("niruwm/nightlight")
 }
 
-fn clock_minutes(value: &str) -> Option<u32> {
-    let (hour, minute) = value.trim().split_once(':')?;
-    let hour: u32 = hour.parse().ok()?;
-    let minute: u32 = minute.parse().ok()?;
-    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
-}
+use nightlight::clock_minutes;
 
 fn fixed_schedule_active(now: u32, on: u32, off: u32) -> bool {
     if on < off {
@@ -375,30 +372,81 @@ fn solar_temperature(location: &str, day: u32, night: u32) -> Option<u32> {
     None
 }
 
-fn nightlight(args: &[String]) -> Result<()> {
-    if !which("gammastep") {
-        return Err("gammastep is not installed".into());
+/// The night light for one loaded `[nightlight]` section. The watcher builds a
+/// new one whenever the config file changes.
+struct NightLight {
+    nl: config::NightlightConfig,
+    latitude: f64,
+    longitude: f64,
+    location: String,
+    state: PathBuf,
+    override_file: PathBuf,
+}
+
+impl NightLight {
+    fn new(cfg: &Config) -> Self {
+        let nl = cfg.nightlight.clone();
+        let (latitude, longitude) = if nl.latitude != 0.0 || nl.longitude != 0.0 {
+            (nl.latitude, nl.longitude)
+        } else {
+            (cfg.weather_latitude, cfg.weather_longitude)
+        };
+        // 0.25.2: without a location, use Stockholm's, which the example file
+        // ships with, so the default schedule works before anyone sets theirs.
+        let (latitude, longitude) = if latitude == 0.0 && longitude == 0.0 {
+            (59.33, 18.07)
+        } else {
+            (latitude, longitude)
+        };
+        let state = nightlight_state();
+        Self {
+            nl,
+            latitude,
+            longitude,
+            location: format!("{latitude}:{longitude}"),
+            override_file: state.with_file_name("nightlight-override"),
+            state,
+        }
     }
-    let cfg = Config::load()?;
-    let nl = &cfg.nightlight;
-    let (latitude, longitude) = if nl.latitude != 0.0 || nl.longitude != 0.0 {
-        (nl.latitude, nl.longitude)
-    } else {
-        (cfg.weather_latitude, cfg.weather_longitude)
-    };
-    // 0.25.2: without a location, use Stockholm's, which the example file
-    // ships with, so the default schedule works before anyone sets theirs.
-    let (latitude, longitude) = if latitude == 0.0 && longitude == 0.0 {
-        (59.33, 18.07)
-    } else {
-        (latitude, longitude)
-    };
-    let location = format!("{latitude}:{longitude}");
-    let state = nightlight_state();
-    // `loud` shows a notification; the schedule changes the temperature in
-    // small steps at dusk and dawn and stays quiet.
-    let apply = |kelvin: u32, loud: bool| -> Result<()> {
-        let before = gamma_signature();
+
+    fn gradual(&self) -> nightlight::Gradual {
+        let nl = &self.nl;
+        // The config is validated, so the clocks parse; the defaults are only
+        // a guard.
+        nightlight::Gradual {
+            start_temperature: nl.start_temperature,
+            night_temperature: nl.temperature,
+            day_temperature: nl.day_temperature,
+            not_before: clock_minutes(&nl.not_before).unwrap_or(19 * 60),
+            deepest_at: clock_minutes(&nl.deepest_at).unwrap_or(22 * 60),
+            off: clock_minutes(&nl.off).unwrap_or(7 * 60),
+        }
+    }
+
+    fn gradual_position(&self) -> nightlight::Position {
+        let (lat, lon) = (self.latitude, self.longitude);
+        nightlight::position(&self.gradual(), nightlight_now(), |date| {
+            nightlight::sun_times(lat, lon, date)
+        })
+    }
+
+    fn shown(&self) -> Option<u32> {
+        std::fs::read_to_string(&self.state)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+
+    /// `loud` shows a notification; the schedule changes the temperature in
+    /// small steps and stays quiet.
+    fn apply(&self, kelvin: u32, loud: bool) -> Result<()> {
+        let previous = self.shown();
+        // A small scheduled step (gradual changes a few Kelvin every 30 s)
+        // can leave the rounded xrandr gamma text unchanged, which is not a
+        // refusal. Only a notified change, the first one or a large step is
+        // checked against the display, and never 6500 K or more, which can
+        // be the display's own neutral gamma (the gradual and solar day).
+        let check = kelvin < 6500 && (loud || previous.map_or(true, |p| p.abs_diff(kelvin) >= 300));
+        let before = if check { gamma_signature() } else { None };
         command(
             "gammastep",
             &[
@@ -411,15 +459,15 @@ fn nightlight(args: &[String]) -> Result<()> {
                 // and silently ignores the requested value during the day
                 // (measured on a QXL display: gamma stayed at 1.0:1.0:1.0).
                 "-l".into(),
-                location.clone(),
+                self.location.clone(),
                 "-t".into(),
                 format!("{kelvin}:{kelvin}"),
                 "-o".into(),
             ],
         )?;
         if let (Some(before), Some(after)) = (before, gamma_signature()) {
-            if before == after {
-                let _ = std::fs::remove_file(&state);
+            if before == after && previous != Some(kelvin) {
+                let _ = std::fs::remove_file(&self.state);
                 notify(
                     "Night light",
                     "this display did not accept the gamma change",
@@ -428,25 +476,28 @@ fn nightlight(args: &[String]) -> Result<()> {
                 return Err("the display did not accept the XRandR gamma change".into());
             }
         }
-        if let Some(parent) = state.parent() {
+        if let Some(parent) = self.state.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&state, kelvin.to_string())?;
+        std::fs::write(&self.state, kelvin.to_string())?;
         if loud {
             notify("Night light", &format!("{kelvin} K"), None);
         }
         Ok(())
-    };
-    let off = |loud: bool| -> Result<()> {
+    }
+
+    fn off(&self, loud: bool) -> Result<()> {
         command("gammastep", &["-x".into()])?;
-        let _ = std::fs::remove_file(&state);
+        let _ = std::fs::remove_file(&self.state);
         if loud {
             notify("Night light", "off", None);
         }
         Ok(())
-    };
-    // What the schedule wants now, and whether that is the night phase.
-    let scheduled = || -> Result<(Option<u32>, bool)> {
+    }
+
+    /// What the schedule wants now, and whether that is the night phase.
+    fn scheduled(&self) -> Result<(Option<u32>, bool)> {
+        let nl = &self.nl;
         let clock = Local::now();
         let now = clock.hour() * 60 + clock.minute();
         Ok(match nl.mode.as_str() {
@@ -457,88 +508,252 @@ fn nightlight(args: &[String]) -> Result<()> {
                 (night.then_some(nl.temperature), night)
             }
             "solar" => {
-                let kelvin = solar_temperature(&location, nl.day_temperature, nl.temperature)
+                let kelvin = solar_temperature(&self.location, nl.day_temperature, nl.temperature)
                     .ok_or("gammastep could not compute the solar temperature")?;
                 (
                     Some(kelvin),
                     kelvin < (nl.day_temperature + nl.temperature) / 2,
                 )
             }
+            "gradual" => {
+                let p = self.gradual_position();
+                // Like solar, the day applies the neutral day temperature.
+                (Some(p.kelvin.unwrap_or(nl.day_temperature)), p.night())
+            }
             _ => (None, false),
         })
-    };
-    // 0.25.2: Super+N (on, off, toggle) wins over the schedule until the
-    // schedule changes phase, at the next sunset or sunrise (or on/off time).
-    let override_file = state.with_file_name("nightlight-override");
-    let remember = |choice: &str| -> Result<()> {
-        if nl.mode == "manual" {
+    }
+
+    /// 0.25.2: Super+N (on, off, toggle) wins over the schedule until the
+    /// schedule changes phase, at the next start or end of the night.
+    fn remember(&self, choice: &str) -> Result<()> {
+        if self.nl.mode == "manual" {
             return Ok(());
         }
-        let (_, night) = scheduled()?;
-        if let Some(parent) = override_file.parent() {
+        let (_, night) = self.scheduled()?;
+        if let Some(parent) = self.override_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(
-            &override_file,
+            &self.override_file,
             format!("{choice} {}", if night { "night" } else { "day" }),
         )?;
         Ok(())
-    };
-    let reconcile = || -> Result<()> {
-        let (desired, night) = scheduled()?;
+    }
+
+    /// The Super+N choice still in force, and the phase it was made in.
+    fn override_choice(&self, phase: &str) -> Option<String> {
+        let manual = std::fs::read_to_string(&self.override_file).ok()?;
+        let mut words = manual.split_whitespace();
+        match (words.next(), words.next()) {
+            (Some(choice), Some(p)) if p == phase => Some(choice.to_string()),
+            _ => None,
+        }
+    }
+
+    fn reconcile(&self) -> Result<()> {
+        let (desired, night) = self.scheduled()?;
         let phase = if night { "night" } else { "day" };
-        let manual = std::fs::read_to_string(&override_file).ok();
-        let desired = match manual
-            .as_deref()
-            .map(str::split_whitespace)
-            .map(|mut w| (w.next(), w.next()))
-        {
-            Some((Some(choice), Some(p))) if p == phase => {
-                if choice == "on" {
-                    Some(nl.temperature)
-                } else {
-                    None
+        let desired = match self.override_choice(phase) {
+            Some(choice) if choice == "on" => Some(self.nl.temperature),
+            Some(_) => None,
+            None => {
+                if self.override_file.exists() {
+                    let _ = std::fs::remove_file(&self.override_file);
                 }
-            }
-            Some(_) => {
-                let _ = std::fs::remove_file(&override_file);
                 desired
             }
-            None => desired,
         };
         match desired {
             Some(kelvin) => {
-                let current = std::fs::read_to_string(&state).ok();
-                if current.as_deref() != Some(&kelvin.to_string()) {
-                    apply(kelvin, false)?;
+                if self.shown() != Some(kelvin) {
+                    self.apply(kelvin, false)?;
                 }
             }
-            None if state.exists() => off(false)?,
+            None if self.state.exists() => self.off(false)?,
             _ => {}
         }
         Ok(())
-    };
-    match args.first().map(String::as_str).unwrap_or("status") {
-        "on" => {
-            apply(nl.temperature, true)?;
-            remember("on")?;
-        }
-        "off" => {
-            off(true)?;
-            remember("off")?;
-        }
-        "toggle" => {
+    }
+
+    /// Whether the screen shows a night-light tint that Super+N should
+    /// switch off.
+    fn tinted(&self) -> bool {
+        let nl = &self.nl;
+        match nl.mode.as_str() {
+            // During the gradual glide the screen is warmer than the day but
+            // not yet at the night temperature; that is "on" too.
+            "gradual" => self.shown().is_some_and(|k| k < nl.day_temperature),
             // In solar mode the day temperature is also "applied", so "on"
             // means the night temperature is what the screen shows.
-            let shown = std::fs::read_to_string(&state).ok();
-            if shown.as_deref() == Some(&nl.temperature.to_string())
-                || (nl.mode == "manual" && state.exists())
-            {
-                off(true)?;
-                remember("off")?;
+            "manual" => self.state.exists(),
+            _ => self.shown() == Some(nl.temperature),
+        }
+    }
+
+    fn status(&self) -> Result<()> {
+        let nl = &self.nl;
+        let current = std::fs::read_to_string(&self.state).unwrap_or_else(|_| "off".into());
+        println!("mode: {}", nl.mode);
+        match nl.mode.as_str() {
+            "fixed" => println!("schedule: {} - {}", nl.on, nl.off),
+            "solar" => println!(
+                "solar: {} ({} K day, {} K night)",
+                self.location, nl.day_temperature, nl.temperature
+            ),
+            "gradual" => {
+                let p = self.gradual_position();
+                let e = p.evening;
+                let sunset = e
+                    .sunset
+                    .map(|s| format!("sunset {}", nightlight::clock(s)))
+                    .unwrap_or_else(|| "no sunset".into());
+                println!(
+                    "night of {}: start {} ({sunset}, not before {}) at {} K",
+                    e.date,
+                    nightlight::clock(e.start),
+                    nl.not_before,
+                    nl.start_temperature
+                );
+                println!(
+                    "deepest: {} at {} K",
+                    nightlight::clock(e.deepest),
+                    nl.temperature
+                );
+                println!(
+                    "morning: {} - {} back to {} K (sunrise or {}, whichever is earlier)",
+                    nightlight::clock(e.morning),
+                    nightlight::clock(e.end),
+                    nl.day_temperature,
+                    nl.off
+                );
+                match p.kelvin {
+                    Some(k) => println!("scheduled: {k} K (night)"),
+                    None => println!("scheduled: {} K (day)", nl.day_temperature),
+                }
+                println!("location: {}", self.location);
+            }
+            _ => {}
+        }
+        println!("current: {}", current.trim());
+        if nl.mode != "manual" {
+            let night = self.scheduled().map(|(_, n)| n).unwrap_or(false);
+            let phase = if night { "night" } else { "day" };
+            if let Some(choice) = self.override_choice(phase) {
+                println!(
+                    "override: {choice} (Super+N) until the {}",
+                    if night {
+                        "night ends"
+                    } else {
+                        "next night starts"
+                    }
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The local time the gradual schedule is computed for. Tests set
+/// NIRUCTL_NIGHTLIGHT_NOW="YYYY-MM-DD HH:MM" to check a given evening.
+fn nightlight_now() -> chrono::NaiveDateTime {
+    std::env::var("NIRUCTL_NIGHTLIGHT_NOW")
+        .ok()
+        .and_then(|v| chrono::NaiveDateTime::parse_from_str(v.trim(), "%Y-%m-%d %H:%M").ok())
+        .unwrap_or_else(|| Local::now().naive_local())
+}
+
+/// The config file's modification time and size, to notice an edit.
+fn nightlight_config_stamp() -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(config::directory().join("config.toml")).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// The settings to start the watcher with: the file, else the last copy that
+/// loaded, else the defaults.
+fn nightlight_initial_config() -> Config {
+    match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("niructl: nightlight: config has an error ({e}); using the last good copy");
+            std::fs::read_to_string(config::last_good_path())
+                .ok()
+                .and_then(|text| Config::from_text(&text).ok())
+                .unwrap_or_default()
+        }
+    }
+}
+
+/// 0.30.0: the watcher re-reads the config when the file changes (checked
+/// every 5 s) and applies the new settings at once; in manual mode it stays
+/// running but never touches the gamma, so switching back to a schedule
+/// needs no new login. A file with an error keeps the last good settings.
+fn nightlight_watch() -> Result<()> {
+    let mut light = NightLight::new(&nightlight_initial_config());
+    let mut stamp = nightlight_config_stamp();
+    let mut due = true;
+    let mut last = Instant::now();
+    eprintln!("niructl: nightlight: watching, mode {}", light.nl.mode);
+    loop {
+        let now_stamp = nightlight_config_stamp();
+        if now_stamp != stamp {
+            stamp = now_stamp;
+            match Config::load() {
+                Ok(c) => {
+                    let next = NightLight::new(&c);
+                    if next.nl.mode != light.nl.mode {
+                        eprintln!(
+                            "niructl: nightlight: mode {} -> {}",
+                            light.nl.mode, next.nl.mode
+                        );
+                    }
+                    light = next;
+                    due = true;
+                }
+                Err(e) => eprintln!(
+                    "niructl: nightlight: config has an error, keeping the last good settings: {e}"
+                ),
+            }
+        }
+        if due || last.elapsed() >= Duration::from_secs(30) {
+            if light.nl.mode != "manual" {
+                if let Err(e) = light.reconcile() {
+                    eprintln!("niructl: nightlight: {e}");
+                }
+            }
+            due = false;
+            last = Instant::now();
+        }
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
+fn nightlight(args: &[String]) -> Result<()> {
+    if !which("gammastep") {
+        return Err("gammastep is not installed".into());
+    }
+    let command = args.first().map(String::as_str).unwrap_or("status");
+    if command == "watch" {
+        return nightlight_watch();
+    }
+    let light = NightLight::new(&Config::load()?);
+    let nl = &light.nl;
+    match command {
+        "on" => {
+            light.apply(nl.temperature, true)?;
+            light.remember("on")?;
+        }
+        "off" => {
+            light.off(true)?;
+            light.remember("off")?;
+        }
+        "toggle" => {
+            if light.tinted() {
+                light.off(true)?;
+                light.remember("off")?;
             } else {
-                apply(nl.temperature, true)?;
-                remember("on")?;
+                light.apply(nl.temperature, true)?;
+                light.remember("on")?;
             }
         }
         "temperature" => {
@@ -550,34 +765,10 @@ fn nightlight(args: &[String]) -> Result<()> {
             if !(1000..=10000).contains(&kelvin) {
                 return Err("temperature must be 1000..10000 K".into());
             }
-            apply(kelvin, true)?;
+            light.apply(kelvin, true)?;
         }
-        "apply" => reconcile()?,
-        "watch" => {
-            if nl.mode == "manual" {
-                println!("nightlight mode is manual; nothing to watch");
-                return Ok(());
-            }
-            loop {
-                if let Err(e) = reconcile() {
-                    eprintln!("niructl: nightlight: {e}");
-                }
-                std::thread::sleep(Duration::from_secs(30));
-            }
-        }
-        "status" => {
-            let current = std::fs::read_to_string(&state).unwrap_or_else(|_| "off".into());
-            println!("mode: {}", nl.mode);
-            match nl.mode.as_str() {
-                "fixed" => println!("schedule: {} - {}", nl.on, nl.off),
-                "solar" => println!(
-                    "solar: {location} ({} K day, {} K night)",
-                    nl.day_temperature, nl.temperature
-                ),
-                _ => {}
-            }
-            println!("current: {current}");
-        }
+        "apply" => light.reconcile()?,
+        "status" => light.status()?,
         _ => {
             return Err(
                 "nightlight needs on, off, toggle, status, temperature K, apply or watch".into(),

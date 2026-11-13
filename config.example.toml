@@ -201,20 +201,35 @@ return_workspace = 1
 
 # ── Night light and brightness ─────────────────────────────────────────────
 [nightlight]
-# Night light: warm, reddish light in the evening. By default it follows the
-# sun (solar) at 2700 K. Super+N or `niructl nightlight on|off|toggle` switch
-# it by hand; mode = "manual" turns the schedule off.
-# 0,0 means no location; manual temperature still works.
+# Night light: warm, reddish light in the evening. By default (gradual) it
+# starts at sunset, never before not_before, at start_temperature and glides
+# slowly to temperature, reached at deepest_at. In the morning it glides back
+# to day_temperature over 30 minutes, done by sunrise or off, whichever comes
+# first. Super+N or `niructl nightlight on|off|toggle` switch it by hand until
+# the next start or end of the night. Edits here apply within a few seconds.
+# 0,0 means no location (Stockholm is used); manual temperature still works.
 latitude = 59.33
 longitude = 18.07
+# Night temperature in Kelvin (1000..10000), also what Super+N turns on.
 temperature = 2700
-# manual: Super+N / niructl nightlight on|off
-# fixed:  on/off local times every day
-# solar:  gammastep computes sunrise/sunset from the coordinates
-mode = "solar"
+# gradual: from sunset (not before not_before) glide to temperature by
+#          deepest_at, back to day_temperature by sunrise or off
+# solar:   gammastep follows the sun between day_temperature and temperature
+# fixed:   temperature from on to off every day
+# manual:  only Super+N / niructl nightlight on|off
+mode = "gradual"
+# fixed mode: switch on.
 on = "20:00"
+# fixed mode: switch off. gradual mode: the night is over by this time.
 off = "07:00"
+# Daytime Kelvin in solar and gradual mode (6500 is neutral).
 day_temperature = 6500
+# gradual mode: Kelvin at the evening start.
+start_temperature = 4500
+# gradual mode: the evening never starts before this time.
+not_before = "19:00"
+# gradual mode: temperature is reached here, or 1 hour after the start if later.
+deepest_at = "22:00"
 
 [brightness]
 # Empty uses brightnessctl's default device; step is the up/down percentage.

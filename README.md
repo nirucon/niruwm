@@ -90,6 +90,10 @@ display manager starts), `niruclipboard` (clipboard history helper) and
   terminal colours.
 - Native integration for notifications, DND, audio, microphone, Bluetooth,
   power profiles, brightness, night light and screenshots.
+- A night light that glides: by default it starts at sunset (not before
+  19:00) at 4500 K and warms slowly to 2700 K by 22:00, then goes back to
+  daylight before sunrise or 07:00. Super+N switches it by hand, and edits to
+  `[nightlight]` apply within seconds.
 - `niructl`: one control command for the whole suite (themes, bar, layouts,
   wallpaper, displays, audio, input, power, diagnostics, tasks and the optional
   OpenCode handoff).

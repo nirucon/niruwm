@@ -438,6 +438,36 @@ profile of the power source at that moment (or, with a profile set by hand,
 the one it found). `niructl powerprofile status` shows `auto`, `auto_target`
 and `hold`.
 
+## Night light
+
+`[nightlight] mode` picks the schedule; `niructl nightlight watch` (started by
+the session) runs it and is the only scheduled caller of gammastep.
+
+- `gradual` (default since 0.30.0): the evening starts at the local sunset,
+  never before `not_before` (19:00), at `start_temperature` (4500 K), and
+  glides in small steps every 30 seconds to `temperature` (2700 K), reached at
+  `deepest_at` (22:00), or one hour after the start when `deepest_at` is
+  sooner (a late summer sunset). The night temperature holds through the night.
+  In the morning it glides back to `day_temperature` (6500 K) over 30 minutes,
+  done at sunrise or `off` (07:00), whichever is earlier. A clock time before
+  noon in `not_before` or `deepest_at` means after midnight. Without a sunset
+  (polar day or night) `not_before` and `off` decide.
+- `solar`: gammastep follows the sun between `day_temperature` and
+  `temperature`.
+- `fixed`: `temperature` from `on` to `off` every day.
+- `manual`: no schedule; the watcher keeps running but never changes the
+  gamma.
+
+`niructl nightlight on|off|toggle` (Super+N) wins over the schedule until the
+night starts or ends; `on` is `temperature`. In gradual mode toggle switches
+off whenever the screen is warmer than the day. The watcher checks
+`config.toml` every 5 seconds and applies an edit at once, including a switch
+between `manual` and a schedule; a file with an error keeps the last good
+settings and says so in the session log. `niructl nightlight status` shows the
+mode, and for gradual the night's start (with the sunset), deepest time,
+morning glide, the scheduled and current temperature and any Super+N
+override.
+
 ## Compositor, rules and themes
 
 Compositor: `niructl compositor status|on|off|toggle` controls picom. Inactive
