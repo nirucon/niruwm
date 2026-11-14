@@ -266,26 +266,40 @@ fn compositor(args: &[String]) -> Result<()> {
             if !which("picom") {
                 return Err("picom is not installed".into());
             }
-            let mut child = std::process::Command::new("picom")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("cannot start picom: {e}"))?;
-            for _ in 0..40 {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                if compositor_running() {
-                    if !quiet {
-                        notify("Compositor", "on", None);
+            // The configured backend first (NIRUX's default is glx), then
+            // xrender, which works on every X server, when the first one
+            // cannot start on this machine.
+            for extra in [&[][..], &["--backend", "xrender"][..]] {
+                let mut child = std::process::Command::new("picom")
+                    .args(extra)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("cannot start picom: {e}"))?;
+                let mut exited = false;
+                for _ in 0..40 {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    if child.try_wait().ok().flatten().is_some() {
+                        exited = true;
+                        break;
                     }
-                    println!("on");
-                    return Ok(());
+                    if compositor_running() {
+                        if !quiet {
+                            notify("Compositor", "on", None);
+                        }
+                        if !extra.is_empty() {
+                            eprintln!("niructl: picom's configured backend did not start; running on xrender");
+                        }
+                        println!("on");
+                        return Ok(());
+                    }
                 }
-                if child.try_wait().ok().flatten().is_some() {
-                    return Err("picom exited during startup; check its config/backend".into());
+                if !exited {
+                    return Err("picom did not stay running".into());
                 }
             }
-            return Err("picom did not stay running".into());
+            return Err("picom exited during startup with its configured backend and with xrender; check its config".into());
         }
         "off" => {
             if running {

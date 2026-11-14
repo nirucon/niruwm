@@ -329,7 +329,18 @@ fi
 
 if [ "$START_PICOM" = 1 ] && command -v picom >/dev/null 2>&1 &&
    ! pgrep -u "$(id -u)" -x picom >/dev/null 2>&1; then
-  picom >/dev/null 2>&1 & PICOM_PID=$!
+  # A GPU backend (NIRUX's default glx) that cannot start on this machine
+  # exits at once. The session then runs picom on xrender, so it is never
+  # left without a compositor.
+  (
+    picom_started=$(date +%s)
+    picom >/dev/null 2>&1
+    picom_status=$?
+    if [ "$picom_status" -ne 0 ] && [ $(( $(date +%s) - picom_started )) -lt 5 ]; then
+      log "picom stopped at startup (status $picom_status) with its configured backend; using xrender"
+      exec picom --backend xrender >/dev/null 2>&1
+    fi
+  ) & PICOM_PID=$!
 fi
 fi # end of first-start-only Polkit and compositor
 start_dunst() {
