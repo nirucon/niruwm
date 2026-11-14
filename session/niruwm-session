@@ -592,7 +592,19 @@ if [ "$CONTINUE" != 1 ] && command -v niructl >/dev/null 2>&1; then
   ) >>"$WM_LOG" 2>&1 & AUTOSTART_PID=$!
 fi
 if [ "$CONTINUE" != 1 ] && command -v nirux >/dev/null 2>&1; then
-  nirux sounds play startup >/dev/null 2>&1 & STARTUP_SOUND_PID=$!
+  # Right after login the audio server may run before a default output
+  # exists, or before the sound card has woken up (Void's PipeWire starts in
+  # this script): a sound played then is lost. Wait up to ten seconds in the
+  # background for the default output, then a moment for the card.
+  (
+    i=0
+    while [ "$i" -lt 50 ] && ! wpctl get-volume @DEFAULT_AUDIO_SINK@ >/dev/null 2>&1; do
+      sleep 0.2
+      i=$((i + 1))
+    done
+    sleep 1
+    exec nirux sounds play startup >/dev/null 2>&1
+  ) & STARTUP_SOUND_PID=$!
 fi
 # Start NIRUSHARE only when its component is installed and no service is
 # already running. It is session-scoped and cleaned up with the other helpers.
