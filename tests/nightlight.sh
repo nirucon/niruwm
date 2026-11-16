@@ -33,6 +33,9 @@ cat > "$XDG_CONFIG_HOME/niruwm/config.toml" <<'EOF'
 latitude = 59.33
 longitude = 18.07
 temperature = 3400
+# manual: "on" gives exactly temperature at any time of day (a gradual
+# evening would continue its glide instead).
+mode = "manual"
 EOF
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
