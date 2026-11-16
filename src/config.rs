@@ -1147,6 +1147,7 @@ impl Default for Bar {
                 "media".into(),
                 "volume".into(),
                 "microphone".into(),
+                "headset".into(),
                 "brightness".into(),
                 "display".into(),
                 "tailscale".into(),
@@ -1159,7 +1160,9 @@ impl Default for Bar {
                 "agent".into(),
                 "nirusec".into(),
                 "dnd".into(),
+                "timer".into(),
                 "disk".into(),
+                "drives".into(),
                 "quicksettings".into(),
                 "share".into(),
                 "clock".into(),
@@ -2946,7 +2949,8 @@ mod tests {
         assert_eq!(example.bar.modules, d.modules);
         assert!(d.modules.iter().any(|m| m == "updates"));
         let disk = d.modules.iter().position(|m| m == "disk").unwrap();
-        assert_eq!(d.modules[disk + 1], "quicksettings");
+        assert_eq!(d.modules[disk + 1], "drives");
+        assert_eq!(d.modules[disk + 2], "quicksettings");
         assert!(example.bar.follow_default_modules && d.follow_default_modules);
         assert_eq!((example.bar.disk_warn, d.disk_warn), (90, 90));
         assert_eq!(example.bar.presenting_hide, d.presenting_hide);
