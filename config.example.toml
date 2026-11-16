@@ -78,6 +78,9 @@ theme = "niru-noir"
 # List them all with: niructl layouts
 # Space between windows, in pixels.
 gap = 8
+# One tiled window on a workspace (or the monocle layout) fills the screen
+# without gap or border. false keeps the gap and border for it too.
+smart_gaps = true
 # Border around each window, in pixels. 0 draws no borders.
 border_width = 2
 # Height of the bar, in pixels. The bar reserves exactly this much.
@@ -202,7 +205,8 @@ return_workspace = 1
 # ── Night light and brightness ─────────────────────────────────────────────
 [nightlight]
 # Night light: warm, reddish light in the evening. By default (gradual) it
-# starts at sunset, never before not_before, at start_temperature and glides
+# starts at sunset, never before not_before, fades in over 15 minutes to
+# start_temperature and glides
 # slowly to temperature, reached at deepest_at. In the morning it glides back
 # to day_temperature over 30 minutes, done by sunrise or off, whichever comes
 # first. Super+N or `niructl nightlight on|off|toggle` switch it by hand until
@@ -211,7 +215,7 @@ return_workspace = 1
 latitude = 59.33
 longitude = 18.07
 # Night temperature in Kelvin (1000..10000), also what Super+N turns on.
-temperature = 2700
+temperature = 3500
 # gradual: from sunset (not before not_before) glide to temperature by
 #          deepest_at, back to day_temperature by sunrise or off
 # solar:   gammastep follows the sun between day_temperature and temperature
@@ -225,7 +229,7 @@ off = "07:00"
 # Daytime Kelvin in solar and gradual mode (6500 is neutral).
 day_temperature = 6500
 # gradual mode: Kelvin at the evening start.
-start_temperature = 4500
+start_temperature = 5500
 # gradual mode: the evening never starts before this time.
 not_before = "19:00"
 # gradual mode: temperature is reached here, or 1 hour after the start if later.
@@ -948,3 +952,18 @@ action = "shell nirushot --region"
 [[keys]]
 keys = "super+shift+Print"
 action = "shell nirushot --window"
+
+# ── Picture-in-picture ──────────────────────────────────────────────────────
+# Super+Alt+P makes the focused window small and floating in a corner of its
+# screen, on every workspace there, and puts it back as it was when pressed
+# again. Super+Ctrl+P moves it to the next corner. A browser's own
+# picture-in-picture window (YouTube's PiP button in Helium, Chromium or
+# Firefox) goes to the corner by itself.
+[pip]
+# Width as a percentage of the screen width (10 to 60); the height follows
+# the window's own shape (16:9 when it has none).
+size = 25
+# bottom-right, bottom-left, top-right or top-left.
+corner = "bottom-right"
+# false leaves browser picture-in-picture windows where the browser puts them.
+auto = true

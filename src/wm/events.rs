@@ -334,6 +334,13 @@ impl Wm {
             // the pointer is currently moving.
             return Ok(());
         }
+        if c.pip.is_some() {
+            let mask = e.value_mask;
+            let asked = (mask.contains(ConfigWindow::WIDTH) || mask.contains(ConfigWindow::HEIGHT))
+                .then_some((e.width, e.height));
+            self.pip_configure(e.window, asked)?;
+            return Ok(());
+        }
         if c.floating {
             let hints = c.size_hints;
             let border = self.cfg.border_width;

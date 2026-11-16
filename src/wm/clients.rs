@@ -4,6 +4,17 @@ use super::*;
 /// `active`. Floating, fullscreen and withdrawn windows do not, and neither
 /// does any scratchpad, shown or hidden: a scratchpad is never a workspace
 /// member, so showing or hiding one cannot move or resize a tiled window.
+/// `area` with `gap` pixels taken off every side (at most an eighth of it).
+fn inset(area: Rect, gap: u16) -> Rect {
+    let g = gap.min(area.w / 8).min(area.h / 8);
+    Rect {
+        x: area.x + g as i16,
+        y: area.y + g as i16,
+        w: area.w.saturating_sub(g * 2).max(1),
+        h: area.h.saturating_sub(g * 2).max(1),
+    }
+}
+
 pub(crate) fn tiles(c: &Client, monitor: usize, active: u32, withdrawn: &HashSet<Window>) -> bool {
     c.monitor == monitor
         && (c.tag == active || c.sticky)
@@ -419,6 +430,7 @@ impl Wm {
             urgent_serial: 0,
             swallowed_by: None,
             keep_mapped,
+            pip: None,
         };
         let mut client = client;
         if let Some((_, _, _, _, true, geom)) = swallowed {
@@ -593,6 +605,26 @@ impl Wm {
                 }
             }
         }
+        // Picture-in-picture: carried over a restart on the window itself,
+        // or a browser's own PiP window (YouTube's PiP button), which goes to
+        // the corner without taking the focus from the page.
+        let mut auto_pip = false;
+        if self.adopting {
+            if let Some(p) = self.adopted_pip(w) {
+                if let Some(c) = self.clients.iter_mut().find(|c| c.win == w) {
+                    c.pip = Some(p);
+                    c.floating = true;
+                    c.sticky = true;
+                }
+            }
+        } else if !is_scratchpad
+            && swallowed.is_none()
+            && restored.is_none()
+            && self.wants_auto_pip(w, &class, is_dialog || transient.is_some())
+        {
+            self.pip_on(w)?;
+            auto_pip = true;
+        }
         if keep_hidden {
             // Hidden before the restart (another workspace, a hidden
             // scratchpad, a swallowed terminal): arrange() maps it when it is
@@ -614,7 +646,12 @@ impl Wm {
             // scratchpad.
             self.focus = Some(w);
             self.focus_dirty = true;
-        } else if !is_scratchpad && restored.is_none() && focus_on_map && tag == self.active_tag() {
+        } else if !is_scratchpad
+            && !auto_pip
+            && restored.is_none()
+            && focus_on_map
+            && tag == self.active_tag()
+        {
             self.set_focus(w)?;
         }
         self.arrange()?;
@@ -1248,6 +1285,7 @@ impl Wm {
 
     fn arrange_screens(&mut self) -> Result<()> {
         let area = self.work_area();
+        self.settle_pip();
         self.settle_scratch();
         self.settle_swallowed();
 
@@ -1394,9 +1432,19 @@ impl Wm {
                 } else {
                     let r = boxes.get(idx).copied().unwrap_or(screen);
                     idx += 1;
-                    r
+                    // `smart_gaps = false`: a lone or monocle window keeps
+                    // the gap the layouts leave out for it.
+                    if !self.cfg.smart_gaps
+                        && (n == 1 || layout == Layout::Monocle)
+                        && layout != Layout::Scroll
+                    {
+                        inset(screen, self.cfg.gap)
+                    } else {
+                        r
+                    }
                 };
-                let smart = !c.floating
+                let smart = self.cfg.smart_gaps
+                    && !c.floating
                     && (n == 1
                         || layout == Layout::Monocle
                         || (layout == Layout::Scroll && scroll_columns == 1));
@@ -1500,15 +1548,18 @@ impl Wm {
         // Floating windows above the tiles, in the order they were opened
         // (so a dialog stays over its parent), as one group: raising them one
         // by one briefly covered a dialog with its parent.
-        let floating: Vec<Window> = self
+        // Picture-in-picture windows go above the other floating windows.
+        let mut floating: Vec<(bool, Window)> = self
             .clients
             .iter()
             .filter(|c| c.floating && visible.contains(&c.win))
             .filter(|c| {
                 self.scratch_shown.is_none() || self.scratch_owner(c.win) != self.scratch_shown
             })
-            .map(|c| c.win)
+            .map(|c| (c.pip.is_some(), c.win))
             .collect();
+        floating.sort_by_key(|(pip, _)| *pip);
+        let floating: Vec<Window> = floating.into_iter().map(|(_, w)| w).collect();
         // The shown scratchpad is above everything on its workspace,
         // including other floating and fullscreen windows. Its dialogs go
         // above it, in the order they were opened, so a file dialog is never
@@ -1549,18 +1600,27 @@ impl Wm {
         // Focus stays on a visible window of the focused screen.
         let focus_ok = self.focus.map(|w| visible.contains(&w)).unwrap_or(false);
         if !focus_ok {
+            // A picture-in-picture window is never chosen: it is there to be
+            // watched, so a workspace switch never hands it the keyboard.
             let next = self
                 .clients
                 .iter()
                 .filter(|c| {
-                    visible.contains(&c.win) && c.monitor == self.focused_monitor && c.focus_on_map
+                    visible.contains(&c.win)
+                        && c.monitor == self.focused_monitor
+                        && c.focus_on_map
+                        && c.pip.is_none()
                 })
                 .map(|c| c.win)
                 .next()
                 .or_else(|| {
                     self.clients
                         .iter()
-                        .filter(|c| visible.contains(&c.win) && c.monitor == self.focused_monitor)
+                        .filter(|c| {
+                            visible.contains(&c.win)
+                                && c.monitor == self.focused_monitor
+                                && c.pip.is_none()
+                        })
                         .map(|c| c.win)
                         .next()
                 })
@@ -1568,14 +1628,14 @@ impl Wm {
                     self.clients
                         .iter()
                         .rev()
-                        .find(|c| visible.contains(&c.win) && c.focus_on_map)
+                        .find(|c| visible.contains(&c.win) && c.focus_on_map && c.pip.is_none())
                         .map(|c| c.win)
                 })
                 .or_else(|| {
                     self.clients
                         .iter()
                         .rev()
-                        .find(|c| visible.contains(&c.win))
+                        .find(|c| visible.contains(&c.win) && c.pip.is_none())
                         .map(|c| c.win)
                 });
             self.focus_client(next)?;
@@ -1836,6 +1896,7 @@ impl Wm {
 
     /// Switch to a global EWMH desktop, focusing its owning monitor.
     pub(crate) fn view_global(&mut self, global: u32) -> Result<()> {
+        self.drop_pip_focus();
         if let Some((monitor, workspace)) = crate::monitor::find_global(&self.monitors, global) {
             self.focused_monitor = monitor;
             if let Some(m) = self.monitors.get_mut(monitor) {
@@ -1883,6 +1944,7 @@ impl Wm {
     /// `tag` is an index into that screen's own workspace list, so each screen
     /// keeps its set independent of the others.
     pub(crate) fn view_tag(&mut self, tag: u32) -> Result<()> {
+        self.drop_pip_focus();
         if let Some(m) = self.monitors.get_mut(self.focused_monitor) {
             if (tag as usize) < m.workspaces.len() {
                 m.active = tag as usize;
@@ -2262,6 +2324,7 @@ mod tests {
             urgent_serial: 0,
             swallowed_by: None,
             keep_mapped: false,
+            pip: None,
         }
     }
 

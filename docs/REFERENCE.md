@@ -23,6 +23,7 @@ niructl theme-hide niru-satie  # hide a bundled theme
 niructl theme-show niru-satie
 niructl theme-remove my-theme  # user themes only
 niructl layout show|save|NAME|columns 1|2|toggle
+niructl pip toggle|corner      # picture-in-picture (Super+Alt+P, Super+Ctrl+P)
 niructl timing show
 niructl timing set screensaver_timeout 20
 niructl storage review
@@ -304,6 +305,47 @@ watch. If the work area is narrower than 480 px, two-column mode uses a
 one-column geometry fallback. Hidden columns stay in the window switcher and
 `_NET_CLIENT_LIST`; activating one reveals its column.
 
+One tiled window on a workspace, and every window in monocle, fills the
+work area without gap or border (`smart_gaps = true`, the default). Set
+`smart_gaps = false` at the top of `config.toml` to keep the gap and the
+border for it too. Floating windows and scratchpads are never affected.
+
+## Picture-in-picture
+
+`Super+Alt+P` (`niructl pip toggle`) makes the focused window small and
+floating in a corner of its screen, on every workspace of that screen, above
+the other windows. Its width is `[pip] size` percent of the screen width
+(default 25, 10 to 60) and the height follows the window's own shape (16:9
+when it has none). It sits in `[pip] corner` (`bottom-right`, `bottom-left`,
+`top-right` or `top-left`), clear of the bar and `gap` pixels (at least 8)
+from the edges. `Super+Ctrl+P` (`niructl pip corner`) moves it to the next
+corner, clockwise; the focused PiP window, or else the newest one on the
+focused screen. Pressing `Super+Alt+P` on it again puts the window back as it
+was, tiled or floating with its old size, on the workspace that is showing.
+
+A workspace switch never gives the keyboard to a PiP window; click it to
+type into it. It can still be moved and resized with Super and the mouse. The
+state is kept on the window (`_NIRUWM_PIP`), so it stays in its corner over
+`niructl restart-wm` and a restart after a crash, and can still be put back.
+
+With `[pip] auto = true` (the default) a browser's own picture-in-picture
+window goes to the corner by itself, without taking the focus from the page:
+the PiP button in YouTube's player (or right-click twice on a video and
+choose Picture in picture) in Helium, Chromium, Brave, Chrome, Vivaldi or
+Edge, and Firefox's Picture-in-Picture. Chromium-based browsers are
+recognised by what they ask for (always on top, on every workspace), so it
+works in any language; the window title ("Picture in picture", "Bild-i-bild",
+"Picture-in-Picture" and a few more) and Firefox's window role are also
+checked. When the browser resizes it to the video, the shape is kept and the
+size and corner stay NIRUWM's.
+
+```toml
+[pip]
+size = 25
+corner = "bottom-right"
+auto = true
+```
+
 ## More than one screen
 
 Every connected screen is set separately, at its own geometry (for example
@@ -444,8 +486,9 @@ and `hold`.
 the session) runs it and is the only scheduled caller of gammastep.
 
 - `gradual` (default since 0.30.0): the evening starts at the local sunset,
-  never before `not_before` (19:00), at `start_temperature` (4500 K), and
-  glides in small steps every 30 seconds to `temperature` (2700 K), reached at
+  never before `not_before` (19:00), fades in from the day over 15 minutes to
+  `start_temperature` (5500 K, so the start is never a sudden step), and
+  glides in small steps every 30 seconds to `temperature` (3500 K), reached at
   `deepest_at` (22:00), or one hour after the start when `deepest_at` is
   sooner (a late summer sunset). The night temperature holds through the night.
   In the morning it glides back to `day_temperature` (6500 K) over 30 minutes,
@@ -459,8 +502,11 @@ the session) runs it and is the only scheduled caller of gammastep.
   gamma.
 
 `niructl nightlight on|off|toggle` (Super+N) wins over the schedule until the
-night starts or ends; `on` is `temperature`. In gradual mode toggle switches
-off whenever the screen is warmer than the day. The watcher checks
+night starts or ends; `on` is `temperature`, except in gradual mode during
+the night, where it is the schedule's value at that moment (at most
+`start_temperature`), so switching back on continues the glide instead of
+jumping to the deepest value. In gradual mode toggle switches off whenever the
+screen is warmer than the day. The watcher checks
 `config.toml` every 5 seconds and applies an edit at once, including a switch
 between `manual` and a schedule; a file with an error keeps the last good
 settings and says so in the session log. `niructl nightlight status` shows the

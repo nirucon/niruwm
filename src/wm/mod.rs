@@ -4,6 +4,7 @@ mod events;
 mod keys;
 mod mouse;
 mod overview;
+mod pip;
 mod scratch;
 mod session_hooks;
 mod swallow;
@@ -104,6 +105,10 @@ pub(crate) struct Client {
     /// screen instead of unmapping it, so a screen capture of it keeps
     /// getting frames (NIRUPRES's audience window).
     keep_mapped: bool,
+    /// Picture-in-picture (`pip.rs`): how the window was before, so the key
+    /// puts it back. While set the window floats in a corner on every
+    /// workspace of its screen.
+    pip: Option<pip::Pip>,
 }
 
 impl Client {
@@ -498,6 +503,8 @@ impl Wm {
             "_NIRUWM_SCRATCHPADS",
             "_NIRUWM_SCRATCH_SLOT",
             "_NIRUWM_URGENT",
+            "_NIRUWM_PIP",
+            "WM_WINDOW_ROLE",
             "_NIRUWM_SWALLOW",
             "_NIRUWM_SWALLOWED_BY",
             "_NIRUWM_STUDIO",

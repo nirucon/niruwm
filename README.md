@@ -36,6 +36,13 @@ display manager starts), `niruclipboard` (clipboard history helper) and
   (`Super+Alt+1…9`); any window can be sent to a slot. A shown scratchpad
   stays on top until you hide it, and its dialogs (an Open or Save dialog,
   for example) stay above it and are hidden and shown with it.
+- Picture-in-picture: `Super+Alt+P` puts the focused window small in a
+  corner, on every workspace of its screen and above the rest, and puts it
+  back as it was when pressed again; `Super+Ctrl+P` moves it to the next
+  corner. A browser's own picture-in-picture window (the PiP button on
+  YouTube in Helium, Chromium or Firefox) goes there by itself.
+- Smart gaps: one tiled window, or monocle, fills the screen without gap or
+  border (`smart_gaps = false` keeps them).
 - Window swallowing, on by default: a program started from a terminal
   (`mpv`, `zathura`, `feh`, …) takes the terminal's place, and the terminal
   comes back where it was when the program closes.
@@ -91,8 +98,8 @@ display manager starts), `niruclipboard` (clipboard history helper) and
 - Native integration for notifications, DND, audio, microphone, Bluetooth,
   power profiles, brightness, night light and screenshots.
 - A night light that glides: by default it starts at sunset (not before
-  19:00) at 4500 K and warms slowly to 2700 K by 22:00, then goes back to
-  daylight before sunrise or 07:00. Super+N switches it by hand, and edits to
+  19:00), fades in over 15 minutes to 5500 K and warms slowly to a moderate
+  3500 K by 22:00, then goes back to daylight before sunrise or 07:00. Super+N switches it by hand, and edits to
   `[nightlight]` apply within seconds.
 - `niructl`: one control command for the whole suite (themes, bar, layouts,
   wallpaper, displays, audio, input, power, diagnostics, tasks and the optional
@@ -178,6 +185,8 @@ The most important keys (the full list is in
 | `Super+Shift+E` | Toggle fullscreen |
 | `Super+Shift+S` | Show / hide the default scratchpad |
 | `Super+Alt+S` | Toggle sticky |
+| `Super+Alt+P` | Picture-in-picture on or off (small in a corner, every workspace) |
+| `Super+Ctrl+P` | Picture-in-picture to the next corner |
 | `Super+Shift+U` | Go to the window that asked for attention (urgent) |
 | `Super+Escape` | Lock |
 | `Super+Q` | Close window |

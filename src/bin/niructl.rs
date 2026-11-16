@@ -73,6 +73,7 @@ urgent [list|--json|focus] | swallow on|off|toggle|status | studio on|off|toggle
 present on [--pid PID]|off|status | \
 powerprofile status|list|set NAME|next|auto|watch | \
 do ACTION [ARG...]|do goto MONITOR TAG [WINDOW]|do --list [--json] | \
+pip toggle|corner | \
 lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
@@ -444,6 +445,21 @@ impl NightLight {
         })
     }
 
+    /// What Super+N "on" shows: in gradual mode during the night, the
+    /// schedule's own value at this moment (so switching back on mid-glide
+    /// continues the glide instead of jumping to the deepest value), else the
+    /// night temperature. Never warmer-looking than nothing: during the
+    /// evening fade-in and the morning glide it is at most the start
+    /// temperature, so "on" is always visible.
+    fn on_temperature(&self) -> u32 {
+        if self.nl.mode == "gradual" {
+            if let Some(kelvin) = self.gradual_position().kelvin {
+                return kelvin.min(self.nl.start_temperature);
+            }
+        }
+        self.nl.temperature
+    }
+
     fn shown(&self) -> Option<u32> {
         std::fs::read_to_string(&self.state)
             .ok()
@@ -569,7 +585,7 @@ impl NightLight {
         let (desired, night) = self.scheduled()?;
         let phase = if night { "night" } else { "day" };
         let desired = match self.override_choice(phase) {
-            Some(choice) if choice == "on" => Some(self.nl.temperature),
+            Some(choice) if choice == "on" => Some(self.on_temperature()),
             Some(_) => None,
             None => {
                 if self.override_file.exists() {
@@ -751,10 +767,9 @@ fn nightlight(args: &[String]) -> Result<()> {
         return nightlight_watch();
     }
     let light = NightLight::new(&Config::load()?);
-    let nl = &light.nl;
     match command {
         "on" => {
-            light.apply(nl.temperature, true)?;
+            light.apply(light.on_temperature(), true)?;
             light.remember("on")?;
         }
         "off" => {
@@ -766,7 +781,7 @@ fn nightlight(args: &[String]) -> Result<()> {
                 light.off(true)?;
                 light.remember("off")?;
             } else {
-                light.apply(nl.temperature, true)?;
+                light.apply(light.on_temperature(), true)?;
                 light.remember("on")?;
             }
         }
@@ -9217,6 +9232,16 @@ fn run() -> Result<()> {
     if cmd == "do" {
         let code = do_command(&args[1..]);
         std::process::exit(code);
+    }
+    if cmd == "pip" {
+        // Picture-in-picture for the focused window (Super+Alt+P), or the
+        // PiP window to the next corner (Super+Ctrl+P).
+        let action = match args.get(1).map(String::as_str).unwrap_or("toggle") {
+            "toggle" => "pip_toggle",
+            "corner" => "pip_corner",
+            other => return Err(format!("pip needs toggle or corner, not {other:?}").into()),
+        };
+        std::process::exit(do_command(&[action.to_string()]));
     }
     if cmd == "wallpaper" {
         let sub = args.get(1).map(String::as_str).unwrap_or("");

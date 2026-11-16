@@ -14,6 +14,9 @@ const DAY: f64 = 1440.0;
 const MIN_GLIDE: f64 = 60.0;
 /// How long the morning glide back to the day temperature takes.
 const MORNING: f64 = 30.0;
+/// 0.32: the evening fades in from the day temperature over this long, so the
+/// start is never a step (before, 19:00 jumped from 6500 K to 4500 K at once).
+pub const FADE_IN: f64 = 15.0;
 
 /// What `[nightlight]` asks of the gradual mode.
 #[derive(Clone, Debug, PartialEq)]
@@ -121,12 +124,14 @@ fn lerp(from: u32, to: u32, fraction: f64) -> f64 {
 /// Kelvin at `t` (minutes after the evening's midnight); `None` outside the
 /// night. The evening glide (falling) and the morning glide (rising) are each
 /// continuous and the higher of the two is shown, so where a very short night
-/// makes them overlap the screen still never jumps.
+/// makes them overlap the screen still never jumps. The first `FADE_IN`
+/// minutes lift the evening glide up to the day temperature at the start, so
+/// the evening begins without a visible step.
 pub fn kelvin_at(g: &Gradual, e: &Evening, t: f64) -> Option<u32> {
     if t < e.start || t >= e.end {
         return None;
     }
-    let evening = if e.deepest > e.start {
+    let glide = if e.deepest > e.start {
         lerp(
             g.start_temperature,
             g.night_temperature,
@@ -135,6 +140,9 @@ pub fn kelvin_at(g: &Gradual, e: &Evening, t: f64) -> Option<u32> {
     } else {
         f64::from(g.night_temperature)
     };
+    let lift = f64::from(g.day_temperature.saturating_sub(g.start_temperature))
+        * (1.0 - ((t - e.start) / FADE_IN).clamp(0.0, 1.0));
+    let evening = glide + lift;
     let morning = if t >= e.morning && e.end > e.morning {
         lerp(
             g.night_temperature,
@@ -222,8 +230,8 @@ mod tests {
 
     fn settings() -> Gradual {
         Gradual {
-            start_temperature: 4500,
-            night_temperature: 2700,
+            start_temperature: 5500,
+            night_temperature: 3500,
             day_temperature: 6500,
             not_before: 19 * 60,
             deepest_at: 22 * 60,
@@ -256,14 +264,14 @@ mod tests {
         let g = settings();
         let s = sun("08:40", "14:50");
         assert_eq!(kelvin(&g, at("2026-12-10", "18:59:00"), &s), None);
-        assert_eq!(kelvin(&g, at("2026-12-10", "19:00:00"), &s), Some(4500));
+        assert_eq!(kelvin(&g, at("2026-12-10", "19:00:00"), &s), Some(6500));
         // Halfway between 19:00 and 22:00.
-        assert_eq!(kelvin(&g, at("2026-12-10", "20:30:00"), &s), Some(3600));
-        assert_eq!(kelvin(&g, at("2026-12-10", "22:00:00"), &s), Some(2700));
-        assert_eq!(kelvin(&g, at("2026-12-11", "03:00:00"), &s), Some(2700));
+        assert_eq!(kelvin(&g, at("2026-12-10", "20:30:00"), &s), Some(4500));
+        assert_eq!(kelvin(&g, at("2026-12-10", "22:00:00"), &s), Some(3500));
+        assert_eq!(kelvin(&g, at("2026-12-11", "03:00:00"), &s), Some(3500));
         // Sunrise is after 07:00, so the morning ends at off: 06:30-07:00.
-        assert_eq!(kelvin(&g, at("2026-12-11", "06:30:00"), &s), Some(2700));
-        assert_eq!(kelvin(&g, at("2026-12-11", "06:45:00"), &s), Some(4600));
+        assert_eq!(kelvin(&g, at("2026-12-11", "06:30:00"), &s), Some(3500));
+        assert_eq!(kelvin(&g, at("2026-12-11", "06:45:00"), &s), Some(5000));
         assert_eq!(kelvin(&g, at("2026-12-11", "07:00:00"), &s), None);
         let p = position(&g, at("2026-12-11", "02:00:00"), &s);
         assert_eq!(
@@ -273,6 +281,17 @@ mod tests {
         assert_eq!(clock(p.evening.start), "19:00");
         assert_eq!(clock(p.evening.deepest), "22:00");
         assert_eq!(clock(p.evening.end), "07:00");
+    }
+
+    #[test]
+    fn the_evening_fades_in_from_the_day_without_a_step() {
+        let g = settings();
+        let s = sun("08:40", "14:50");
+        assert_eq!(kelvin(&g, at("2026-12-10", "19:00:00"), &s), Some(6500));
+        // Half the fade: the glide (5417 K) plus half the lift (500 K).
+        assert_eq!(kelvin(&g, at("2026-12-10", "19:07:30"), &s), Some(5917));
+        // The fade is over; the glide alone from here on.
+        assert_eq!(kelvin(&g, at("2026-12-10", "19:15:00"), &s), Some(5333));
     }
 
     #[test]
@@ -296,14 +315,14 @@ mod tests {
         let g = settings();
         let s = sun("03:35", "22:05");
         assert_eq!(kelvin(&g, at("2026-06-20", "22:00:00"), &s), None);
-        assert_eq!(kelvin(&g, at("2026-06-20", "22:05:00"), &s), Some(4500));
+        assert_eq!(kelvin(&g, at("2026-06-20", "22:05:00"), &s), Some(6500));
         let p = position(&g, at("2026-06-20", "22:35:00"), &s);
         assert_eq!(clock(p.evening.deepest), "23:05");
-        assert_eq!(p.kelvin, Some(3600));
-        assert_eq!(kelvin(&g, at("2026-06-20", "23:05:00"), &s), Some(2700));
+        assert_eq!(p.kelvin, Some(4500));
+        assert_eq!(kelvin(&g, at("2026-06-20", "23:05:00"), &s), Some(3500));
         // Sunrise before off: the morning ends at sunrise.
         assert_eq!(clock(p.evening.end), "03:35");
-        assert_eq!(kelvin(&g, at("2026-06-21", "03:05:00"), &s), Some(2700));
+        assert_eq!(kelvin(&g, at("2026-06-21", "03:05:00"), &s), Some(3500));
         assert_eq!(kelvin(&g, at("2026-06-21", "03:35:00"), &s), None);
     }
 
@@ -313,17 +332,17 @@ mod tests {
         g.not_before = 23 * 60;
         g.deepest_at = 30; // 00:30
         let s = sun("08:40", "14:50");
-        assert_eq!(kelvin(&g, at("2026-12-10", "23:00:00"), &s), Some(4500));
+        assert_eq!(kelvin(&g, at("2026-12-10", "23:00:00"), &s), Some(6500));
         // 23:00 to 00:30 is 90 minutes; 23:45 is the middle.
-        assert_eq!(kelvin(&g, at("2026-12-10", "23:45:00"), &s), Some(3600));
-        assert_eq!(kelvin(&g, at("2026-12-11", "00:30:00"), &s), Some(2700));
+        assert_eq!(kelvin(&g, at("2026-12-10", "23:45:00"), &s), Some(4500));
+        assert_eq!(kelvin(&g, at("2026-12-11", "00:30:00"), &s), Some(3500));
         // A sunset after midnight is not an evening; a deepest time that
         // would be before the start is clamped to one hour after it.
         g.not_before = 23 * 60 + 30;
         g.deepest_at = 23 * 60 + 45;
         let p = position(&g, at("2026-12-11", "00:00:00"), &s);
         assert_eq!(clock(p.evening.deepest), "00:30");
-        assert_eq!(p.kelvin, Some(3600));
+        assert_eq!(p.kelvin, Some(4500));
     }
 
     #[test]
@@ -359,7 +378,7 @@ mod tests {
         let s = sun("01:10", "23:50");
         let mut t = at("2026-06-01", "23:50:00");
         let mut last = kelvin(&g, t, &s).unwrap();
-        assert_eq!(last, 4500);
+        assert_eq!(last, 6500);
         loop {
             t += Duration::seconds(30);
             let Some(k) = kelvin(&g, t, &s) else { break };

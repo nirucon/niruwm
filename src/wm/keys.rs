@@ -360,6 +360,12 @@ impl Wm {
                     self.toggle_sticky(focused)?;
                 }
             }
+            Action::PipToggle => {
+                if let Some(focused) = self.focus.filter(|w| !self.is_scratch(*w)) {
+                    self.pip_toggle(focused)?;
+                }
+            }
+            Action::PipCorner => self.pip_next_corner()?,
             Action::BarTop => self.set_bar_position("top"),
             Action::BarBottom => self.set_bar_position("bottom"),
             Action::BarHide => self.set_bar_visible(false),

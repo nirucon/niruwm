@@ -27,6 +27,10 @@ fn parse_clock(s: &str) -> Option<(u32, u32)> {
 pub struct Config {
     pub theme: String,
     pub gap: u16,
+    /// A workspace showing one tiled window (or the monocle layout) draws it
+    /// without gap and border (NIRUWM 0.32 made this a setting; it was
+    /// always on before).
+    pub smart_gaps: bool,
     pub border_width: u16,
     pub bar_height: u16,
     pub master_ratio: f32,
@@ -56,6 +60,9 @@ pub struct Config {
     pub studio: StudioConfig,
     /// Window rules, applied when a window is first managed.
     pub rules: Vec<Rule>,
+    /// Picture-in-picture (`[pip]`, NIRUWM 0.32): a small window that stays
+    /// in a corner on every workspace of its screen.
+    pub pip: PipConfig,
     /// Manual night-light settings shared by `niructl` and the WM.
     pub nightlight: NightlightConfig,
     /// Screensaver and lock timing. Read by NIRUIDLE, accepted here so the
@@ -77,6 +84,32 @@ pub struct Config {
     /// Read by NIRUWM only; NIRUBAR accepts it because the file is shared.
     pub restore_session: bool,
 }
+
+/// `[pip]`: Super+Alt+P makes the focused window small, floating and on every
+/// workspace in a corner; browser picture-in-picture windows (YouTube's PiP
+/// button) get the same treatment by themselves when `auto` is on.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PipConfig {
+    /// Width as a percentage of the screen width (10 to 60).
+    pub size: u16,
+    /// "bottom-right", "bottom-left", "top-right" or "top-left".
+    pub corner: String,
+    /// Browser picture-in-picture windows become PiP windows when they open.
+    pub auto: bool,
+}
+
+impl Default for PipConfig {
+    fn default() -> Self {
+        Self {
+            size: 25,
+            corner: "bottom-right".into(),
+            auto: true,
+        }
+    }
+}
+
+pub const PIP_CORNERS: [&str; 4] = ["bottom-right", "bottom-left", "top-left", "top-right"];
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -613,12 +646,12 @@ impl Default for NightlightConfig {
         Self {
             latitude: 0.0,
             longitude: 0.0,
-            temperature: 2700,
+            temperature: 3500,
             mode: "gradual".into(),
             on: "20:00".into(),
             off: "07:00".into(),
             day_temperature: 6500,
-            start_temperature: 4500,
+            start_temperature: 5500,
             not_before: "19:00".into(),
             deepest_at: "22:00".into(),
         }
@@ -987,6 +1020,7 @@ impl Default for Config {
         Self {
             theme: "niru-noir".into(),
             gap: 8,
+            smart_gaps: true,
             border_width: 2,
             bar_height: 28,
             master_ratio: 0.55,
@@ -1010,6 +1044,7 @@ impl Default for Config {
             swallow: SwallowConfig::default(),
             studio: StudioConfig::default(),
             rules: Vec::new(),
+            pip: PipConfig::default(),
             weather_latitude: 0.0,
             weather_longitude: 0.0,
             restore_session: false,
@@ -1410,6 +1445,14 @@ impl Config {
             || self.launcher.is_empty()
         {
             return Err("Invalid geometry or empty command".into());
+        }
+        if !(10..=60).contains(&self.pip.size) {
+            return Err("pip.size must be 10..60 (percent of the screen width)".into());
+        }
+        if !PIP_CORNERS.contains(&self.pip.corner.as_str()) {
+            return Err(
+                "pip.corner must be bottom-right, bottom-left, top-right or top-left".into(),
+            );
         }
         if self.bar.cell_width < 12 || self.bar.cell_width > 200 {
             return Err("bar.cell_width must be between 12 and 200".into());
@@ -1968,6 +2011,7 @@ pub fn dump() -> Result<String> {
     out.push_str("# Reload after editing the real file with: niructl reload\n\n");
     out.push_str(&format!("theme = {:?}\n", c.theme));
     out.push_str(&format!("gap = {}\n", c.gap));
+    out.push_str(&format!("smart_gaps = {}\n", c.smart_gaps));
     out.push_str(&format!("border_width = {}\n", c.border_width));
     out.push_str(&format!("bar_height = {}\n", c.bar_height));
     out.push_str(&format!("master_ratio = {}\n", c.master_ratio));
@@ -3008,10 +3052,33 @@ cell_width = 34
     }
 
     #[test]
+    fn pip_and_smart_gaps_have_defaults_and_validate() {
+        let c = Config::default();
+        assert!(c.smart_gaps);
+        assert_eq!(c.pip, PipConfig::default());
+        assert_eq!(
+            (c.pip.size, c.pip.corner.as_str(), c.pip.auto),
+            (25, "bottom-right", true)
+        );
+        let c: Config = toml::from_str(
+            "smart_gaps = false\n[pip]\nsize = 30\ncorner = \"top-left\"\nauto = false\n",
+        )
+        .unwrap();
+        assert!(!c.smart_gaps);
+        assert!(c.validate().is_ok());
+        let bad: Config = toml::from_str("[pip]\nsize = 80\n").unwrap();
+        assert!(bad.validate().is_err());
+        let bad: Config = toml::from_str("[pip]\ncorner = \"middle\"\n").unwrap();
+        assert!(bad.validate().is_err());
+        assert!(toml::from_str::<Config>("[pip]\nsise = 30\n").is_err());
+    }
+
+    #[test]
     fn gradual_nightlight_is_the_default_and_validates() {
         let c = Config::default();
         assert_eq!(c.nightlight.mode, "gradual");
-        assert_eq!(c.nightlight.start_temperature, 4500);
+        assert_eq!(c.nightlight.start_temperature, 5500);
+        assert_eq!(c.nightlight.temperature, 3500);
         assert_eq!(c.nightlight.not_before, "19:00");
         assert_eq!(c.nightlight.deepest_at, "22:00");
         let c: Config = toml::from_str(

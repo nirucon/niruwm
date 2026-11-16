@@ -89,16 +89,16 @@ printf '[nightlight]\nlatitude = 59.33\nlongitude = 18.07\n' > "$CONFIG"
 status_at() { NIRUCTL_NIGHTLIGHT_NOW="$1" "$BIN/niructl" nightlight status 2>&1; }
 s=$(status_at "2026-12-10 20:30")
 printf '%s\n' "$s" | grep -q '^mode: gradual$' || fail "gradual is not the default: $s"
-printf '%s\n' "$s" | grep -q 'start 19:00 .*at 4500 K' || fail "winter start is not 19:00: $s"
-printf '%s\n' "$s" | grep -q '^deepest: 22:00 at 2700 K' || fail "deepest is not 22:00: $s"
+printf '%s\n' "$s" | grep -q 'start 19:00 .*at 5500 K' || fail "winter start is not 19:00: $s"
+printf '%s\n' "$s" | grep -q '^deepest: 22:00 at 3500 K' || fail "deepest is not 22:00: $s"
 printf '%s\n' "$s" | grep -q '^morning: 06:30 - 07:00' || fail "winter morning does not end at 07:00: $s"
-printf '%s\n' "$s" | grep -q '^scheduled: 3600 K (night)' || fail "20:30 is not halfway: $s"
+printf '%s\n' "$s" | grep -q '^scheduled: 4500 K (night)' || fail "20:30 is not halfway: $s"
 s=$(status_at "2026-06-20 12:00")
 printf '%s\n' "$s" | grep -q '^scheduled: 6500 K (day)' || fail "midsummer noon is not day: $s"
 printf '%s\n' "$s" | grep -Eq 'start 22:[0-9][0-9] \(sunset' || fail "midsummer start is not at sunset: $s"
 NIRUCTL_NIGHTLIGHT_NOW="2026-12-10 21:00" "$BIN/niructl" nightlight apply >/dev/null 2>&1 ||
     fail "nightlight apply failed in gradual mode"
-[ "$(shown)" = 3300 ] || fail "gradual apply at 21:00 shows $(shown), expected 3300"
+[ "$(shown)" = 4167 ] || fail "gradual apply at 21:00 shows $(shown), expected 4167"
 # Super+N during the glide switches off, and the override is reported.
 NIRUCTL_NIGHTLIGHT_NOW="2026-12-10 21:00" "$BIN/niructl" nightlight toggle >/dev/null 2>&1 ||
     fail "toggle failed in gradual mode"

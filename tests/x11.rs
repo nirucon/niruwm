@@ -3392,3 +3392,200 @@ fn present_remembers_dnd_and_ends_when_the_watched_process_ends() {
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+fn pip_wm(dir: &std::path::Path, extra: &str, restarted: bool) -> Process {
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        format!("{extra}[bar]\nenabled = false\n[wallpaper]\nenabled = false\n"),
+    )
+    .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_niruwm"));
+    cmd.env("XDG_CONFIG_HOME", dir)
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("XDG_RUNTIME_DIR", dir.join("run"))
+        .env("PATH", "/nonexistent")
+        .stdout(Stdio::null());
+    if restarted {
+        cmd.env("NIRUWM_RESTARTED", "1");
+    }
+    std::fs::create_dir_all(dir.join("run")).unwrap();
+    Process(cmd.spawn().unwrap())
+}
+
+fn border(c: &RustConnection, w: Window) -> u16 {
+    c.get_geometry(w).unwrap().reply().unwrap().border_width
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn picture_in_picture_corners_survive_a_crash_and_browser_pip_goes_there_by_itself() {
+    let dir = std::env::temp_dir().join(format!("niruwm-pip-{}", std::process::id()));
+    let mut wm = pip_wm(&dir, "", false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let sw = c.setup().roots[s].width_in_pixels as i32;
+    let sh = c.setup().roots[s].height_in_pixels as i32;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let ctl = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_RUNTIME_DIR", dir.join("run"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "niructl {args:?}: {out:?}");
+    };
+    // Smart gaps: one tiled window fills the screen without gap or border.
+    let a = create(&c, root, b"one\0One\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    wait(|| geometry(&c, a) == (0, 0, sw as u16, sh as u16));
+    assert_eq!(border(&c, a), 0);
+
+    // Super+Alt+P: a quarter of the width, bottom right, 8 px from the edges.
+    ctl(&["pip", "toggle"]);
+    wait(|| values(&c, a, "_NIRUWM_PIP").len() == 7);
+    let corner_ok = |w: Window, right: bool| {
+        let (x, y, gw, gh) = geometry(&c, w);
+        let b = i32::from(border(&c, w));
+        let outer_w = i32::from(gw) + 2 * b;
+        let outer_h = i32::from(gh) + 2 * b;
+        let x_ok = if right {
+            i32::from(x) + outer_w == sw - 8
+        } else {
+            i32::from(x) == 8
+        };
+        x_ok && i32::from(y) + outer_h == sh - 8 && i32::from(gw) == sw / 4 && b == 2
+    };
+    wait(|| corner_ok(a, true));
+
+    // Another window tiles the whole screen below it and keeps the focus.
+    let b = create(&c, root, b"two\0Two\0");
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![b]);
+    wait(|| geometry(&c, b) == (0, 0, sw as u16, sh as u16));
+    wait(|| above(&c, root, a, b));
+
+    // On workspace 2 the PiP window is still there, without the focus.
+    message(&c, root, a, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    ctl(&["do", "tag", "2"]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    wait(|| !mapped(&c, b));
+    assert!(mapped(&c, a), "the PiP window follows the workspace");
+    assert_ne!(
+        values(&c, root, "_NET_ACTIVE_WINDOW"),
+        vec![a],
+        "a workspace switch never focuses the PiP window"
+    );
+
+    // Super+Ctrl+P: the next corner (bottom left), also without the focus.
+    ctl(&["pip", "corner"]);
+    wait(|| corner_ok(a, false));
+
+    // A crash: the next manager still has it in its corner and knows how
+    // to put it back.
+    let _ = wm.0.kill();
+    let _ = wm.0.wait();
+    let mut wm = pip_wm(&dir, "", true);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    thread::sleep(Duration::from_millis(300));
+    assert!(mapped(&c, a));
+    wait(|| corner_ok(a, false));
+    message(&c, root, a, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![a]);
+    ctl(&["pip", "toggle"]);
+    wait(|| values(&c, a, "_NIRUWM_PIP").is_empty());
+    // Back as it was, tiled, on the workspace that is showing (the new
+    // manager starts on workspace 1, where b is): the two share the screen.
+    wait(|| values(&c, a, "_NET_WM_DESKTOP") == values(&c, root, "_NET_CURRENT_DESKTOP"));
+    wait(|| {
+        let (ax, ay, aw, ah) = geometry(&c, a);
+        let (bx, _, bw, _) = geometry(&c, b);
+        mapped(&c, b)
+            && ay == 8
+            && i32::from(ah) == sh - 16 - 4
+            && aw + bw > sw as u16 / 2
+            && ax != bx
+    });
+
+    // A browser's own picture-in-picture window (Chromium/Helium: always on
+    // top, on every desktop) goes to the corner and leaves the focus alone.
+    let pip = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        pip,
+        root,
+        100,
+        100,
+        480,
+        270,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        pip,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"helium\0Helium\0",
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        pip,
+        atom(&c, "_NET_WM_NAME"),
+        atom(&c, "UTF8_STRING"),
+        "Bild-i-bild".as_bytes(),
+    )
+    .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        pip,
+        atom(&c, "_NET_WM_STATE"),
+        AtomEnum::ATOM,
+        &[
+            atom(&c, "_NET_WM_STATE_ABOVE"),
+            atom(&c, "_NET_WM_STATE_STICKY"),
+        ],
+    )
+    .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        pip,
+        atom(&c, "_NET_WM_DESKTOP"),
+        AtomEnum::CARDINAL,
+        &[0xFFFF_FFFF],
+    )
+    .unwrap();
+    c.map_window(pip).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, pip, "_NIRUWM_PIP").len() == 7);
+    wait(|| corner_ok(pip, true));
+    assert_eq!(geometry(&c, pip).3 as i32, sw / 4 * 270 / 480, "keeps 16:9");
+    assert_eq!(values(&c, root, "_NET_ACTIVE_WINDOW"), vec![a]);
+    wait(|| above(&c, root, pip, a));
+
+    for w in [a, b, pip] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+
+    // smart_gaps = false: the lone window keeps its gap and border.
+    let mut wm = pip_wm(&dir, "smart_gaps = false\n", false);
+    let one = create(&c, root, b"one\0One\0");
+    wait(|| geometry(&c, one).0 == 8 && border(&c, one) == 2);
+    assert_eq!(
+        geometry(&c, one),
+        (8, 8, (sw - 16 - 4) as u16, (sh - 16 - 4) as u16)
+    );
+    c.destroy_window(one).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}

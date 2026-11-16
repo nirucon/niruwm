@@ -64,6 +64,10 @@ pub enum Action {
     ToggleFloat,
     ToggleFullscreen,
     ToggleSticky,
+    /// Picture-in-picture on or off for the focused window.
+    PipToggle,
+    /// Move the picture-in-picture window to the next corner.
+    PipCorner,
     BarTop,
     BarBottom,
     BarHide,
@@ -376,6 +380,9 @@ impl Action {
         add("super+shift+space", "toggle_float");
         add("super+shift+e", "toggle_fullscreen");
         add("super+alt+s", "toggle_sticky");
+        // Picture-in-picture: Super+P is the launcher, so Alt as for sticky.
+        add("super+alt+p", "pip_toggle");
+        add("super+ctrl+p", "pip_corner");
         add("super+alt+b", "bar_cycle");
         add("super+shift+s", "scratchpad");
         // Numbered scratchpads: Super+Alt+N shows or hides slot N,
@@ -568,6 +575,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "toggle_float" => Action::ToggleFloat,
         "toggle_fullscreen" => Action::ToggleFullscreen,
         "toggle_sticky" => Action::ToggleSticky,
+        "pip_toggle" => Action::PipToggle,
+        "pip_corner" => Action::PipCorner,
         "bar_top" => Action::BarTop,
         "bar_bottom" => Action::BarBottom,
         "bar_hide" => Action::BarHide,
@@ -709,6 +718,16 @@ pub const DO_ACTIONS: &[(&str, &str, &str)] = &[
     ("toggle_fullscreen", "", "Fullscreen on or off"),
     ("toggle_float", "", "Floating on or off"),
     ("toggle_sticky", "", "Sticky (on every workspace) on or off"),
+    (
+        "pip_toggle",
+        "",
+        "Picture-in-picture: small in a corner on every workspace, or back",
+    ),
+    (
+        "pip_corner",
+        "",
+        "Move the picture-in-picture window to the next corner",
+    ),
     (
         "layout",
         "tile|left|monocle|centered|centeredfloat|floating|fibonacci|scroll",
@@ -1057,6 +1076,11 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::ToggleFloat => s(focus, "Floating on or off"),
         Action::ToggleFullscreen => s(focus, "Fullscreen on or off"),
         Action::ToggleSticky => s(focus, "Sticky (on every workspace) on or off"),
+        Action::PipToggle => s(
+            focus,
+            "Picture-in-picture: small in a corner on every workspace, or back",
+        ),
+        Action::PipCorner => s(focus, "Picture-in-picture to the next corner"),
         Action::Close => s(focus, "Close the window"),
         Action::FocusUrgent => s(focus, "Go to the window that asked for attention (urgent)"),
         Action::FocusMonitor(d) => (
