@@ -53,6 +53,16 @@ after=$(gamma_now)
     fail "nightlight on did not change the display gamma (still $after); \
 gammastep needs -t K:K and -l, not -O"
 
+# 0.32.3: applying the same temperature again must not stack. gammastep 2.x
+# multiplies onto the current ramps unless -P is given, so the gradual
+# schedule (a step every 30 s) turned the display deeper and deeper red.
+"$BIN/niructl" nightlight on >/dev/null 2>&1 || fail 'second nightlight on reported an error'
+"$BIN/niructl" nightlight on >/dev/null 2>&1 || fail 'third nightlight on reported an error'
+sleep 1
+again=$(gamma_now)
+[ "$again" = "$after" ] ||
+    fail "repeated nightlight on stacked the gamma ($again, expected $after); gammastep needs -P"
+
 status=$("$BIN/niructl" nightlight status 2>&1 || true)
 printf '%s\n' "$status" | grep -q 'current: 3400' ||
     fail "status does not report the applied temperature: $status"

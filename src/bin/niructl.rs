@@ -482,6 +482,12 @@ impl NightLight {
             &[
                 "-m".into(),
                 "randr".into(),
+                // 0.32.3: -P resets the ramps first. gammastep 2.x preserves
+                // the current gamma and multiplies onto it, so the schedule's
+                // step every 30 s compounded into a deep red (measured on
+                // othala: three calls at 3733 K gave 1.0:1.9:3.2 instead of
+                // 1.0:1.3:1.7).
+                "-P".into(),
                 // gammastep needs the location to apply a manual temperature:
                 // without it, it refuses with a GeoClue2 error. `-t K:K` forces
                 // the same temperature day and night, which is what a manual
