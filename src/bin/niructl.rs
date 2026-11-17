@@ -893,7 +893,102 @@ fn update_power_action(action: &str, args: &[String]) -> Result<()> {
 }
 
 /// A login/power action with an explicit backend and no shell.
+/// How long the shutdown cue may hold up a logout, shutdown or reboot.
+const SHUTDOWN_CUE_MAX: Duration = Duration::from_millis(3500);
+
+/// The marker that tells `niruwm-session` the cue has played already.
+fn shutdown_cue_marker() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("niruwm-shutdown-cue")
+}
+
+/// Whether a command line is a sound player playing the shutdown sound.
+fn plays_shutdown_cue(cmdline: &[u8]) -> bool {
+    let mut parts = cmdline.split(|b| *b == 0).filter(|p| !p.is_empty());
+    let Some(program) = parts.next() else {
+        return false;
+    };
+    let program = String::from_utf8_lossy(program);
+    let name = program.rsplit('/').next().unwrap_or_default();
+    if !matches!(name, "pw-play" | "pw-cat" | "paplay" | "ffplay" | "mpv") {
+        return false;
+    }
+    parts.any(|arg| {
+        let arg = String::from_utf8_lossy(arg);
+        let file = arg.rsplit('/').next().unwrap_or_default();
+        file.starts_with("shutdown.")
+    })
+}
+
+fn shutdown_cue_playing() -> bool {
+    let uid = unsafe { libc::getuid() };
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        let owned = fs::metadata(&path)
+            .map(|m| std::os::unix::fs::MetadataExt::uid(&m) == uid)
+            .unwrap_or(false);
+        owned
+            && fs::read(path.join("cmdline"))
+                .map(|c| plays_shutdown_cue(&c))
+                .unwrap_or(false)
+    })
+}
+
+/// Play NIRUX's shutdown sound and let it finish before the session ends.
+///
+/// logind ends a session by signalling every process in it at once (the
+/// audio server and the player too, and on Void the session's own PipeWire),
+/// so a cue started on the way out is never heard. It plays here instead,
+/// before the request, for at most a few seconds; with sounds off nothing
+/// plays and nothing waits. The marker keeps `niruwm-session` from playing it
+/// a second time.
+fn shutdown_cue() {
+    if !which("nirux") {
+        return;
+    }
+    let started = Instant::now();
+    let played = std::process::Command::new("nirux")
+        .args(["sounds", "play", "shutdown"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !played {
+        return;
+    }
+    let _ = fs::write(
+        shutdown_cue_marker(),
+        format!(
+            "{}\n",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        ),
+    );
+    // The player starts in the background; give it a moment to appear.
+    let mut seen = false;
+    while started.elapsed() < SHUTDOWN_CUE_MAX {
+        let playing = shutdown_cue_playing();
+        if playing {
+            seen = true;
+        } else if seen || started.elapsed() > Duration::from_millis(400) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 fn login_action(action: &str) -> Result<()> {
+    if matches!(action, "logout" | "shutdown" | "reboot") {
+        shutdown_cue();
+    }
     if action == "logout" && which("loginctl") {
         let mut args: Vec<String> = Vec::new();
         if let Ok(session) = std::env::var("XDG_SESSION_ID") {
@@ -12166,5 +12261,26 @@ mod battery_tests {
             .contains("no charge limit"));
         std::env::remove_var("NIRUCTL_POWER_SUPPLY");
         let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod shutdown_cue_tests {
+    use super::plays_shutdown_cue;
+
+    #[test]
+    fn only_a_player_with_the_shutdown_sound_counts() {
+        assert!(plays_shutdown_cue(
+            b"pw-play\0--volume=0.35\0/home/u/.local/share/nirux/sounds/shutdown.ogg\0"
+        ));
+        assert!(plays_shutdown_cue(
+            b"/usr/bin/paplay\0--volume=22937\0/home/u/.config/nirux/sounds/shutdown.wav\0"
+        ));
+        assert!(!plays_shutdown_cue(
+            b"pw-play\0/home/u/.local/share/nirux/sounds/startup.ogg\0"
+        ));
+        assert!(!plays_shutdown_cue(b"vim\0shutdown.ogg\0"));
+        assert!(!plays_shutdown_cue(b"pw-play\0/tmp/shutdown-notes/x.ogg\0"));
+        assert!(!plays_shutdown_cue(b""));
     }
 }

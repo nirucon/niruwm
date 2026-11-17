@@ -284,10 +284,19 @@ fi # end of first-start-only setup
 # ── Helper processes, all tracked for clean logout ──────────────────────────
 STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""; NIRUDICTATE_PID=""; POWER_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
 cleanup() {
-  # A deliberate session exit gets the shutdown cue. Playback is async and
-  # never delays the actual logout; a crash path still reaches this only if
-  # the WM exits normally.
-  command -v nirux >/dev/null 2>&1 && nirux sounds play shutdown >/dev/null 2>&1 || :
+  # A deliberate session exit gets the shutdown cue. Logout, shutdown and
+  # reboot through niructl play it before asking logind (which signals every
+  # session process at once, the audio server too) and leave a marker; then
+  # it is not played again here. Otherwise (the WM quit by itself) it plays
+  # now and the audio services below are stopped only after it has finished.
+  cue_marker=${XDG_RUNTIME_DIR:-/tmp}/niruwm-shutdown-cue
+  cue_at=$(cat "$cue_marker" 2>/dev/null || echo 0)
+  case "$cue_at" in ''|*[!0-9]*) cue_at=0 ;; esac
+  CUE_PLAYING=0
+  if [ $(( $(date +%s) - cue_at )) -gt 30 ] && command -v nirux >/dev/null 2>&1; then
+    nirux sounds play shutdown >/dev/null 2>&1 && CUE_PLAYING=1 || :
+  fi
+  rm -f "$cue_marker" 2>/dev/null || :
   # Work modes are session-scoped. Clear them before helpers disappear, so a
   # timer from this session cannot change the next login.
   command -v niructl >/dev/null 2>&1 && niructl mode stop --quiet >/dev/null 2>&1 || :
@@ -302,6 +311,13 @@ cleanup() {
   # is gone even if the trap was not reached.
   if [ -n "$SLEEP_LOCK_PID" ]; then
     pkill -TERM -P "$SLEEP_LOCK_PID" 2>/dev/null || :
+  fi
+  if [ "$CUE_PLAYING" = 1 ]; then
+    cue_wait=0
+    while [ "$cue_wait" -lt 35 ] && pgrep -u "$(id -u)" -f '(pw-play|pw-cat|paplay|ffplay|mpv) .*/shutdown\.[a-z0-9]+$' >/dev/null 2>&1; do
+      sleep 0.1
+      cue_wait=$((cue_wait + 1))
+    done
   fi
   for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $NIRUSHARE_PID $NIRUDICTATE_PID $POWER_PID $PIPEWIRE_PID $WIREPLUMBER_PID $PULSE_PID; do
     [ -n "$pid" ] || continue
