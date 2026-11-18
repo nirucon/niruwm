@@ -230,6 +230,13 @@ if [ "$DISTRO" = void ] && command -v pipewire >/dev/null 2>&1; then
   fi
 fi
 
+# Some laptops load speaker amplifier firmware while the sound service starts,
+# and a card then comes up without its microphone (or output). NIRUIO checks
+# once per login and probes such a card again; it does nothing otherwise.
+if command -v niruio >/dev/null 2>&1; then
+  niruio heal --login >/dev/null 2>&1 &
+fi
+
 # The lock screen cannot show a message while it covers the screen, so its
 # diagnostic log is always on. It is tiny and only written on lock and unlock.
 NIRULOCK_TRACE=1
@@ -323,6 +330,16 @@ cleanup() {
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
+  # A WirePlumber that `niruio heal` restarted (Void) belongs to this session too.
+  wp_file="${XDG_RUNTIME_DIR:-/nonexistent}/niruio-wireplumber.pid"
+  if [ -n "$WIREPLUMBER_PID" ] && [ -r "$wp_file" ]; then
+    wp_pid=$(cat "$wp_file" 2>/dev/null)
+    case "$wp_pid" in
+      ''|*[!0-9]*) ;;
+      *) [ "$(cat "/proc/$wp_pid/comm" 2>/dev/null)" = wireplumber ] && kill "$wp_pid" 2>/dev/null || : ;;
+    esac
+    rm -f "$wp_file"
+  fi
 }
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP

@@ -24,6 +24,10 @@ cat > "$TEST/bin/pgrep" <<'EOF'
 #!/bin/sh
 exit 1
 EOF
+cat > "$TEST/bin/niruio" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/niruio-args"
+EOF
 chmod +x "$TEST/bin/"*
 for tool in pipewire wireplumber pipewire-pulse sleep pkill xsetroot setxkbmap xrdb dbus-update-activation-environment; do
   ln -s noop "$TEST/bin/$tool"
@@ -40,6 +44,9 @@ export PATH="$TEST/bin:/usr/bin:/bin"
 [ "$(stat -c '%u:%a' "$XDG_CACHE_HOME/niruwm/runtime")" = "$(id -u):700" ]
 grep -q 'session startup' "$XDG_STATE_HOME/niruwm/session.log"
 printf 'PASS: no login runtime directory still reaches WM\n'
+i=0; while [ "$i" -lt 20 ] && [ ! -s "$HOME/niruio-args" ]; do i=$((i + 1)); /bin/sleep 0.1; done
+grep -qx 'heal --login' "$HOME/niruio-args"
+printf 'PASS: the session asks NIRUIO to heal sound cards once after login\n'
 
 mkdir -m 700 "$HOME/provided-runtime"
 XDG_RUNTIME_DIR="$HOME/provided-runtime" "$TEST/bin/niruwm-session"
