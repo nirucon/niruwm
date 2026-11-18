@@ -232,7 +232,7 @@ fi
 
 # Some laptops load speaker amplifier firmware while the sound service starts,
 # and a card then comes up without its microphone (or output). NIRUIO checks
-# once per login and probes such a card again; it does nothing otherwise.
+# after every login and probes such a card again; it does nothing otherwise.
 if command -v niruio >/dev/null 2>&1; then
   niruio heal --login >/dev/null 2>&1 &
 fi
