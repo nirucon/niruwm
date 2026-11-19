@@ -29,6 +29,9 @@ mod nightlight;
 #[path = "../present.rs"]
 #[allow(dead_code)] // the pid watch runs in NIRUWM
 mod present;
+#[allow(dead_code)] // the lock tracker is niruidle's
+#[path = "../proximity.rs"]
+mod proximity;
 #[path = "../session_state.rs"]
 #[allow(dead_code)] // niructl reads the list, it never writes one
 mod session_state;
@@ -77,12 +80,13 @@ pip toggle|corner | \
 lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
+proximity status|devices|set MAC|off|test [MAC] | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
 storage review [--json]|clean cache --yes | \
 agent [--dry-run] TASK | task list [--json]|clear | \
 windows rescue [--dry-run] | \
 battery status [--json]|apply|full|limit | \
-config history|diff [N|--all]|undo [STEPS] [--yes]|restore N [--yes]|reset SECTION|KEY|all [--yes] | \
+config get KEY|set KEY VALUE [--yes]|history|diff [N|--all]|undo [STEPS] [--yes]|restore N [--yes]|reset SECTION|KEY|all [--yes] | \
 input status [--json]|apply|set-keyboard LAYOUT [VARIANT]|set-repeat DELAY RATE|set-pointer natural|tap on|off|toggle natural|tap|set-speed VALUE|cycle-speed|reset";
 const CMD_ATOM: &str = "_NIRUWM_COMMAND";
 const CONFIG_SERIAL: &str = "_NIRU_CONFIG_SERIAL";
@@ -2424,6 +2428,131 @@ fn bluetooth_status() {
             }
         }
         Err(error) => println!("state=unavailable\nreason={error}"),
+    }
+}
+
+// ── niructl proximity: lock when the phone leaves ([idle] proximity_*) ────
+
+fn proximity_word(presence: &proximity::Presence) -> String {
+    match presence {
+        proximity::Presence::Near => "near (it answered)".into(),
+        proximity::Presence::Away => "away (no answer)".into(),
+        proximity::Presence::Unknown(why) => format!("unknown ({why})"),
+    }
+}
+
+fn proximity_write(value: &str) -> Result<()> {
+    let current = match fs::read_to_string(config_file()) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let new = config_set_text(&current, "idle.proximity_device", value)?;
+    config_apply(
+        &current,
+        &new,
+        &format!("idle.proximity_device = {value:?}"),
+        true,
+    )
+}
+
+fn proximity_command(args: &[String]) -> Result<()> {
+    const HELP: &str =
+        "Usage: niructl proximity status | devices | set MAC|NAME | off | test [MAC]";
+    let idle = crate::config::IdleConfig::defaults_from_shared_file().unwrap_or_default();
+    match args.first().map(String::as_str).unwrap_or("status") {
+        "status" => {
+            if idle.proximity_device.is_empty() {
+                println!("proximity lock: off");
+                println!("Turn it on: niructl proximity devices, then niructl proximity set MAC");
+                return Ok(());
+            }
+            println!("proximity lock: {}", idle.proximity_device);
+            println!("locks after: {} s out of reach", idle.proximity_lock_after);
+            println!(
+                "now: {}",
+                proximity_word(&proximity::probe(&idle.proximity_device))
+            );
+            Ok(())
+        }
+        "devices" => {
+            let state = bluetooth_state()?;
+            if state.adapter.is_none() {
+                return Err("no Bluetooth adapter found".into());
+            }
+            if state.devices.is_empty() {
+                println!(
+                    "No paired devices. Pair the phone first (Bluetooth settings or bluetoothctl)."
+                );
+            }
+            for d in state.devices {
+                println!(
+                    "{}  {}{}",
+                    d.mac,
+                    d.name,
+                    if d.mac.eq_ignore_ascii_case(&idle.proximity_device) {
+                        "  (proximity lock)"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Ok(())
+        }
+        "set" => {
+            let wanted = args.get(1).ok_or(HELP)?;
+            let address = if crate::config::is_bluetooth_address(wanted) {
+                wanted.to_ascii_uppercase()
+            } else {
+                let state = bluetooth_state()?;
+                let found: Vec<_> = state
+                    .devices
+                    .iter()
+                    .filter(|d| d.name.eq_ignore_ascii_case(wanted))
+                    .collect();
+                match found.as_slice() {
+                    [one] => one.mac.to_ascii_uppercase(),
+                    [] => {
+                        return Err(format!(
+                            "no paired device is called {wanted:?}; see niructl proximity devices"
+                        )
+                        .into())
+                    }
+                    _ => {
+                        return Err(format!(
+                            "several devices are called {wanted:?}; give the address"
+                        )
+                        .into())
+                    }
+                }
+            };
+            let now = proximity::probe(&address);
+            proximity_write(&address)?;
+            println!("{address} is {} now.", proximity_word(&now));
+            if now != proximity::Presence::Near {
+                println!("The lock waits until the phone has answered once, so nothing locks yet.");
+            }
+            Ok(())
+        }
+        "off" => proximity_write(""),
+        "test" => {
+            let address = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| idle.proximity_device.clone());
+            if address.is_empty() {
+                return Err("name a device: niructl proximity test MAC".into());
+            }
+            let started = Instant::now();
+            let presence = proximity::probe(&address);
+            println!(
+                "{address}: {} after {:.1} s",
+                proximity_word(&presence),
+                started.elapsed().as_secs_f32()
+            );
+            Ok(())
+        }
+        _ => Err(HELP.into()),
     }
 }
 
@@ -8990,6 +9119,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "timing" {
         return timing(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "proximity" {
+        return proximity_command(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "storage" {
         return storage(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -9318,6 +9450,7 @@ fn run() -> Result<()> {
             | "mode"
             | "idle"
             | "timing"
+            | "proximity"
             | "monitors"
             | "storage"
             | "agent"
@@ -11075,6 +11208,43 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
 #[cfg(test)]
 mod tests {
     #[test]
+    fn config_set_keeps_comments_and_infers_the_type() {
+        let text = "# mine\ntheme = \"niru-noir\"\n\n[idle]\n# keep\nscreensaver_timeout = 15\n";
+        let out = super::config_set_text(text, "idle.screensaver_timeout", "5").unwrap();
+        assert!(out.contains("# keep\nscreensaver_timeout = 5"));
+        assert!(out.starts_with("# mine"));
+        // A string needs no quotes on the command line.
+        let out =
+            super::config_set_text(text, "idle.proximity_device", "AA:BB:CC:DD:EE:FF").unwrap();
+        assert!(out.contains("proximity_device = \"AA:BB:CC:DD:EE:FF\""));
+        let out = super::config_set_text(text, "idle.lock_on_lid_close", "false").unwrap();
+        assert!(out.contains("lock_on_lid_close = false"));
+        // A missing table is created.
+        let out = super::config_set_text("", "idle.dpms_off_after_lock", "5").unwrap();
+        assert!(out.contains("[idle]") && out.contains("dpms_off_after_lock = 5"));
+    }
+
+    #[test]
+    fn config_set_refuses_unknown_keys_and_bad_values() {
+        let text = "[idle]\nscreensaver_timeout = 15\n";
+        assert!(super::config_set_text(text, "idle.screensaver_timeot", "5").is_err());
+        assert!(super::config_set_text(text, "idle.screensaver_timeout", "0").is_err());
+        assert!(super::config_set_text(text, "idle.screensaver_timeout", "soon").is_err());
+        assert!(super::config_set_text(text, "idle..x", "1").is_err());
+        assert!(super::config_set_text(text, "idle.\"x\"", "1").is_err());
+        assert_eq!(
+            super::config_lookup(text, "idle.screensaver_timeout")
+                .unwrap()
+                .as_deref(),
+            Some("15")
+        );
+        assert_eq!(
+            super::config_lookup(text, "idle.dpms_off_after_lock").unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn idle_status_lists_programs_from_niruidle() {
         assert_eq!(
             super::apps_from_property("Helium\tPlaying video\nmpv\t\n\n"),
@@ -11723,6 +11893,96 @@ fn stdin_is_terminal() -> bool {
 
 /// Show what `new` changes, ask (or require --yes when nobody can answer),
 /// keep the current file in the history, write, and reload the session.
+/// Split `section.key` (or a top-level `key`) into its path. Names are what
+/// TOML allows bare, so no quoting rules leak into the command line.
+fn config_key_path(key: &str) -> Result<Vec<String>> {
+    let parts: Vec<String> = key.split('.').map(str::to_string).collect();
+    let bare = |p: &String| {
+        !p.is_empty()
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    };
+    if parts.is_empty() || !parts.iter().all(bare) {
+        return Err(format!(
+            "{key:?} is not a key; write section.key, for example idle.screensaver_timeout"
+        )
+        .into());
+    }
+    Ok(parts)
+}
+
+/// The value at `key` in config text, as TOML, or `None` when it is unset.
+fn config_lookup(text: &str, key: &str) -> Result<Option<String>> {
+    let path = config_key_path(key)?;
+    let document: toml_edit::DocumentMut = text.parse().unwrap_or_default();
+    let mut item = document.as_item();
+    for part in &path {
+        match item.get(part.as_str()) {
+            Some(next) => item = next,
+            None => return Ok(None),
+        }
+    }
+    Ok(item.as_value().map(|v| v.to_string().trim().to_string()))
+}
+
+/// The config text with `key` set to `value`. The value is read as TOML
+/// first (`5`, `true`, `[\"a\", \"b\"]`) and as a plain string when that does
+/// not load, so `theme niru-nord` needs no quotes. The whole file must still
+/// load, which also rejects a key NIRUWM does not know.
+fn config_set_text(current: &str, key: &str, value: &str) -> Result<String> {
+    let path = config_key_path(key)?;
+    let render = |v: toml_edit::Value| -> Result<String> {
+        let mut document: toml_edit::DocumentMut = current.parse()?;
+        let (last, tables) = path.split_last().ok_or("empty key")?;
+        let mut table = document.as_table_mut();
+        for name in tables {
+            if table.get(name).is_none() {
+                let mut new = toml_edit::Table::new();
+                new.set_implicit(false);
+                table.insert(name, toml_edit::Item::Table(new));
+            }
+            table = table
+                .get_mut(name)
+                .and_then(|i| i.as_table_mut())
+                .ok_or_else(|| format!("{name} is not a [table] in config.toml"))?;
+        }
+        match table.get_mut(last).and_then(|i| i.as_value_mut()) {
+            // Replace the value in place, so the comment above the key and
+            // the one after the value stay where the owner wrote them.
+            Some(old) => {
+                let decor = old.decor().clone();
+                *old = v;
+                *old.decor_mut() = decor;
+            }
+            None => {
+                table.insert(last, toml_edit::value(v));
+            }
+        }
+        Ok(document.to_string())
+    };
+    let typed = value.parse::<toml_edit::Value>().ok().map(|mut v| {
+        v.decor_mut().clear();
+        v
+    });
+    let mut first_error = None;
+    if let Some(v) = typed {
+        let text = render(v)?;
+        match Config::from_text(&text) {
+            Ok(_) => return Ok(text),
+            Err(e) => first_error = Some(config::short_error(&e.to_string())),
+        }
+    }
+    let text = render(toml_edit::Value::from(value))?;
+    match Config::from_text(&text) {
+        Ok(_) => Ok(text),
+        Err(e) => Err(format!(
+            "{key} = {value} would not load ({}); nothing was changed",
+            first_error.unwrap_or_else(|| config::short_error(&e.to_string()))
+        )
+        .into()),
+    }
+}
+
 fn config_apply(current: &str, new: &str, what: &str, yes: bool) -> Result<()> {
     if let Err(e) = Config::from_text(new) {
         return Err(format!(
@@ -11787,7 +12047,7 @@ fn config_apply(current: &str, new: &str, what: &str, yes: bool) -> Result<()> {
 }
 
 fn config_command(args: &[String]) -> Result<()> {
-    const HELP: &str = "Usage: niructl config history | diff [N|--all] | undo [STEPS] [--yes] | restore N [--yes] | reset SECTION|KEY|all [--yes]";
+    const HELP: &str = "Usage: niructl config get KEY | set KEY VALUE [--yes] | history | diff [N|--all] | undo [STEPS] [--yes] | restore N [--yes] | reset SECTION|KEY|all [--yes]";
     let yes = args.iter().any(|a| a == "--yes" || a == "-y");
     let rest: Vec<&str> = args
         .iter()
@@ -11953,6 +12213,32 @@ fn config_command(args: &[String]) -> Result<()> {
             })?;
             println!("Defaults from {source}.\n");
             config_apply(&current, &new, &format!("reset of {name}"), yes)
+        }
+        Some("get") => {
+            let key = rest.first().ok_or(HELP)?;
+            match config_lookup(&current, key)? {
+                Some(value) => println!("{value}"),
+                None => {
+                    let (template, _) = config_tools::template();
+                    match config_lookup(&template, key)? {
+                        Some(value) => println!("{value} (default)"),
+                        None => println!("(not set; built-in default)"),
+                    }
+                }
+            }
+            Ok(())
+        }
+        Some("set") => {
+            let (Some(key), Some(value)) = (rest.first(), rest.get(1)) else {
+                return Err(HELP.into());
+            };
+            if rest.len() > 2 {
+                return Err(
+                    "config set takes one KEY and one VALUE; quote a value with spaces".into(),
+                );
+            }
+            let new = config_set_text(&current, key, value)?;
+            config_apply(&current, &new, &format!("{key} = {value}"), yes)
         }
         _ => Err(HELP.into()),
     }

@@ -212,6 +212,8 @@ niructl bar bottom
 niructl display save Desk            # save the current screen layout
 niructl display apply Desk
 niructl timing set screensaver_timeout 20
+niructl config set idle.lock_after_screensaver 5   # any key; comments kept, checked before writing
+niructl proximity set "Pixel 8"     # lock when the phone leaves Bluetooth reach
 niructl explain                      # what is going on with this session
 niructl lock                         # lock: manual in a terminal, silent from scripts/SSH
 niructl lock --silent                # lock without NIRULOCK pause music (rollouts, scripts)
@@ -262,7 +264,7 @@ previous settings in effect.
 | `[autostart]`, `[[recipes]]` | Programs started at login, workspace recipes |
 | `[nightlight]`, `[brightness]` | Night light and brightness |
 | `[monitors]` | Per-workspace layouts, master ratios and counts, per-screen profiles |
-| `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each; `lock_after_screensaver = 0` locks at `screensaver_timeout` instead of showing the screensaver first), `lock_on_lid_close`, `honor_app_inhibit` (default `true`: a browser playing a video or holding a call, mpv or VLC can pause the screensaver, lock and display-off; `false` ignores them) |
+| `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each; `lock_after_screensaver = 0` locks at `screensaver_timeout` instead of showing the screensaver first), `lock_on_lid_close`, `honor_app_inhibit` (default `true`: a browser playing a video or holding a call, mpv or VLC can pause the screensaver, lock and display-off; `false` ignores them), `proximity_device` and `proximity_lock_after` (lock when a paired phone has been out of Bluetooth reach for that many seconds, default off and 30; `niructl proximity`) |
 | `[bar]` | NIRUBAR modules and appearance (see the [NIRUBAR docs](https://github.com/nirucon/nirubar)) |
 | `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
 | `[swallow]` | Window swallowing: `enabled` (default `true`), `terminals`, `exclude` |

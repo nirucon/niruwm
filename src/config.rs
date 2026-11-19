@@ -564,6 +564,11 @@ pub struct IdleConfig {
     /// screensaver, lock and display-off through `org.freedesktop.ScreenSaver`
     /// on the session bus. `false` ignores their requests.
     pub honor_app_inhibit: bool,
+    /// Bluetooth address of a phone (`AA:BB:CC:DD:EE:FF`) whose absence locks
+    /// the session. Empty (the default) turns the proximity lock off.
+    pub proximity_device: String,
+    /// Seconds the phone must be out of reach before the session locks.
+    pub proximity_lock_after: u32,
 }
 
 impl Default for IdleConfig {
@@ -574,11 +579,27 @@ impl Default for IdleConfig {
             dpms_off_after_lock: 15,
             lock_on_lid_close: true,
             honor_app_inhibit: true,
+            proximity_device: String::new(),
+            proximity_lock_after: 30,
         }
     }
 }
 
+/// Whether `text` is a Bluetooth address in the `AA:BB:CC:DD:EE:FF` form.
+pub fn is_bluetooth_address(text: &str) -> bool {
+    let parts: Vec<&str> = text.split(':').collect();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
 impl IdleConfig {
+    /// Accepted range for `proximity_lock_after`, in seconds. Shorter than
+    /// ten seconds would lock on one missed answer; longer than ten minutes
+    /// is what the ordinary idle lock is for.
+    pub const PROXIMITY_SECONDS: std::ops::RangeInclusive<u32> = 10..=600;
+
     /// Largest accepted value. A day is already an unreachable idle screen;
     /// anything longer is a typo, and a wrapped or huge timer would leave the
     /// session either unlocked forever or locked immediately.
@@ -606,6 +627,15 @@ impl IdleConfig {
             dpms_off_after_lock: self.dpms_off_after_lock.min(Self::MAX_MINUTES),
             lock_on_lid_close: self.lock_on_lid_close,
             honor_app_inhibit: self.honor_app_inhibit,
+            proximity_device: if is_bluetooth_address(self.proximity_device.trim()) {
+                self.proximity_device.trim().to_ascii_uppercase()
+            } else {
+                String::new()
+            },
+            proximity_lock_after: self.proximity_lock_after.clamp(
+                *Self::PROXIMITY_SECONDS.start(),
+                *Self::PROXIMITY_SECONDS.end(),
+            ),
         }
     }
 
@@ -626,6 +656,19 @@ impl IdleConfig {
             return Err(format!(
                 "idle.lock_after_screensaver must be at most {} minutes",
                 Self::MAX_MINUTES
+            ));
+        }
+        let device = self.proximity_device.trim();
+        if !device.is_empty() && !is_bluetooth_address(device) {
+            return Err(format!(
+                "idle.proximity_device must be a Bluetooth address like AA:BB:CC:DD:EE:FF, not {device:?}"
+            ));
+        }
+        if !Self::PROXIMITY_SECONDS.contains(&self.proximity_lock_after) {
+            return Err(format!(
+                "idle.proximity_lock_after must be between {} and {} seconds",
+                Self::PROXIMITY_SECONDS.start(),
+                Self::PROXIMITY_SECONDS.end()
             ));
         }
         Ok(())
@@ -3206,8 +3249,19 @@ cell_width = 34
             dpms_off_after_lock: 0,
             lock_on_lid_close: false,
             honor_app_inhibit: false,
+            proximity_device: "aa:bb:cc:dd:ee:ff".into(),
+            proximity_lock_after: 5,
         };
         let safe = already.safe();
+        assert_eq!(safe.proximity_device, "AA:BB:CC:DD:EE:FF");
+        assert_eq!(safe.proximity_lock_after, 10, "too short is clamped");
+        let mut bad = Config::default();
+        bad.idle.proximity_device = "my phone".into();
+        assert!(bad.validate().is_err(), "a name is not an address");
+        bad.idle.proximity_device = "AA:BB:CC:DD:EE:FF".into();
+        assert!(bad.validate().is_ok());
+        bad.idle.proximity_lock_after = 601;
+        assert!(bad.validate().is_err());
         assert_eq!(safe.screensaver_timeout, 15, "bad timeout falls back");
         assert_eq!(safe.lock_after_screensaver, IdleConfig::MAX_MINUTES);
         assert_eq!(safe.dpms_off_after_lock, 0, "0 keeps the display on");

@@ -40,6 +40,8 @@ mod idle_bus;
 #[allow(dead_code)]
 #[path = "../layout.rs"]
 mod layout;
+#[path = "../proximity.rs"]
+mod proximity;
 
 /// How often the idle time is checked. Five seconds is precise enough for a
 /// fifteen minute timer and costs nothing.
@@ -57,6 +59,50 @@ struct Settings {
     lock_timeout: u64,
     /// `[idle] honor_app_inhibit`: programs may pause the ladder over D-Bus.
     honor_apps: bool,
+}
+
+/// How often the proximity lock asks the phone. Each check pages it once.
+const PROXIMITY_POLL: Duration = Duration::from_secs(10);
+
+/// `[idle] proximity_device` (empty: off) and `proximity_lock_after` seconds.
+fn load_proximity() -> (String, u64) {
+    let idle = shared_idle_settings().unwrap_or_default().safe();
+    (idle.proximity_device, u64::from(idle.proximity_lock_after))
+}
+
+/// Check the configured phone in the background, so a five second page never
+/// holds up the idle ladder. The results arrive on the returned channel.
+fn start_proximity(
+    device: std::sync::Arc<std::sync::Mutex<String>>,
+) -> std::sync::mpsc::Receiver<proximity::Presence> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Tests (tests/idle-proximity.sh) stand in for the phone with a file that
+    // says near, away or unknown; it is read every second instead of paging.
+    let fake = std::env::var_os("NIRUIDLE_TEST_PROXIMITY").map(std::path::PathBuf::from);
+    thread::spawn(move || loop {
+        let address = device.lock().map(|d| d.clone()).unwrap_or_default();
+        if address.is_empty() {
+            thread::sleep(POLL);
+            continue;
+        }
+        let presence = match &fake {
+            None => proximity::probe(&address),
+            Some(path) => match std::fs::read_to_string(path).unwrap_or_default().trim() {
+                "near" => proximity::Presence::Near,
+                "away" => proximity::Presence::Away,
+                _ => proximity::Presence::Unknown("test".into()),
+            },
+        };
+        if tx.send(presence).is_err() {
+            return;
+        }
+        thread::sleep(if fake.is_some() {
+            Duration::from_secs(1)
+        } else {
+            PROXIMITY_POLL
+        });
+    });
+    rx
 }
 
 fn config_path() -> std::path::PathBuf {
@@ -480,6 +526,14 @@ fn main() {
         eprintln!("niruidle: [idle] honor_app_inhibit = false: requests from programs are ignored");
     }
     let mut published = (0u64, settings.honor_apps);
+    let (prox_device, mut prox_after) = load_proximity();
+    if !prox_device.is_empty() {
+        eprintln!("niruidle: proximity lock: {prox_device}, locks {prox_after}s after it leaves");
+    }
+    let prox_shared = std::sync::Arc::new(std::sync::Mutex::new(prox_device));
+    let prox_results = start_proximity(prox_shared.clone());
+    let mut prox_tracker = proximity::Tracker::default();
+    let mut prox_last: Option<proximity::Presence> = None;
 
     loop {
         // `niructl timing set` writes the shared file. Pick the new values up
@@ -505,6 +559,23 @@ fn main() {
             if settings.honor_apps && bus.is_none() {
                 bus = Some(idle_bus::start());
             }
+            let (device, after) = load_proximity();
+            prox_after = after;
+            if let Ok(mut current) = prox_shared.lock() {
+                if *current != device {
+                    eprintln!(
+                        "niruidle: proximity lock: {}",
+                        if device.is_empty() {
+                            "off".to_string()
+                        } else {
+                            format!("{device}, locks {after}s after it leaves")
+                        }
+                    );
+                    *current = device;
+                    prox_tracker = proximity::Tracker::default();
+                    prox_last = None;
+                }
+            }
         }
         // Requests from programs, as one snapshot per tick: the bus thread
         // answers calls at once, the ladder looks at the table here.
@@ -523,6 +594,51 @@ fn main() {
                 let text = apps.as_ref().map(|(_, t)| t.as_str()).unwrap_or("");
                 drop(shared);
                 publish_app_inhibitors(&conn, root, app_inhibit_atom, utf8, text);
+            }
+        }
+        // The proximity lock comes before every inhibition: a video playing or
+        // `niructl idle off` keeps the screen awake for the person in front
+        // of it, not for an empty chair. It also runs before the locker is
+        // reaped, so checks made while the session was locked count as
+        // locked even when the unlock happened since.
+        while let Ok(presence) = prox_results.try_recv() {
+            if prox_last.as_ref() != Some(&presence) {
+                eprintln!(
+                    "niruidle: proximity: {}",
+                    match &presence {
+                        proximity::Presence::Near => "phone in reach".to_string(),
+                        proximity::Presence::Away => "phone out of reach".to_string(),
+                        proximity::Presence::Unknown(why) => format!("cannot check ({why})"),
+                    }
+                );
+                prox_last = Some(presence.clone());
+            }
+            let locked_now =
+                locker_child.is_some() || lock_ready_window(&conn, root, lock_ready).is_some();
+            match prox_tracker.update(
+                presence,
+                Instant::now(),
+                locked_now,
+                Duration::from_secs(prox_after),
+            ) {
+                proximity::Action::Lock => {
+                    if let Some(l) = &locker {
+                        stop_saver(&mut saver_child);
+                        eprintln!("niruidle: phone out of reach for {prox_after}s: lock");
+                        locker_child = spawn_locker(l);
+                        retry_lock_at = Instant::now() + POLL;
+                    }
+                }
+                proximity::Action::Wake => {
+                    eprintln!("niruidle: phone back: screen on for the password prompt");
+                    if display_off {
+                        xset_dpms("on");
+                        display_off = false;
+                    }
+                    let _ = conn.force_screen_saver(ScreenSaver::RESET);
+                    let _ = conn.flush();
+                }
+                proximity::Action::Nothing => {}
             }
         }
         keep_x_timers_off(&conn);

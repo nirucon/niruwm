@@ -328,8 +328,19 @@ workspaces = 10
 #                           and suspend still lock. `niructl idle status`
 #                           lists the programs that hold a request.
 #                           false ignores every program's request.
+#   proximity_device        Bluetooth address of a phone, AA:BB:CC:DD:EE:FF.
+#                           When it has not answered for proximity_lock_after
+#                           seconds (and twice in a row), the session locks,
+#                           also while a program or `niructl idle on` keeps
+#                           the screen awake. It only locks after the phone
+#                           was seen since the login or the last unlock; when
+#                           the phone returns to a locked screen, the display
+#                           wakes for the password. It never unlocks. With
+#                           Bluetooth off it does nothing. "" turns it off.
+#                           `niructl proximity devices|set|status|test|off`.
+#   proximity_lock_after    seconds out of reach before locking, 10 to 600.
 #
-# Defaults: 15, 15, 15.
+# Defaults: 15, 15, 15; proximity off, 30 seconds.
 # A value above 1440 (one day) is rejected. At runtime, an out-of-range
 # screensaver_timeout falls back to 15 so the screen is never left unlocked.
 #
@@ -345,6 +356,8 @@ lock_after_screensaver = 15
 dpms_off_after_lock = 15
 lock_on_lid_close = true
 honor_app_inhibit = true
+proximity_device = ""
+proximity_lock_after = 30
 
 # ── Bar ─────────────────────────────────────────────────────────────────────
 [bar]
