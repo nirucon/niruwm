@@ -400,7 +400,7 @@ position = "top"
 # otherwise). Its popup lists used/free/total; a click opens a terminal with
 # `nirux clean`, which asks once before freeing anything.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "headset", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "updates", "niruxupdate", "agent", "nirusec", "dnd", "timer", "disk", "drives", "quicksettings", "share", "clock"]
+modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "headset", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "updates", "niruxupdate", "restart", "agent", "nirusec", "dnd", "timer", "disk", "drives", "quicksettings", "share", "clock"]
 # true (default): `nirux update` keeps `modules` on the default list above, so
 # new modules arrive by themselves (your old file is kept in the config history:
 # `niructl config undo`). false: your own `modules` list is never changed.
@@ -411,7 +411,7 @@ disk_warn = 90
 # modules disappear from the bar, so a shared screen shows no media titles,
 # notifications, updates or other private status. They come back when
 # presenting ends. Set [] to keep them all. Read by nirubar 0.27.
-presenting_hide = ["media", "notifications", "agent", "share", "tailscale", "updates", "niruxupdate", "nirusec", "dictation", "tasks", "weather"]
+presenting_hide = ["media", "notifications", "agent", "share", "tailscale", "updates", "niruxupdate", "restart", "nirusec", "dictation", "tasks", "weather"]
 # Missing input/provider stays visible even with "muted" visibility.
 microphone_visibility = "always" # "always" or "muted"
 # Left: information. Right: mute. Scroll: gain (never unmutes).
