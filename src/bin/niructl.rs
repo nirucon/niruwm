@@ -135,6 +135,40 @@ fn backlight_percent(device: &str) -> Option<u32> {
     text.split(',').nth(3)?.trim_end_matches('%').parse().ok()
 }
 
+/// The sound for a microphone mute change: `mic-mute` or `mic-unmute`, and
+/// nothing when the state did not change (`mic-mute on` on a muted mic).
+fn mic_mute_sound(was_muted: bool, muted: bool) -> Option<&'static str> {
+    match (was_muted, muted) {
+        (false, true) => Some("mic-mute"),
+        (true, false) => Some("mic-unmute"),
+        _ => None,
+    }
+}
+
+/// Play a NIRUX sound event without an OSD: through the running NIRUNOTIFY
+/// (it reads `~/.config/nirux/sounds.toml`), else `nirux sounds play`.
+fn play_sound(event: Option<&str>) {
+    let Some(event) = event else { return };
+    let quiet = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if let Some(daemon) = program("nirunotify") {
+        if quiet(&daemon, &["--sound", event]) {
+            return;
+        }
+    }
+    if let Some(nirux) = program("nirux") {
+        quiet(&nirux, &["sounds", "play", event]);
+    }
+}
+
 fn notify(summary: &str, body: &str, value: Option<u32>) {
     notify_with_sound(summary, body, value, None);
 }
@@ -2259,6 +2293,12 @@ fn audio(args: &[String]) -> Result<()> {
                 &wpctl()?,
                 &["set-mute".into(), reading.id.to_string(), value.into()],
             )?;
+            let muted = match value {
+                "1" => true,
+                "0" => false,
+                _ => !reading.muted,
+            };
+            play_sound(mic_mute_sound(reading.muted, muted));
         }
         "mute" => {
             command(
@@ -11207,6 +11247,15 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mic_mute_sounds_follow_a_real_change_only() {
+        use super::mic_mute_sound;
+        assert_eq!(mic_mute_sound(false, true), Some("mic-mute"));
+        assert_eq!(mic_mute_sound(true, false), Some("mic-unmute"));
+        assert_eq!(mic_mute_sound(true, true), None);
+        assert_eq!(mic_mute_sound(false, false), None);
+    }
+
     #[test]
     fn config_set_keeps_comments_and_infers_the_type() {
         let text = "# mine\ntheme = \"niru-noir\"\n\n[idle]\n# keep\nscreensaver_timeout = 15\n";
