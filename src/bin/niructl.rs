@@ -4835,7 +4835,10 @@ fn suspended_seconds() -> f64 {
         unsafe { libc::clock_gettime(clock, &mut ts) };
         ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
     }
-    read(libc::CLOCK_BOOTTIME) - read(libc::CLOCK_MONOTONIC)
+    // Monotonic first: the later boottime read can only make the difference
+    // larger, never negative.
+    let monotonic = read(libc::CLOCK_MONOTONIC);
+    (read(libc::CLOCK_BOOTTIME) - monotonic).max(0.0)
 }
 
 /// True when the suspended time grew since the last look: the machine slept.
