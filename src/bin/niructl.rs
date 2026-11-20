@@ -26,6 +26,8 @@ mod layout;
 mod monitor;
 #[path = "../nightlight.rs"]
 mod nightlight;
+#[path = "../place.rs"]
+mod place;
 #[path = "../present.rs"]
 #[allow(dead_code)] // the pid watch runs in NIRUWM
 mod present;
@@ -81,6 +83,7 @@ lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
 bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
 proximity status|devices|set MAC|off|test [MAC] | \
+place status [--json]|list|save NAME|set NAME KEY VALUE|delete NAME|rename OLD NEW|apply|watch [--quiet] | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
 storage review [--json]|clean cache --yes | \
 agent [--dry-run] TASK | task list [--json]|clear | \
@@ -9268,6 +9271,9 @@ fn offline(cmd: &str) -> Result<()> {
     if cmd == "proximity" {
         return proximity_command(&std::env::args().skip(2).collect::<Vec<_>>());
     }
+    if cmd == "place" {
+        return place_command(&std::env::args().skip(2).collect::<Vec<_>>());
+    }
     if cmd == "storage" {
         return storage(&std::env::args().skip(2).collect::<Vec<_>>());
     }
@@ -9597,6 +9603,7 @@ fn run() -> Result<()> {
             | "idle"
             | "timing"
             | "proximity"
+            | "place"
             | "monitors"
             | "storage"
             | "agent"
@@ -11033,6 +11040,675 @@ fn example_text() -> Option<String> {
     candidates
         .into_iter()
         .find_map(|path| std::fs::read_to_string(path).ok())
+}
+
+// ---------------------------------------------------------------------------
+// Places: settings that follow the network (`niructl place`, docs: manual
+// chapter 10). `src/place.rs` holds the matching; this part reads the
+// kernel's routes, acts on arrival and on leaving, and watches route events.
+// ---------------------------------------------------------------------------
+
+fn place_path() -> PathBuf {
+    config::directory().join("places.toml")
+}
+
+fn place_state_path() -> PathBuf {
+    state_dir().join("place.toml")
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct PlaceState {
+    /// The place the machine is at, as last acted on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    current: Option<String>,
+    /// Do not disturb before the place turned it on or off, to put back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dnd_before: Option<bool>,
+}
+
+fn place_read() -> Result<place::PlaceFile> {
+    match fs::read_to_string(place_path()) {
+        Ok(text) => {
+            toml::from_str(&text).map_err(|e| format!("{}: {e}", place_path().display()).into())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(place::PlaceFile::default()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn place_write(file: &place::PlaceFile) -> Result<()> {
+    let path = place_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = format!(
+        "# NIRUX places: settings that follow the network (niructl place).\n\
+         # Keys per place: name, gateway, gateway_mac, link (wifi|ethernet), ssid,\n\
+         # dnd (true|false), display_profile, audio_output, on_enter, on_leave.\n\n{}",
+        toml::to_string_pretty(file)?
+    );
+    let temp = path.with_extension("new");
+    fs::write(&temp, text)?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn place_state() -> PlaceState {
+    fs::read_to_string(place_state_path())
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn place_save_state(state: &PlaceState) -> Result<()> {
+    let path = place_state_path();
+    fs::create_dir_all(path.parent().ok_or("no state directory")?)?;
+    let temp = path.with_extension("new");
+    fs::write(&temp, toml::to_string_pretty(state)?)?;
+    fs::rename(temp, path)?;
+    Ok(())
+}
+
+fn place_lock() -> Result<fs::File> {
+    use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
+    let path = place_state_path().with_extension("lock");
+    fs::create_dir_all(path.parent().ok_or("no state directory")?)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err("could not lock the place state".into());
+    }
+    Ok(file)
+}
+
+fn place_link(interface: &str) -> place::Link {
+    let base = Path::new("/sys/class/net").join(interface);
+    if base.join("wireless").exists() || base.join("phy80211").exists() {
+        place::Link::Wifi
+    } else if base.join("device").exists() {
+        place::Link::Ethernet
+    } else {
+        place::Link::Other
+    }
+}
+
+/// Make the kernel learn the router's MAC address: one empty UDP datagram
+/// to the discard port. Nothing answers; the ARP lookup is the point.
+fn place_poke(gateway: &str) {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect((gateway, 9)).is_ok() {
+            let _ = socket.send(&[]);
+        }
+    }
+}
+
+/// The ways out of the machine now, best route first.
+fn place_networks() -> Vec<place::Network> {
+    let routes = place::parse_routes(&fs::read_to_string("/proc/net/route").unwrap_or_default());
+    let read_arp = || place::parse_arp(&fs::read_to_string("/proc/net/arp").unwrap_or_default());
+    let mut arp = read_arp();
+    let missing: Vec<&(String, String, u32)> = routes
+        .iter()
+        .filter(|(interface, gateway, _)| !arp.contains_key(&(gateway.clone(), interface.clone())))
+        .collect();
+    if !missing.is_empty() {
+        for (_, gateway, _) in &missing {
+            place_poke(gateway);
+        }
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(100));
+            arp = read_arp();
+            if missing.iter().all(|(interface, gateway, _)| {
+                arp.contains_key(&(gateway.clone(), interface.clone()))
+            }) {
+                break;
+            }
+        }
+    }
+    let iw = program("iw");
+    routes
+        .into_iter()
+        .map(|(interface, gateway, metric)| {
+            let link = place_link(&interface);
+            let ssid = match (&iw, link) {
+                (Some(iw), place::Link::Wifi) => std::process::Command::new(iw)
+                    .args(["dev", &interface, "link"])
+                    .stderr(Stdio::null())
+                    .output()
+                    .ok()
+                    .and_then(|out| place::parse_iw_ssid(&String::from_utf8_lossy(&out.stdout))),
+                _ => None,
+            };
+            place::Network {
+                gateway_mac: arp.get(&(gateway.clone(), interface.clone())).cloned(),
+                interface,
+                link,
+                gateway,
+                ssid,
+                metric,
+            }
+        })
+        .collect()
+}
+
+fn place_dnd_now() -> Option<bool> {
+    let notifier = program("nirunotify")?;
+    let out = std::process::Command::new(notifier)
+        .args(["--dnd", "status"])
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    match String::from_utf8_lossy(&out.stdout).trim() {
+        "dnd on" => Some(true),
+        "dnd off" => Some(false),
+        _ => None,
+    }
+}
+
+fn place_set_dnd(on: bool) {
+    let action = if on { "on" } else { "off" };
+    if let Some(notifier) = program("nirunotify") {
+        let done = std::process::Command::new(notifier)
+            .args(["--dnd", action])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if done {
+            return;
+        }
+    }
+    let _ = dnd(&[action.to_string()]);
+}
+
+/// Run `niructl ARGS…` (this program), for actions that already exist.
+fn place_self(args: &[&str]) -> bool {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("niructl"));
+    std::process::Command::new(exe)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn place_run(commands: &[String], name: &str) {
+    for line in commands.iter().filter(|line| !line.trim().is_empty()) {
+        let _ = std::process::Command::new("sh")
+            .args(["-c", line])
+            .env("NIRUX_PLACE", name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+}
+
+fn place_leave(old: &place::Place, state: &mut PlaceState) -> Vec<String> {
+    let mut done = Vec::new();
+    place_run(&old.on_leave, &old.name);
+    if !old.on_leave.is_empty() {
+        done.push(format!("ran {} leave command(s)", old.on_leave.len()));
+    }
+    if let Some(before) = state.dnd_before.take() {
+        place_set_dnd(before);
+        done.push(format!(
+            "do not disturb {}",
+            if before { "on" } else { "off" }
+        ));
+    }
+    done
+}
+
+fn place_enter(new: &place::Place, state: &mut PlaceState) -> Vec<String> {
+    let mut done = Vec::new();
+    if let Some(on) = new.dnd {
+        if state.dnd_before.is_none() {
+            state.dnd_before = place_dnd_now();
+        }
+        place_set_dnd(on);
+        done.push(format!("do not disturb {}", if on { "on" } else { "off" }));
+    }
+    if let Some(profile) = new
+        .display_profile
+        .as_deref()
+        .filter(|p| !p.trim().is_empty())
+    {
+        if place_self(&["display", "apply", profile]) {
+            done.push(format!("display {profile}"));
+        } else {
+            done.push(format!("display {profile} could not be applied"));
+        }
+    }
+    if let Some(output) = new.audio_output.as_deref().filter(|o| !o.trim().is_empty()) {
+        if place_self(&["audio", "output", output]) {
+            done.push("sound output switched".into());
+        } else {
+            done.push("sound output not found".into());
+        }
+    }
+    place_run(&new.on_enter, &new.name);
+    if !new.on_enter.is_empty() {
+        done.push(format!("ran {} command(s)", new.on_enter.len()));
+    }
+    done
+}
+
+/// Act when the place differs from the one last acted on. `fresh` is a new
+/// session: the place is entered again (its settings and commands apply at
+/// login too) and nothing from the last session is left.
+fn place_transition(target: Option<&place::Place>, fresh: bool, quiet: bool) -> Result<()> {
+    let _guard = place_lock()?;
+    let file = place_read()?;
+    let mut state = place_state();
+    if fresh {
+        state.dnd_before = None;
+        state.current = None;
+    }
+    let target_name = target.map(|p| p.name.clone());
+    if state.current == target_name {
+        return Ok(());
+    }
+    let mut done = Vec::new();
+    if let Some(old) = state
+        .current
+        .as_deref()
+        .and_then(|name| file.places.iter().find(|p| p.name == name))
+    {
+        done.extend(place_leave(old, &mut state));
+    }
+    let (summary, intro) = match (&state.current, target) {
+        (_, Some(new)) => (format!("Place: {}", new.name), String::new()),
+        (Some(old), None) => (format!("Left {old}"), "No known network. ".to_string()),
+        (None, None) => (String::new(), String::new()),
+    };
+    if let Some(new) = target {
+        done.extend(place_enter(new, &mut state));
+    }
+    state.current = target_name;
+    place_save_state(&state)?;
+    if !summary.is_empty() {
+        let body = if done.is_empty() {
+            format!("{intro}Nothing to change.")
+        } else {
+            let mut text = format!("{intro}{}", done.join(", "));
+            if let Some(first) = text.get_mut(0..1) {
+                first.make_ascii_uppercase();
+            }
+            format!("{text}.")
+        };
+        if !quiet {
+            println!("{summary}: {body}");
+        }
+        display_notify(&summary, &body);
+    }
+    Ok(())
+}
+
+fn place_evaluate() -> Result<(Option<place::Place>, Vec<place::Network>)> {
+    let file = place_read()?;
+    let networks = place_networks();
+    Ok((place::choose(&file.places, &networks).cloned(), networks))
+}
+
+fn place_describe(p: &place::Place) -> String {
+    let mut what = vec![format!("via {}", p.gateway)];
+    if let Some(mac) = &p.gateway_mac {
+        what.push(format!("router {mac}"));
+    }
+    if let Some(link) = p.link {
+        what.push(link.name().into());
+    }
+    if let Some(ssid) = &p.ssid {
+        what.push(format!("wifi {ssid:?}"));
+    }
+    let mut does = Vec::new();
+    if let Some(on) = p.dnd {
+        does.push(format!("dnd {}", if on { "on" } else { "off" }));
+    }
+    if let Some(profile) = &p.display_profile {
+        does.push(format!("display {profile:?}"));
+    }
+    if let Some(output) = &p.audio_output {
+        does.push(format!("audio {output}"));
+    }
+    if !p.on_enter.is_empty() {
+        does.push(format!("{} on_enter", p.on_enter.len()));
+    }
+    if !p.on_leave.is_empty() {
+        does.push(format!("{} on_leave", p.on_leave.len()));
+    }
+    if does.is_empty() {
+        does.push("nothing set yet".into());
+    }
+    format!("{} ({}): {}", p.name, what.join(", "), does.join(", "))
+}
+
+fn place_watch_pid_path() -> PathBuf {
+    state_dir().join("place-watch.pid")
+}
+
+fn place_watching() -> bool {
+    fs::read_to_string(place_watch_pid_path())
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok())
+        .is_some_and(process_alive)
+}
+
+/// Route netlink: links, addresses and routes. A new network always brings
+/// a new default route; nothing is polled.
+struct RouteEvents {
+    fd: libc::c_int,
+}
+
+impl RouteEvents {
+    fn open() -> Option<Self> {
+        const RTMGRP_LINK: u32 = 0x1;
+        const RTMGRP_IPV4_IFADDR: u32 = 0x10;
+        const RTMGRP_IPV4_ROUTE: u32 = 0x40;
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_NETLINK,
+                libc::SOCK_RAW | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                libc::NETLINK_ROUTE,
+            )
+        };
+        if fd < 0 {
+            return None;
+        }
+        let mut addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        addr.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+        addr.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV4_ROUTE;
+        let bound = unsafe {
+            libc::bind(
+                fd,
+                &addr as *const libc::sockaddr_nl as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_nl>() as libc::socklen_t,
+            )
+        };
+        if bound != 0 {
+            unsafe { libc::close(fd) };
+            return None;
+        }
+        Some(Self { fd })
+    }
+
+    /// Wait up to `timeout` (forever when None); true when something came.
+    fn wait(&self, timeout: Option<Duration>) -> bool {
+        let mut pfd = libc::pollfd {
+            fd: self.fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let millis = timeout.map_or(-1, |t| t.as_millis().min(i32::MAX as u128) as i32);
+        let ready = unsafe { libc::poll(&mut pfd, 1, millis) };
+        if ready <= 0 {
+            return false;
+        }
+        let mut buffer = [0u8; 16384];
+        let mut any = false;
+        loop {
+            let read = unsafe {
+                libc::recv(
+                    self.fd,
+                    buffer.as_mut_ptr() as *mut libc::c_void,
+                    buffer.len(),
+                    0,
+                )
+            };
+            if read <= 0 {
+                break;
+            }
+            any = true;
+        }
+        any
+    }
+}
+
+impl Drop for RouteEvents {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+fn place_watch(quiet: bool) -> Result<()> {
+    let _pid = match WatchPidFile::acquire(place_watch_pid_path(), std::process::id())? {
+        Some(guard) => guard,
+        None => {
+            if !quiet {
+                println!("place watch is already running");
+            }
+            return Ok(());
+        }
+    };
+    let events = RouteEvents::open().ok_or("cannot listen for network changes")?;
+    const SETTLE: Duration = Duration::from_millis(1500);
+    let leave_after = Duration::from_secs(place::LEAVE_AFTER_SECS);
+    // A new session: enter where the machine is now.
+    let (target, _) = place_evaluate()?;
+    if let Err(error) = place_transition(target.as_ref(), true, quiet) {
+        eprintln!("niructl: place watch: {error}");
+    }
+    let mut due: Option<Instant> = None;
+    let mut nothing_since: Option<Instant> = None;
+    loop {
+        let wait = [due, nothing_since.map(|at| at + leave_after)]
+            .into_iter()
+            .flatten()
+            .min()
+            .map(|at| at.saturating_duration_since(Instant::now()));
+        if events.wait(wait) {
+            due = Some(Instant::now() + SETTLE);
+            continue;
+        }
+        let now = Instant::now();
+        let settle_done = due.is_some_and(|at| now >= at);
+        let leave_done = nothing_since.is_some_and(|at| now >= at + leave_after);
+        if !settle_done && !leave_done {
+            continue;
+        }
+        due = None;
+        let target = match place_evaluate() {
+            Ok((target, _)) => target,
+            Err(error) => {
+                eprintln!("niructl: place watch: {error}");
+                continue;
+            }
+        };
+        let current = place_state().current;
+        if target.is_none() && current.is_some() {
+            // Not known for a moment: leave only when it stays that way.
+            match nothing_since {
+                Some(at) if now >= at + leave_after => nothing_since = None,
+                Some(_) => continue,
+                None => {
+                    nothing_since = Some(now);
+                    continue;
+                }
+            }
+        } else {
+            nothing_since = None;
+        }
+        if let Err(error) = place_transition(target.as_ref(), false, quiet) {
+            eprintln!("niructl: place watch: {error}");
+        }
+    }
+}
+
+fn place_find<'a>(file: &'a mut place::PlaceFile, name: &str) -> Result<&'a mut place::Place> {
+    file.places
+        .iter_mut()
+        .find(|p| p.name == name)
+        .ok_or_else(|| format!("no place named {name:?} (niructl place list)").into())
+}
+
+fn place_command(args: &[String]) -> Result<()> {
+    let sub = args.first().map(String::as_str).unwrap_or("status");
+    let json = args.iter().any(|a| a == "--json");
+    match sub {
+        "status" => {
+            let (target, networks) = place_evaluate()?;
+            let state = place_state();
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "place": target.as_ref().map(|p| p.name.clone()),
+                        "acted_on": state.current,
+                        "networks": networks,
+                        "watching": place_watching(),
+                    })
+                );
+                return Ok(());
+            }
+            match &target {
+                Some(p) => println!("place: {}", p.name),
+                None => println!("place: none (no saved place matches this network)"),
+            }
+            if networks.is_empty() {
+                println!("network: none (no default route)");
+            }
+            for net in &networks {
+                println!(
+                    "network: {} {} via {} router {}{}",
+                    net.interface,
+                    net.link.name(),
+                    net.gateway,
+                    net.gateway_mac.as_deref().unwrap_or("unknown"),
+                    net.ssid.as_deref().map(|s| format!(" wifi {s:?}")).unwrap_or_default()
+                );
+            }
+            Ok(())
+        }
+        "list" => {
+            let file = place_read()?;
+            if file.places.is_empty() {
+                println!("no places yet: niructl place save NAME saves the network you are on");
+            }
+            for p in &file.places {
+                println!("{}", place_describe(p));
+            }
+            Ok(())
+        }
+        "save" => {
+            let name = args.get(1).map(|n| n.trim()).filter(|n| !n.is_empty()).ok_or("place save needs a NAME")?;
+            let networks = place_networks();
+            let net = networks.first().ok_or("no network: there is no default route to save")?;
+            let mut file = place_read()?;
+            let fresh = place::from_network(name, net);
+            if let Some(existing) = file.places.iter_mut().find(|p| p.name == name) {
+                existing.gateway = fresh.gateway;
+                existing.gateway_mac = fresh.gateway_mac;
+                existing.link = fresh.link;
+                existing.ssid = fresh.ssid;
+                println!("updated place {name} to this network");
+            } else {
+                file.places.push(fresh);
+                println!("saved place {name}");
+            }
+            if net.gateway_mac.is_none() {
+                println!("note: the router's hardware address was not seen; {name} matches on {} alone", net.gateway);
+            }
+            place_write(&file)?;
+            println!("{}", place_describe(file.places.iter().find(|p| p.name == name).expect("just saved")));
+            println!("choose what happens there: niructl place set {name} dnd|display|audio VALUE");
+            let (target, _) = place_evaluate()?;
+            place_transition(target.as_ref(), false, true)
+        }
+        "set" => {
+            let (Some(name), Some(key), Some(value)) = (args.get(1), args.get(2), args.get(3)) else {
+                return Err("usage: niructl place set NAME dnd on|off|unset | display PROFILE|unset | audio OUTPUT|unset | link wifi|ethernet|any | ssid NAME|any".into());
+            };
+            let mut file = place_read()?;
+            let p = place_find(&mut file, name)?;
+            let unset = matches!(value.as_str(), "unset" | "none" | "any" | "");
+            match key.as_str() {
+                "dnd" => {
+                    p.dnd = match value.as_str() {
+                        "on" | "true" => Some(true),
+                        "off" | "false" => Some(false),
+                        _ if unset => None,
+                        _ => return Err("dnd is on, off or unset".into()),
+                    }
+                }
+                "display" | "display_profile" => {
+                    if !unset && !display_read_file()?.profile.iter().any(|d| &d.name == value) {
+                        return Err(format!("no display profile named {value:?} (niructl display list)").into());
+                    }
+                    p.display_profile = (!unset).then(|| value.clone());
+                }
+                "audio" | "audio_output" => p.audio_output = (!unset).then(|| value.clone()),
+                "link" => {
+                    p.link = match value.as_str() {
+                        "wifi" => Some(place::Link::Wifi),
+                        "ethernet" => Some(place::Link::Ethernet),
+                        _ if unset => None,
+                        _ => return Err("link is wifi, ethernet or any".into()),
+                    }
+                }
+                "ssid" => p.ssid = (!unset).then(|| value.clone()),
+                _ => return Err(format!("unknown key {key:?}: dnd, display, audio, link or ssid (commands: edit {})", place_path().display()).into()),
+            }
+            let line = place_describe(p);
+            place_write(&file)?;
+            println!("{line}");
+            Ok(())
+        }
+        "delete" => {
+            let name = args.get(1).ok_or("place delete needs a NAME")?;
+            let mut file = place_read()?;
+            let before = file.places.len();
+            file.places.retain(|p| &p.name != name);
+            if file.places.len() == before {
+                return Err(format!("no place named {name:?}").into());
+            }
+            place_write(&file)?;
+            println!("deleted place {name}");
+            Ok(())
+        }
+        "rename" => {
+            let (Some(old), Some(new)) = (args.get(1), args.get(2)) else {
+                return Err("usage: niructl place rename OLD NEW".into());
+            };
+            let mut file = place_read()?;
+            if file.places.iter().any(|p| &p.name == new) {
+                return Err(format!("a place named {new:?} already exists").into());
+            }
+            place_find(&mut file, old)?.name = new.clone();
+            place_write(&file)?;
+            let _guard = place_lock()?;
+            let mut state = place_state();
+            if state.current.as_deref() == Some(old.as_str()) {
+                state.current = Some(new.clone());
+                place_save_state(&state)?;
+            }
+            println!("renamed place {old} to {new}");
+            Ok(())
+        }
+        "apply" => {
+            let (target, _) = place_evaluate()?;
+            {
+                let _guard = place_lock()?;
+                let mut state = place_state();
+                state.current = None;
+                place_save_state(&state)?;
+            }
+            place_transition(target.as_ref(), false, false)?;
+            if target.is_none() {
+                println!("no saved place matches this network");
+            }
+            Ok(())
+        }
+        "watch" => place_watch(args.iter().any(|a| a == "--quiet")),
+        _ => Err("usage: niructl place [status [--json]|list|save NAME|set NAME KEY VALUE|delete NAME|rename OLD NEW|apply|watch [--quiet]]".into()),
+    }
 }
 
 fn main() {

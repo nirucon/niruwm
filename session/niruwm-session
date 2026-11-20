@@ -289,7 +289,7 @@ fi
 fi # end of first-start-only setup
 
 # ── Helper processes, all tracked for clean logout ──────────────────────────
-STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; NIRUSHARE_PID=""; NIRUDICTATE_PID=""; POWER_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
+STATUS_PID=""; DUNST_PID=""; NOTIFY_PID=""; CLIPBOARD_PID=""; GESTURES_PID=""; STARTUP_SOUND_PID=""; PICOM_PID=""; IDLE_PID=""; LOCK_PID=""; BAT_PID=""; AUTO_PID=""; SLEEP_LOCK_PID=""; NIGHTLIGHT_PID=""; POLKIT_PID=""; AUTOSTART_PID=""; DISPLAY_WATCH_PID=""; PLACE_PID=""; NIRUSHARE_PID=""; NIRUDICTATE_PID=""; POWER_PID=""; PIPEWIRE_PID=""; WIREPLUMBER_PID=""; PULSE_PID=""
 cleanup() {
   # A deliberate session exit gets the shutdown cue. Logout, shutdown and
   # reboot through niructl play it before asking logind (which signals every
@@ -326,7 +326,7 @@ cleanup() {
       cue_wait=$((cue_wait + 1))
     done
   fi
-  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $NIRUSHARE_PID $NIRUDICTATE_PID $POWER_PID $PIPEWIRE_PID $WIREPLUMBER_PID $PULSE_PID; do
+  for pid in $STATUS_PID $DUNST_PID $NOTIFY_PID $CLIPBOARD_PID $GESTURES_PID $STARTUP_SOUND_PID $PICOM_PID $IDLE_PID $LOCK_PID $BAT_PID $AUTO_PID $SLEEP_LOCK_PID $NIGHTLIGHT_PID $POLKIT_PID $AUTOSTART_PID $DISPLAY_WATCH_PID $PLACE_PID $NIRUSHARE_PID $NIRUDICTATE_PID $POWER_PID $PIPEWIRE_PID $WIREPLUMBER_PID $PULSE_PID; do
     [ -n "$pid" ] || continue
     kill "$pid" 2>/dev/null || :
   done
@@ -582,6 +582,9 @@ fi
 # instead of competing; start it in the background so the WM is never delayed.
 if command -v niructl >/dev/null 2>&1; then
   niructl display watch --quiet >>"$WM_LOG" 2>&1 & DISPLAY_WATCH_PID=$!
+  # Places (settings that follow the network) wait for route changes; with
+  # no places saved it only listens.
+  niructl place watch --quiet >>"$WM_LOG" 2>&1 & PLACE_PID=$!
 else
   log 'display watch unavailable: niructl is not installed'
 fi
@@ -659,11 +662,11 @@ fi # end of first-start-only helpers
 # ── Helpers across a restart in place ───────────────────────────────────────
 # Every PID this script tracks, so logout still stops what an earlier copy of
 # the script started.
-TRACKED="STATUS_PID DUNST_PID NOTIFY_PID CLIPBOARD_PID GESTURES_PID STARTUP_SOUND_PID PICOM_PID IDLE_PID LOCK_PID BAT_PID AUTO_PID SLEEP_LOCK_PID NIGHTLIGHT_PID POLKIT_PID AUTOSTART_PID DISPLAY_WATCH_PID NIRUSHARE_PID NIRUDICTATE_PID POWER_PID PIPEWIRE_PID WIREPLUMBER_PID PULSE_PID"
+TRACKED="STATUS_PID DUNST_PID NOTIFY_PID CLIPBOARD_PID GESTURES_PID STARTUP_SOUND_PID PICOM_PID IDLE_PID LOCK_PID BAT_PID AUTO_PID SLEEP_LOCK_PID NIGHTLIGHT_PID POLKIT_PID AUTOSTART_PID DISPLAY_WATCH_PID PLACE_PID NIRUSHARE_PID NIRUDICTATE_PID POWER_PID PIPEWIRE_PID WIREPLUMBER_PID PULSE_PID"
 # The helpers that come from the NIRUX generation and are replaced when their
 # program changed: PID variable and program name. nirulock is never in this
 # list: a lock screen is not touched by a restart.
-REPLACEABLE="NOTIFY_PID:nirunotify CLIPBOARD_PID:niruclipboard GESTURES_PID:nirugestured IDLE_PID:niruidle NIGHTLIGHT_PID:niructl DISPLAY_WATCH_PID:niructl POWER_PID:niructl NIRUSHARE_PID:nirushare"
+REPLACEABLE="NOTIFY_PID:nirunotify CLIPBOARD_PID:niruclipboard GESTURES_PID:nirugestured IDLE_PID:niruidle NIGHTLIGHT_PID:niructl DISPLAY_WATCH_PID:niructl PLACE_PID:niructl POWER_PID:niructl NIRUSHARE_PID:nirushare"
 # A checksum of the program a helper was started from, so a changed program
 # is found even when it was replaced at the same path.
 program_sum() {
@@ -748,6 +751,7 @@ ensure_helper() {
 ensure_helpers() {
   if nightlight_wanted; then ensure_helper NIGHTLIGHT_PID "nightlight watch"; fi
   if power_auto_wanted; then ensure_helper POWER_PID "powerprofile watch"; fi
+  ensure_helper PLACE_PID "place watch"
   return 0
 }
 # Bars left by a manager that stopped without stopping them (a crash).
@@ -762,6 +766,7 @@ start_helper() {
     IDLE_PID) niruidle >>"$WM_LOG" 2>&1 & IDLE_PID=$! ;;
     NIGHTLIGHT_PID) niructl nightlight watch >>"$WM_LOG" 2>&1 & NIGHTLIGHT_PID=$! ;;
     DISPLAY_WATCH_PID) niructl display watch --quiet >>"$WM_LOG" 2>&1 & DISPLAY_WATCH_PID=$! ;;
+    PLACE_PID) niructl place watch --quiet >>"$WM_LOG" 2>&1 & PLACE_PID=$! ;;
     NIRUSHARE_PID) nirushare serve >>"$LOG_DIR/nirushare.log" 2>&1 & NIRUSHARE_PID=$! ;;
     POWER_PID) niructl powerprofile watch >>"$WM_LOG" 2>&1 & POWER_PID=$! ;;
   esac

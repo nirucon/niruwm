@@ -28,6 +28,7 @@ niructl timing show
 niructl timing set screensaver_timeout 20
 niructl storage review
 niructl input status
+niructl place status            # the place this network is (settings per network)
 niructl input set-keyboard se
 niructl input set-pointer natural on
 niructl task list
@@ -435,6 +436,48 @@ niructl display doctor [--json]   # what fits, what is missing and why
 
 See [docs/display-profiles.md](docs/display-profiles.md) for the matching
 rules, the lid, verification and retries, the state files and the limits.
+
+## Places: settings that follow the network
+
+A place is a network you come back to, told apart by its router: the router's
+IPv4 address and its hardware (MAC) address, so two homes that both use
+192.168.1.1 stay two places. Wifi or cable, and the wifi name, can narrow it.
+Stand on the network, save it, then say what happens there:
+
+```sh
+niructl place save Office              # the network in use now (best route)
+niructl place set Office dnd on        # on, off or unset
+niructl place set Office display Desk  # a NIRU Display profile
+niructl place set Office audio ID      # an output from niructl audio outputs
+niructl place set Office link ethernet # wifi, ethernet or any
+niructl place list
+niructl place status [--json]          # the networks now and the place
+niructl place apply                    # act on the place now
+```
+
+Commands on arrival and on leaving go in `~/.config/niruwm/places.toml`, with
+`NIRUX_PLACE` set to the place's name:
+
+```toml
+[[place]]
+name = "Office"
+gateway = "10.0.0.1"
+gateway_mac = "aa:bb:cc:dd:ee:ff"
+link = "ethernet"
+dnd = true
+display_profile = "Desk"
+on_enter = ["nirureminder --watch"]
+on_leave = ["pkill -f teams"]
+```
+
+`niruwm-session` starts `niructl place watch`, which waits for route changes
+from the kernel (nothing is polled) and acts when the place changes: on
+arrival it turns DND on or off, applies the display profile, switches the
+sound output and runs `on_enter`; on leaving it runs `on_leave` and puts DND
+back as it was. A login counts as arriving. When no saved place matches, the
+place is left only after 20 seconds, so a wifi that drops for a moment does
+not run anything twice. Each change shows a short notification. Without NetworkManager it works the same: it reads
+`/proc/net/route`, `/proc/net/arp` and `iw` for the wifi name.
 
 ## Audio, Bluetooth, power and modes
 
