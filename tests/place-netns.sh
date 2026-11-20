@@ -11,6 +11,8 @@ NS=niru-place-test-$$
 T=$(mktemp -d)
 cleanup() {
   [ -z "${WATCH:-}" ] || kill "$WATCH" 2>/dev/null || :
+  # Whatever still runs inside the namespace (the watcher) goes with it.
+  for pid in $(ip netns pids "$NS" 2>/dev/null); do kill "$pid" 2>/dev/null || :; done
   ip netns del "$NS" 2>/dev/null || :
   rm -rf "$T"
 }
