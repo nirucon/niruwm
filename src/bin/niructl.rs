@@ -941,7 +941,7 @@ fn update_power_action(action: &str, args: &[String]) -> Result<()> {
 
 /// A login/power action with an explicit backend and no shell.
 /// How long the shutdown cue may hold up a logout, shutdown or reboot.
-const SHUTDOWN_CUE_MAX: Duration = Duration::from_millis(3500);
+const SHUTDOWN_CUE_MAX: Duration = Duration::from_millis(4500);
 
 /// The marker that tells `niruwm-session` the cue has played already.
 fn shutdown_cue_marker() -> PathBuf {

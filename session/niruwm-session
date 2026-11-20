@@ -321,7 +321,7 @@ cleanup() {
   fi
   if [ "$CUE_PLAYING" = 1 ]; then
     cue_wait=0
-    while [ "$cue_wait" -lt 35 ] && pgrep -u "$(id -u)" -f '(pw-play|pw-cat|paplay|ffplay|mpv) .*/shutdown\.[a-z0-9]+$' >/dev/null 2>&1; do
+    while [ "$cue_wait" -lt 45 ] && pgrep -u "$(id -u)" -f '(pw-play|pw-cat|paplay|ffplay|mpv) .*/shutdown\.[a-z0-9]+$' >/dev/null 2>&1; do
       sleep 0.1
       cue_wait=$((cue_wait + 1))
     done
