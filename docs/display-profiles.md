@@ -104,6 +104,15 @@ The watcher never acts while a preview is pending; it decides as soon as the
 preview is kept, reverted or runs out. A profile you pick by hand stays until
 the next hotplug or lid change.
 
+### Waking from sleep
+
+Some graphics cards reset themselves during a suspend (amdgpu does) and bring
+the screens back in the X server's default layout: side by side and without
+rotation. For 45 seconds after a wake, the watcher treats such a change on the
+same screens as the system's, not yours, and puts back the layout they had
+before the sleep, rotation included. This works with automatic switching off
+too. A change you make later is kept as before.
+
 ### The lid
 
 On a laptop, closing the lid while another screen is connected turns the

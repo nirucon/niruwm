@@ -3415,6 +3415,13 @@ fn display_watch(args: &[String]) -> Result<()> {
     // The last lid state seen while it mattered, to lock on open -> closed.
     let mut lid_was = seen.lid;
     let mut pending: Option<Instant> = None;
+    // Waking from sleep: some GPUs (amdgpu does a full reset) bring the
+    // screens back in the server's default layout, without rotation. That
+    // is not the user's choice, so for a short while after a wake a layout
+    // change on the same screens restores the layout from before the sleep.
+    const AFTER_SLEEP: Duration = Duration::from_secs(45);
+    let mut slept = suspended_seconds();
+    let mut woke_at: Option<Instant> = None;
     let mut deferred = false;
     let mut retry_next: Option<u64> = None;
     if display_read_file()
@@ -3474,6 +3481,12 @@ fn display_watch(args: &[String]) -> Result<()> {
                 );
             }
         }
+        let slept_now = suspended_seconds();
+        if woke_from_sleep(slept, slept_now) {
+            woke_at = Some(Instant::now());
+            events = true;
+        }
+        slept = slept_now;
         if events {
             pending = Some(Instant::now() + SETTLE);
         }
@@ -3520,6 +3533,30 @@ fn display_watch(args: &[String]) -> Result<()> {
             continue;
         }
         deferred = false;
+        let after_sleep = woke_at.is_some_and(|at| at.elapsed() < AFTER_SLEEP);
+        if after_sleep && now_seen.set == seen.set && now_seen.layout != seen.layout {
+            let restored = display_restore_after_sleep(quiet).unwrap_or_else(|error| {
+                eprintln!("niructl: display watch: {error}");
+                false
+            });
+            if !restored {
+                let result = if automatic {
+                    display_auto_reconcile(DisplayTrigger::Screens, quiet).map(|_| ())
+                } else {
+                    display_watch_reconcile(quiet, true)
+                };
+                if let Err(error) = result {
+                    eprintln!("niructl: display watch: {error}");
+                }
+            }
+            seen = DisplaySeen::read();
+            retry_next = if automatic {
+                display_retry_next()
+            } else {
+                None
+            };
+            continue;
+        }
         if now_seen.set != seen.set {
             if automatic {
                 match display_auto_reconcile(DisplayTrigger::Screens, quiet) {
@@ -4780,6 +4817,72 @@ fn display_auto_reconcile(trigger: DisplayTrigger, quiet: bool) -> Result<bool> 
         display_write_toml(&display_memory_path(), &memory)?;
     }
     display_write_toml(&display_auto_state_path(), &state)?;
+    if let Ok((c, screen)) = x11rb::connect(None) {
+        let root = c.setup().roots[screen].root;
+        let _ = windows_rescue_run(&c, root, false, true);
+    }
+    Ok(true)
+}
+
+/// Seconds the machine has been suspended since boot: CLOCK_BOOTTIME keeps
+/// counting through a suspend, CLOCK_MONOTONIC does not.
+fn suspended_seconds() -> f64 {
+    fn read(clock: libc::clockid_t) -> f64 {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe { libc::clock_gettime(clock, &mut ts) };
+        ts.tv_sec as f64 + ts.tv_nsec as f64 / 1e9
+    }
+    read(libc::CLOCK_BOOTTIME) - read(libc::CLOCK_MONOTONIC)
+}
+
+/// True when the suspended time grew since the last look: the machine slept.
+fn woke_from_sleep(before: f64, now: f64) -> bool {
+    now - before > 1.0
+}
+
+/// After a wake: put back the layout these screens had before the sleep
+/// (the layout memory). False when nothing is remembered for them or a
+/// preview is open, so the caller falls back to the usual rules.
+fn display_restore_after_sleep(quiet: bool) -> Result<bool> {
+    let _guard = display_transaction_lock()?;
+    if display_preview_read().is_some() {
+        return Ok(false);
+    }
+    let file = display_read_file()?;
+    let snapshot = DisplaySnapshot::read()?;
+    let lid_closed = snapshot.lid_closed();
+    let mut memory: display_auto::Memory = display_read_toml(&display_memory_path());
+    let Some(target) = memory.restore(&snapshot.screens, lid_closed) else {
+        return Ok(false);
+    };
+    if target.is_empty() {
+        return Ok(false);
+    }
+    if display_auto::verify(&target, &snapshot.screens).is_empty() && snapshot.ghosts().is_empty() {
+        return Ok(true);
+    }
+    let (_, exact, after) = display_apply_verified(&target, &snapshot)?;
+    let body = if exact {
+        "The screens came back from sleep in another layout; the one from before is back."
+    } else {
+        "The screens came back from sleep in another layout; restored it as far as they allow."
+    };
+    if !quiet {
+        println!("display watch: {body}");
+    }
+    display_notify("Display layout restored", body);
+    let current = display_current_profile(&file, &after);
+    if memory.record(
+        &after.screens,
+        after.lid_closed(),
+        current.as_deref(),
+        now_secs(),
+    ) {
+        display_write_toml(&display_memory_path(), &memory)?;
+    }
     if let Ok((c, screen)) = x11rb::connect(None) {
         let root = c.setup().roots[screen].root;
         let _ = windows_rescue_run(&c, root, false, true);
@@ -10974,6 +11077,14 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
             startup_profile: Some("Desk".into()),
             automatic: false,
         }
+    }
+
+    #[test]
+    fn a_wake_is_seen_only_when_suspended_time_grows() {
+        assert!(!crate::woke_from_sleep(12.0, 12.0));
+        assert!(!crate::woke_from_sleep(12.0, 12.4));
+        assert!(crate::woke_from_sleep(12.0, 3612.0));
+        assert!(crate::suspended_seconds() >= 0.0);
     }
 
     #[test]
