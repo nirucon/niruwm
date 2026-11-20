@@ -1032,6 +1032,21 @@ fn shutdown_cue() {
     }
 }
 
+/// NIRUSLEEP is on and sleep turns into hibernation after its delay: its
+/// state file (root's, readable by all) says so.
+fn suspend_then_hibernate() -> bool {
+    suspend_then_hibernate_from(&fs::read_to_string("/var/lib/nirusleep/state").unwrap_or_default())
+}
+
+fn suspend_then_hibernate_from(state: &str) -> bool {
+    state
+        .lines()
+        .filter_map(|line| line.strip_prefix("delay="))
+        .next_back()
+        .and_then(|minutes| minutes.trim().parse::<u32>().ok())
+        .is_some_and(|minutes| minutes > 0)
+}
+
 fn login_action(action: &str) -> Result<()> {
     if matches!(action, "logout" | "shutdown" | "reboot") {
         shutdown_cue();
@@ -1055,6 +1070,7 @@ fn login_action(action: &str) -> Result<()> {
     let (method, verb) = match action {
         "shutdown" => ("PowerOff", "poweroff"),
         "reboot" => ("Reboot", "reboot"),
+        "suspend" if suspend_then_hibernate() => ("SuspendThenHibernate", "suspend-then-hibernate"),
         "suspend" => ("Suspend", "suspend"),
         "logout" => return Err("no logout backend: install loginctl (logind/elogind)".into()),
         _ => return Err(format!("unknown login action: {action}").into()),
@@ -11756,6 +11772,16 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
             startup_profile: Some("Desk".into()),
             automatic: false,
         }
+    }
+
+    #[test]
+    fn sleep_turns_into_hibernation_only_with_a_delay() {
+        assert!(crate::suspend_then_hibernate_from(
+            "version=0.1.0\ndelay=120\non_ac=no\n"
+        ));
+        assert!(!crate::suspend_then_hibernate_from("delay=0\n"));
+        assert!(!crate::suspend_then_hibernate_from(""));
+        assert!(!crate::suspend_then_hibernate_from("delay=soon\n"));
     }
 
     #[test]

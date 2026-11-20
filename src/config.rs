@@ -731,6 +731,9 @@ pub struct BatteryConfig {
     pub profile_on_battery: String,
     /// The profile on AC; "" or "keep" leaves it alone.
     pub profile_on_ac: String,
+    /// With NIRUSLEEP on (`nirux hibernate on`): minutes of sleep before the
+    /// machine saves to disk and switches off; 0 keeps plain suspend.
+    pub hibernate_after_minutes: u32,
 }
 
 impl Default for BatteryConfig {
@@ -740,6 +743,7 @@ impl Default for BatteryConfig {
             auto_profile: true,
             profile_on_battery: "power-saver".into(),
             profile_on_ac: "balanced".into(),
+            hibernate_after_minutes: 120,
         }
     }
 }
@@ -1613,6 +1617,11 @@ impl Config {
         }
         if !(50..=100).contains(&self.battery.charge_limit) {
             return Err("battery.charge_limit must be 50..100 (100 means no limit)".into());
+        }
+        if self.battery.hibernate_after_minutes > 10080 {
+            return Err(
+                "battery.hibernate_after_minutes must be 0..10080 (0 means plain suspend)".into(),
+            );
         }
         for (key, value) in [
             ("profile_on_battery", &self.battery.profile_on_battery),
@@ -3273,6 +3282,13 @@ cell_width = 34
 
     #[test]
     fn the_power_profile_follows_the_source_by_default() {
+        let h: Config = toml::from_str("[battery]\nhibernate_after_minutes = 180\n").unwrap();
+        assert_eq!(h.battery.hibernate_after_minutes, 180);
+        assert!(h.validate().is_ok());
+        let too_long: Config =
+            toml::from_str("[battery]\nhibernate_after_minutes = 20000\n").unwrap();
+        assert!(too_long.validate().is_err());
+        assert_eq!(Config::default().battery.hibernate_after_minutes, 120);
         let c: Config = toml::from_str("[battery]\ncharge_limit = 80\n").unwrap();
         assert!(c.validate().is_ok());
         assert_eq!(c.battery.profile_for("battery"), Some("power-saver"));
