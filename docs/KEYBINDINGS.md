@@ -36,6 +36,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Shift+A` | Sound, microphones and cameras (NIRUIO) |
 | `Super+W` / `Alt+Tab` / `` Super+` `` | Window switcher |
 | `Super+Shift+F` | Open the file manager (pcmanfm) |
+| `Super+Alt+D` | Play the NIRUX demo (any key ends it) |
 
 ### Session
 
@@ -48,6 +49,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Shift+D` | Do Not Disturb on or off |
 | `Super+Shift+C` | Keep the screen awake on or off |
 | `Super+Shift+W` | Save the open windows as the session |
+| `Super+Alt+Z` | Start the screensaver now |
 | `Super+Ctrl+Shift+Q` | Log out (end the session) |
 
 ### Layouts

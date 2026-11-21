@@ -384,6 +384,9 @@ impl Action {
         add("super+alt+p", "pip_toggle");
         add("super+ctrl+p", "pip_corner");
         add("super+alt+b", "bar_cycle");
+        // The NIRUX demo (NIRUDEMO) and the screensaver right now.
+        add("super+alt+d", "shell nirudemo");
+        add("super+alt+z", "shell niructl screensaver");
         add("super+shift+s", "scratchpad");
         // Numbered scratchpads: Super+Alt+N shows or hides slot N,
         // Super+Alt+Shift+N sends the focused window there (or back).
@@ -942,6 +945,11 @@ fn describe_shell(command: &str) -> Option<(&'static str, &'static str)> {
             "Screenshots and color",
             "Copy the text in a screen region (OCR)",
         ),
+        "nirudemo" => (
+            "Apps and launchers",
+            "Play the NIRUX demo (any key ends it)",
+        ),
+        "niructl screensaver" => ("Session", "Start the screensaver now"),
         "niruio --window" => (
             "Apps and launchers",
             "Sound, microphones and cameras (NIRUIO)",
@@ -1379,6 +1387,8 @@ mod tests {
         assert_eq!(find("super+period"), Some("launcher_emoji"));
         assert_eq!(find("super+ctrl+c"), Some("shell nirushot pick"));
         assert_eq!(find("super+ctrl+o"), Some("shell nirushot ocr"));
+        assert_eq!(find("super+alt+d"), Some("shell nirudemo"));
+        assert_eq!(find("super+alt+z"), Some("shell niructl screensaver"));
         assert_eq!(find("super+alt+period"), Some("focusmon 1"));
         assert_eq!(find("super+comma"), Some("focusmon -1"));
         assert_eq!(parse_action("launcher_keys"), Ok(Action::LauncherKeys));

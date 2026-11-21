@@ -187,6 +187,8 @@ The most important keys (the full list is in
 | `Super+Alt+S` | Toggle sticky |
 | `Super+Alt+P` | Picture-in-picture on or off (small in a corner, every workspace) |
 | `Super+Ctrl+P` | Picture-in-picture to the next corner |
+| `Super+Alt+D` | Play the NIRUX demo (NIRUDEMO; any key ends it) |
+| `Super+Alt+Z` | Start the screensaver now |
 | `Super+Shift+U` | Go to the window that asked for attention (urgent) |
 | `Super+Escape` | Lock |
 | `Super+Q` | Close window |
