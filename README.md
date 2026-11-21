@@ -115,7 +115,7 @@ display manager starts), `niruclipboard` (clipboard history helper) and
   `xwallpaper`) for wallpapers, `picom` for the compositor, `dbus-send` for
   power actions, `brightnessctl`, `xrandr`, PipeWire/PulseAudio tools.
   The default terminal is `kitty`, the default browser `brave` and the file
-  manager `pcmanfm`; all can be changed.
+  manager `nirufm`; all can be changed.
 - Building from source: Rust 1.75 or newer and a C linker.
 
 NIRUX installs all runtime dependencies for you.

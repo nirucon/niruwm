@@ -35,7 +35,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Shift+N` | Quick note to the inbox (also to Discord or a device) |
 | `Super+Shift+A` | Sound, microphones and cameras (NIRUIO) |
 | `Super+W` / `Alt+Tab` / `` Super+` `` | Window switcher |
-| `Super+Shift+F` | Open the file manager (pcmanfm) |
+| `Super+Shift+F` | Open the file manager (NIRUFM) |
 | `Super+Alt+D` | Play the NIRUX demo (any key ends it) |
 
 ### Session

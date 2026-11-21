@@ -331,7 +331,7 @@ impl Action {
         add("super+e", "overview");
         add("alt+Tab", "window_switcher");
         add("super+grave", "window_switcher");
-        add("super+shift+f", "start pcmanfm");
+        add("super+shift+f", "start nirufm");
         add("super+Escape", "lock");
         // Lock, wait for verified readiness, then suspend. The shared
         // niructl path owns the readiness check and the delay.
@@ -1019,7 +1019,9 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::WindowSwitcher => s(apps, "Window switcher"),
         Action::Overview => s(tags, "Overview of every workspace, with thumbnails"),
         Action::Start(cmd) => {
-            if cmd.trim() == "pcmanfm" {
+            if cmd.trim() == "nirufm" {
+                s(apps, "Open the file manager (NIRUFM)")
+            } else if cmd.trim() == "pcmanfm" {
                 s(apps, "Open the file manager (pcmanfm)")
             } else {
                 (apps, format!("Start {}", cmd.trim()))
