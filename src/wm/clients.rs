@@ -85,6 +85,15 @@ impl Wm {
             .unwrap_or(false)
     }
 
+    /// A modal dialog waits for an answer, so it is shown even when its
+    /// transient parent is hidden. Qt points every parentless dialog at its
+    /// never-mapped group leader: the Nextcloud account wizard and its folder
+    /// chooser came up invisible because they looked like tray popups.
+    fn modal(&self, w: Window) -> bool {
+        self.values(w, "_NET_WM_STATE")
+            .contains(&self.atom("_NET_WM_STATE_MODAL"))
+    }
+
     fn orphan_transient(&self, parent: Option<Window>) -> bool {
         let Some(parent) = parent else { return false };
         if self.clients.iter().any(|client| client.win == parent) {
@@ -101,7 +110,9 @@ impl Wm {
     pub(crate) fn manage(&mut self, w: Window) -> Result<()> {
         if let Some(client) = self.clients.iter().find(|c| c.win == w) {
             if suppress_transient(&self.withdrawn, client.parent)
-                || (self.orphan_transient(client.parent) && !self.tray_activation_recent())
+                || (self.orphan_transient(client.parent)
+                    && !self.tray_activation_recent()
+                    && !self.modal(w))
             {
                 let _ = self.c.unmap_window(w);
                 self.c.flush()?;
@@ -158,7 +169,7 @@ impl Wm {
             .filter(|w| *w != 0);
 
         self.withdrawn.remove(&w);
-        let orphan = self.orphan_transient(transient);
+        let orphan = self.orphan_transient(transient) && !self.modal(w);
         // A dialog belongs to its parent's workspace. Suppress it only when the
         // parent withdrew itself (a tray hide or a closed main window). A parent
         // that is merely hidden by the WM on another workspace still allows a

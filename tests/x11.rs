@@ -3589,3 +3589,62 @@ fn picture_in_picture_corners_survive_a_crash_and_browser_pip_goes_there_by_itse
     wait(|| wm.0.try_wait().unwrap().is_some());
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn modal_dialog_of_a_hidden_group_leader_is_shown_but_a_popup_is_not() {
+    let dir = std::env::temp_dir().join(format!("niruwm-orphan-modal-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let viewable = |w: Window| {
+        c.get_window_attributes(w)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|attrs| attrs.map_state == MapState::VIEWABLE)
+    };
+    // Qt's group leader: a 1x1 window that is never mapped. Parentless Qt
+    // dialogs name it as their transient parent.
+    let leader = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        leader,
+        root,
+        0,
+        0,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.flush().unwrap();
+    // A non-modal popup of a hidden tray app stays hidden (no tray click).
+    let popup = create_dialog(&c, root, b"nextcloud\0Nextcloud\0", leader, false);
+    // The account wizard is modal: it waits for the user and must be shown.
+    let wizard = create_dialog(&c, root, b"nextcloud\0Nextcloud\0", leader, true);
+    wait(|| viewable(wizard));
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        !viewable(popup),
+        "a non-modal popup of a hidden parent was shown"
+    );
+    // Shown again after the toolkit hid it (the wizard does this around the
+    // browser login), it comes back.
+    c.unmap_window(wizard).unwrap();
+    c.flush().unwrap();
+    wait(|| !viewable(wizard));
+    c.map_window(wizard).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(wizard));
+    for w in [wizard, popup, leader] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
