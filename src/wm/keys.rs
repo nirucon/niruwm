@@ -738,7 +738,7 @@ impl Wm {
             self.start(&cmd);
             return;
         }
-        for alternative in ["kitty", "alacritty", "foot", "xterm"] {
+        for alternative in ["niruterm", "kitty", "alacritty", "foot", "xterm"] {
             if self.command_present(alternative) {
                 eprintln!("niruwm: {first} is not installed, starting {alternative}");
                 self.start(&[alternative.to_string()]);

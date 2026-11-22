@@ -896,7 +896,8 @@ fn update_terminal(action: &str, extra: &[String]) -> Result<()> {
     };
     let mut args: Vec<String> = vec![action.to_string()];
     args.extend(extra.iter().cloned());
-    let terminals: [(&str, &str, &str); 5] = [
+    let terminals: [(&str, &str, &str); 6] = [
+        ("niruterm", "--title", "--hold"),
         ("kitty", "--title", "--hold"),
         ("foot", "-T", "--hold"),
         ("alacritty", "-t", "--hold"),
@@ -929,7 +930,7 @@ fn update_terminal(action: &str, extra: &[String]) -> Result<()> {
             .map_err(|e| format!("cannot start {name}: {e}"))?;
         return Ok(());
     }
-    Err("no terminal found for the update action (install kitty or xterm)".into())
+    Err("no terminal found for the update action (install niruterm, kitty or xterm)".into())
 }
 
 fn update_power_action(action: &str, args: &[String]) -> Result<()> {

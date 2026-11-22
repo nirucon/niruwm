@@ -339,8 +339,9 @@ pub struct SwallowConfig {
     pub exclude: Vec<String>,
 }
 
-/// Terminals NIRUX ships (kitty) and the common others.
+/// Terminals NIRUX ships (NIRUTERM, kitty) and the common others.
 pub const SWALLOW_TERMINALS: &[&str] = &[
+    "niruterm",
     "kitty",
     "Alacritty",
     "st",
