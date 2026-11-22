@@ -3287,9 +3287,35 @@ struct WatchPidFile {
     pid: u32,
 }
 
+/// A PID file left from before a reboot can name a process number that now
+/// belongs to another program (on void it was NIRUNOTIFY, so neither watcher
+/// started after a restart). The PID only counts when that process is a
+/// `niructl ... watch`; without /proc the old liveness check is kept.
+fn watcher_alive(pid: u32) -> bool {
+    if !process_alive(pid) {
+        return false;
+    }
+    match fs::read(format!("/proc/{pid}/cmdline")) {
+        Ok(raw) => is_watcher_cmdline(&raw),
+        Err(_) => !Path::new("/proc/self").exists(),
+    }
+}
+
+fn is_watcher_cmdline(raw: &[u8]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let mut args = raw.split(|b| *b == 0).filter(|a| !a.is_empty());
+    let Some(program) = args.next() else {
+        return false;
+    };
+    let named = Path::new(std::ffi::OsStr::from_bytes(program))
+        .file_name()
+        .is_some_and(|n| n == "niructl");
+    named && args.any(|a| a == b"watch")
+}
+
 impl WatchPidFile {
     fn acquire(path: PathBuf, pid: u32) -> Result<Option<Self>> {
-        Self::acquire_with(path, pid, process_alive)
+        Self::acquire_with(path, pid, watcher_alive)
     }
 
     fn acquire_with<F>(path: PathBuf, pid: u32, alive: F) -> Result<Option<Self>>
@@ -11741,8 +11767,9 @@ fn main() {
 mod display_parse_tests {
     use super::{
         display_connected_signature, display_delete_profile, display_output_signature,
-        display_outputs_from, display_rename_profile, display_resolve, profile_outputs_connected,
-        DisplayFile, DisplayOutput, DisplayProfile, WatchPidFile,
+        display_outputs_from, display_rename_profile, display_resolve, is_watcher_cmdline,
+        profile_outputs_connected, watcher_alive, DisplayFile, DisplayOutput, DisplayProfile,
+        WatchPidFile,
     };
 
     const SAMPLE: &str = "Screen 0: minimum 320 x 200, current 5120 x 1440, maximum 16384 x 16384
@@ -12021,6 +12048,19 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
             ..Default::default()
         };
         assert!(!profile_outputs_connected(&outputs, &empty));
+    }
+
+    #[test]
+    fn a_reused_pid_is_not_a_watcher() {
+        assert!(is_watcher_cmdline(b"niructl\0display\0watch\0--quiet\0"));
+        assert!(is_watcher_cmdline(
+            b"/home/u/.local/bin/niructl\0place\0watch\0"
+        ));
+        assert!(!is_watcher_cmdline(b"nirunotify\0"));
+        assert!(!is_watcher_cmdline(b"niructl\0status\0"));
+        assert!(!is_watcher_cmdline(b""));
+        // This test process is alive but is not a watcher.
+        assert!(!watcher_alive(std::process::id()));
     }
 
     #[test]
