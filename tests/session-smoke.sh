@@ -13,14 +13,14 @@ BINDIR="${1:?usage: session-smoke.sh BINDIR HOME}"
 export HOME="$2"
 export PATH="$BINDIR:$PATH"
 export XDG_CONFIG_HOME="$HOME/.config"
-export DISPLAY=:98
+export DISPLAY=${XVFB_DISPLAY:-:98}
 
-Xvfb :98 -screen 0 1280x800x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
+Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &
 XVFB=$!
 cleanup() { kill "$XVFB" 2>/dev/null || :; }
 trap cleanup EXIT INT TERM
 i=0
-while [ ! -S /tmp/.X11-unix/X98 ]; do
+while [ ! -S "/tmp/.X11-unix/X${DISPLAY#:}" ]; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL Xvfb did not start"; cat /tmp/xvfb.log; exit 1; }
   sleep 0.1
 done

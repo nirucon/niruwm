@@ -12,7 +12,7 @@
 # or removed by this standalone installer.
 set -eu
 
-VERSION="0.36.3"
+VERSION="0.37.0"
 REPO="${NIRUWM_REPO:-nirucon/niruwm}"
 PREFIX="${NIRUWM_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -160,13 +160,11 @@ build_local() {
   ( cd "$(dirname "$0")" && cargo build --release --locked )
   verify_versions "$(dirname "$0")/target/release" "$VERSION" ''
   for b in niruwm niructl niruidle niruwm-session niruclipboard nirugestured; do guard_owned "$BINDIR/$b"; done
-  for b in niruwm niructl niruidle; do
+  for b in niruwm niructl niruidle niruclipboard nirugestured; do
     [ -f "target/release/$b" ] || die "build did not produce target/release/$b"
     put "target/release/$b" "$BINDIR/$b"
   done
   put "session/niruwm-session" "$BINDIR/niruwm-session" 0755
-  put "session/niruclipboard" "$BINDIR/niruclipboard" 0755
-  put "session/nirugestured" "$BINDIR/nirugestured" 0755
   install_config
   say "Installed from source in $BINDIR"
 }

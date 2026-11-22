@@ -19,9 +19,11 @@ workspaces, eight layouts, scratchpads, session save/restore, display
 profiles, and the `niructl` and `niruidle` tools that the rest of the suite
 (NIRUBAR, NIRU Launcher, NIRUNOTIFY, NIRULOCK and friends) builds on.
 
-The repository also ships the session scripts: `niruwm-session` (what the
-display manager starts), `niruclipboard` (clipboard history helper) and
-`nirugestured` (touchpad gestures). NIRU Login starts this session.
+The repository also ships the session programs: `niruwm-session` (the
+script the display manager starts), `niruclipboard` (clipboard history) and
+`nirugestured` (touchpad gestures). NIRU Login starts this session. Since
+0.37.0 the two helpers are small Rust programs instead of Python scripts, with
+the same commands, the same history file and the same gestures.
 
 ## Features
 
@@ -440,6 +442,35 @@ With NIRUX, use `nirux uninstall`. A standalone install is removed with:
 
 Your configuration in `~/.config/niruwm` is kept; delete it manually for a
 clean slate.
+
+## Session helpers
+
+`niruclipboard daemon` keeps the clipboard history in
+`~/.local/state/niru/clipboard.json` (200 entries of at most 64 KiB, mode
+0600, nothing that looks like a password, token or private key). It no longer
+asks `xclip` every 0.75 s: X tells it when the clipboard owner changes
+(XFixes), and it reads the new text then. `niruclipboard list`, `copy ID`
+(served by a small background process until another program takes the
+clipboard, like `xclip -i`) and `clear` work as before; files written by the
+Python version open unchanged.
+
+`nirugestured` still lets libinput recognise the swipes (three fingers left
+or right: previous or next workspace; four fingers up: the overview), but it
+runs `libinput debug-events` only on touchpads. Without one (a desktop) it
+sleeps on inotify for `/dev/input` until a touchpad appears, and it switches
+workspaces with the EWMH message itself instead of starting `xdotool`.
+
+Measured on othala in a private Xvfb, one minute idle:
+
+| Helper | Before (Python) | After (Rust 0.37.0) |
+| --- | --- | --- |
+| `niruclipboard daemon` | 0.4 % CPU (0.75 % in the real session, with `xclip` every 0.75 s), 12.6 MB | 0.0 % CPU, 0.7 MB |
+| `nirugestured daemon` on a desktop | 11.7 MB plus `libinput debug-events` 5.5 MB on every input device | 0.5 MB, no libinput |
+| Binary | Python 3 script | 0.8 MB and 0.6 MB, static |
+
+The end-to-end check is `tests/xvfb.sh TARGET_DIR` (history from real
+clipboard owners, filters, INCR, `list`/`copy`/`clear`, fake touchpads,
+swipes under NIRUWM, hotplug).
 
 ## Building from source
 

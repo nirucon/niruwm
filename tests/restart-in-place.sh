@@ -3,7 +3,7 @@
 # installed one inside the same X session, keeping every window.
 #
 # Usage: sh tests/restart-in-place.sh BINDIR NIRUBAR [ROUNDS]
-#   BINDIR   release build directory (niruwm, niructl, niruidle)
+#   BINDIR   release build directory (niruwm, niructl, niruidle, niruclipboard)
 #   NIRUBAR  a nirubar binary for the bars
 #   ROUNDS   how many restarts in a row (default 5)
 #   NIRUNOTIFY=PATH (optional) also runs the notification daemon, changed
@@ -46,9 +46,9 @@ ok() { echo "OK   $*"; }
 for g in A B; do
   d="$H/.local/share/nirux/generations/$g/bin"
   mkdir -p "$d"
-  for b in niruwm niructl niruidle; do cp "$BINDIR/$b" "$d/$b"; done
+  for b in niruwm niructl niruidle niruclipboard; do cp "$BINDIR/$b" "$d/$b"; done
   cp "$NIRUBAR" "$d/nirubar"
-  cp "$SRC/session/niruwm-session" "$SRC/session/niruclipboard" "$d/"
+  cp "$SRC/session/niruwm-session" "$d/"
   chmod 755 "$d"/*
 done
 if [ -n "${NIRUNOTIFY:-}" ]; then

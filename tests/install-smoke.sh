@@ -13,25 +13,26 @@ mkdir -p "$HOME" "$fixture/release"
 sh "$SOURCE/install.sh" --build --prefix "$fixture/source"
 sh "$SOURCE/install.sh" --check --prefix "$fixture/source"
 test ! -e "$fixture/source/bin/nirubar"
-for binary in niruwm niructl niruidle; do cp "$SOURCE/target/release/$binary" "$fixture/release/$binary"; done
+for binary in niruwm niructl niruidle niruclipboard nirugestured; do cp "$SOURCE/target/release/$binary" "$fixture/release/$binary"; done
 cp "$BAR" "$fixture/release/nirubar"
 cp "$SOURCE/session/niruwm-session" "$fixture/release/niruwm-session"
-cp "$SOURCE/session/niruclipboard" "$fixture/release/niruclipboard"
-cp "$SOURCE/session/nirugestured" "$fixture/release/nirugestured"
 cp "$SOURCE/nirubar-version" "$fixture/release/nirubar-version"
 (cd "$fixture/release" && sha256sum niruwm niructl niruidle nirubar niruwm-session niruclipboard nirugestured nirubar-version > SHA256SUMS)
 NIRUWM_BASE_URL="file://$fixture/release" sh "$SOURCE/install.sh" --prefix "$fixture/prebuilt"
 sh "$SOURCE/install.sh" --check --prefix "$fixture/prebuilt"
 test "$("$fixture/prebuilt/bin/niruwm-session" --version)" = "$(sh "$SOURCE/session/niruwm-session" --version)"
 test "$("$fixture/prebuilt/bin/nirubar" --version)" = "NIRUBAR $(cat "$SOURCE/nirubar-version")"
+version=$(awk -F '"' '/^version = / {print $2; exit}' "$SOURCE/Cargo.toml")
+for helper in niruclipboard nirugestured; do
+  test "$("$fixture/source/bin/$helper" --version | awk '{print $2}')" = "$version"
+  test "$("$fixture/prebuilt/bin/$helper" --version | awk '{print $2}')" = "$version"
+done
 
 # An older release has no nirubar-version asset. Its tag metadata, not this
 # checkout's nirubar-version, defines the expected bundled bar.
 mkdir -p "$fixture/oldrelease" "$fixture/oldmeta"
-for binary in niruwm niructl niruidle; do cp "$SOURCE/target/release/$binary" "$fixture/oldrelease/$binary"; done
+for binary in niruwm niructl niruidle niruclipboard nirugestured; do cp "$SOURCE/target/release/$binary" "$fixture/oldrelease/$binary"; done
 cp "$SOURCE/session/niruwm-session" "$fixture/oldrelease/niruwm-session"
-cp "$SOURCE/session/niruclipboard" "$fixture/oldrelease/niruclipboard"
-cp "$SOURCE/session/nirugestured" "$fixture/oldrelease/nirugestured"
 cat > "$fixture/oldrelease/nirubar" <<'EOF'
 #!/bin/sh
 [ "$1" = --version ] && printf 'NIRUBAR 0.18.6\n'

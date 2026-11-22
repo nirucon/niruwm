@@ -25,8 +25,6 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
-      - name: Clipboard daemon syntax
-        run: python3 -m py_compile session/niruclipboard
       - name: Session PATH stays the same across restarts in place
         run: sh tests/session-path.sh
 
@@ -35,6 +33,10 @@ jobs:
           sudo apt-get update && sudo apt-get install -y xvfb xauth xdotool xterm xfonts-base x11-xserver-utils
           xvfb-run -a -s '-screen 0 1280x1024x24 -noreset' cargo test --locked --test x11 -- --ignored --test-threads=1
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Clipboard history and touchpad gestures (private Xvfb)
+        run: |
+          sudo apt-get install -y xclip x11-utils
+          sh tests/xvfb.sh "$PWD/target/x86_64-unknown-linux-musl/release"
       - name: Offline microphone and Bluetooth controls
         run: |
           sh tests/audio-microphone.sh "$PWD/target/x86_64-unknown-linux-musl/release/niructl"
