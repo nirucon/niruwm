@@ -76,6 +76,8 @@ impl Tool {
     /// screen it belongs to; `scale` is the NIRUX name (`fill`, `fit`,
     /// `stretch`, `center`).
     fn image_args(self, scale: &str, geometry: &str, path: &Path) -> Vec<String> {
+        // The setters have no blurred fit: smart is fill for them.
+        let scale = if scale == "smart" { "fill" } else { scale };
         let g = geometry.to_string();
         let p = path.display().to_string();
         let text = |args: &[&str], flags: bool| -> Vec<String> {
@@ -647,6 +649,7 @@ impl Wallpaper {
         let mut used = None;
         let mut failures: Vec<String> = Vec::new();
         let mut files = Vec::new();
+        let mut placed: Vec<(Output, PathBuf)> = Vec::new();
         for out in self.outputs.clone() {
             let (kind, path) = self.plan_for(&out.name);
             let scale = self.effective_scale(&out.name);
@@ -672,19 +675,35 @@ impl Wallpaper {
                         state.path = colour.clone();
                     }
                     used = path.clone().or(used);
+                    placed.push((out.clone(), file.clone()));
                     files.push(file);
                 }
                 Err(error) => {
                     state.kind = "failed".into();
                     state.note = error.to_string();
                     failures.push(format!("{}: {error}", out.name));
-                    files.push(solid_image(&colour));
+                    let solid = solid_image(&colour);
+                    placed.push((out.clone(), solid.clone()));
+                    files.push(solid);
                 }
             }
             self.last.push(state);
         }
         if !files.is_empty() {
-            if let Err(error) = set_prepared(&files) {
+            // One picture the size of the whole screen area, each monitor's
+            // part at its own position, set pixel for pixel. feh hands its
+            // files to monitors in Xinerama order, which is not always the
+            // RandR order (seen on arch: the laptop's 1920x1200 picture was
+            // stretched over a 3440x1440 monitor and the reverse).
+            let root = compose_root(&placed, &colour);
+            let result = match &root {
+                Some(root) => set_root_image(root),
+                None => set_prepared(&files),
+            };
+            let mut keep = files.clone();
+            keep.extend(root);
+            prune_cache(&keep);
+            if let Err(error) = result {
                 for state in &mut self.last {
                     state.kind = "failed".into();
                     state.note = format!("{error}");
@@ -757,7 +776,16 @@ fn prepare_output(
     // second image tool: compose each monitor to an exact output-sized PNG.
     if which("ffmpeg") {
         let (w, h) = (out.width, out.height);
+        let smart_fill = scale == "smart"
+            && image_size(source).is_some_and(|(iw, ih)| smart_fills(iw, ih, w, h));
+        let scale = if smart_fill { "fill" } else { scale };
         let filter = match scale {
+            // The whole picture, sharp in the middle, over a blurred and
+            // slightly darker copy of itself that fills the screen: no bars,
+            // no stretching and nothing important cut off, on any shape.
+            "smart" => format!(
+                "split[a][b];[a]scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},boxblur=luma_radius=min(h\\,w)/20:luma_power=2,eq=brightness=-0.08[bg];[b]scale={w}:{h}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2"
+            ),
             "fill" => format!(
                 "scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}"
             ),
@@ -788,7 +816,7 @@ fn prepare_output(
         let geometry = format!("{width}x{height}");
         let mut args: Vec<String> = vec![source.display().to_string()];
         match scale {
-            "fill" => args.extend([
+            "fill" | "smart" => args.extend([
                 "-resize".into(),
                 format!("{geometry}^"),
                 "-gravity".into(),
@@ -829,6 +857,157 @@ fn prepare_output(
         return Ok(path);
     }
     Err("ffmpeg or ImageMagick convert is required for per-output wallpapers".into())
+}
+
+/// Smart scaling crops when the shapes are close (16:9 on 16:10 loses a
+/// sliver) and shows the whole picture over a blurred copy when they are far
+/// apart (16:9 on 21:9 or on a portrait screen would lose a quarter or more).
+fn smart_fills(iw: u32, ih: u32, ow: u32, oh: u32) -> bool {
+    if iw == 0 || ih == 0 || ow == 0 || oh == 0 {
+        return true;
+    }
+    let ri = iw as f64 / ih as f64;
+    let ro = ow as f64 / oh as f64;
+    let r = if ri > ro { ri / ro } else { ro / ri };
+    r <= 1.2
+}
+
+/// Width and height of a picture, through ffprobe (part of ffmpeg).
+fn image_size(path: &Path) -> Option<(u32, u32)> {
+    let out = std::process::Command::new("timeout")
+        .args([
+            "5",
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (w, h) = text.trim().split_once(',')?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Keep the wallpaper cache small: the pictures in use and the newest few
+/// (a rotating wallpaper would otherwise add files for ever).
+fn prune_cache(keep: &[PathBuf]) {
+    let dir = wallpaper_cache_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "png") && !keep.contains(p))
+        .filter_map(|p| Some((fs::metadata(&p).ok()?.modified().ok()?, p)))
+        .collect();
+    files.sort_by_key(|a| std::cmp::Reverse(a.0));
+    for (_, p) in files.into_iter().skip(24) {
+        let _ = fs::remove_file(p);
+    }
+}
+
+/// Compose the prepared per-monitor pictures into one image covering the
+/// bounding box of all monitors (gaps in the theme colour). None when ffmpeg
+/// is missing or fails, so the caller falls back to feh's per-monitor files.
+fn compose_root(placed: &[(Output, PathBuf)], colour: &str) -> Option<PathBuf> {
+    if placed.is_empty() || !which("ffmpeg") {
+        return None;
+    }
+    let w = placed
+        .iter()
+        .map(|(o, _)| o.x.max(0) as u32 + o.width)
+        .max()?;
+    let h = placed
+        .iter()
+        .map(|(o, _)| o.y.max(0) as u32 + o.height)
+        .max()?;
+    let mut key = format!("root|{w}x{h}|{colour}");
+    for (o, f) in placed {
+        key.push_str(&format!("|{}+{}+{}", f.display(), o.x, o.y));
+    }
+    let dir = wallpaper_cache_dir();
+    fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("root-{:x}.png", Sha256::digest(key.as_bytes())));
+    if path.is_file() {
+        return Some(path);
+    }
+    let background = colour.trim_start_matches('#');
+    let mut cmd = std::process::Command::new("timeout");
+    cmd.args([
+        "20",
+        "ffmpeg",
+        "-nostdin",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+    ])
+    .arg(format!("color=c=0x{background}:s={w}x{h}"));
+    for (_, f) in placed {
+        cmd.arg("-i").arg(f);
+    }
+    let mut graph = String::new();
+    let mut last = "0:v".to_string();
+    for (i, (o, _)) in placed.iter().enumerate() {
+        let next = format!("r{i}");
+        graph.push_str(&format!(
+            "[{last}][{}:v]overlay={}:{}[{next}];",
+            i + 1,
+            o.x.max(0),
+            o.y.max(0)
+        ));
+        last = next;
+    }
+    graph.pop();
+    let ok = cmd
+        .args([
+            "-filter_complex",
+            &graph,
+            "-map",
+            &format!("[{last}]"),
+            "-frames:v",
+            "1",
+        ])
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok && path.is_file() {
+        Some(path)
+    } else {
+        let _ = fs::remove_file(&path);
+        None
+    }
+}
+
+/// Set a picture the exact size of the root window, unscaled, ignoring
+/// Xinerama, so no monitor ever gets another monitor's part.
+fn set_root_image(path: &Path) -> Result<()> {
+    if !which("feh") {
+        return Err("feh is required for per-output wallpapers".into());
+    }
+    let status = std::process::Command::new("timeout")
+        .args(["10", "feh", "--no-fehbg", "--no-xinerama", "--bg-tile"])
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .map_err(|error| format!("cannot start feh: {error}"))?;
+    if !status.success() {
+        return Err(format!("feh failed with {status}").into());
+    }
+    Ok(())
 }
 
 /// Set one prepared file per Xinerama/RandR monitor in one bounded operation.
@@ -952,6 +1131,75 @@ mod tests {
     /// Each tool must be given only arguments it accepts. `xsetroot -solid`
     /// rejects anything after the colour, which left a theme without a
     /// wallpaper unpainted and only a failing command in the session log.
+    #[test]
+    fn smart_crops_close_shapes_and_blurs_far_ones() {
+        // 16:9 picture
+        assert!(smart_fills(3840, 2160, 1920, 1080)); // same shape
+        assert!(smart_fills(3840, 2160, 1920, 1200)); // 16:10
+        assert!(!smart_fills(3840, 2160, 3440, 1440)); // 21:9 ultrawide
+        assert!(!smart_fills(3840, 2160, 1080, 1920)); // portrait
+        assert!(!smart_fills(3840, 2160, 5120, 1440)); // 32:9
+        assert!(smart_fills(0, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn monitors_get_their_own_part_of_one_root_picture() {
+        if !which("ffmpeg") {
+            return;
+        }
+        let dir = tmpdir("compose");
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        let red = dir.join("red.png");
+        let blue = dir.join("blue.png");
+        for (f, c) in [(&red, "red"), (&blue, "blue")] {
+            let ok = std::process::Command::new("ffmpeg")
+                .args(["-nostdin", "-loglevel", "error", "-y", "-f", "lavfi", "-i"])
+                .arg(format!("color=c={c}:s=64x32"))
+                .args(["-frames:v", "1"])
+                .arg(f)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+        }
+        // A wide monitor on top, a smaller one below and to the right, as on
+        // the laptop with an ultrawide screen.
+        let wide = Output {
+            name: "DP-1".into(),
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 32,
+        };
+        let low = Output {
+            name: "eDP-1".into(),
+            x: 16,
+            y: 32,
+            width: 32,
+            height: 20,
+        };
+        let a = prepare_output(&wide, Some(&red), "smart", "#000000").unwrap();
+        let b = prepare_output(&low, Some(&blue), "smart", "#000000").unwrap();
+        let root = compose_root(&[(low.clone(), b), (wide.clone(), a)], "#000000").unwrap();
+        let decoder = png::Decoder::new(std::fs::File::open(&root).unwrap());
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height), (64, 52));
+        let px = |x: usize, y: usize| {
+            let n = info.color_type.samples();
+            let i = (y * info.width as usize + x) * n;
+            (buf[i], buf[i + 1], buf[i + 2])
+        };
+        let (r, _, bl) = px(32, 10);
+        assert!(r > 200 && bl < 60, "wide monitor is red: {:?}", px(32, 10));
+        let (r, _, bl) = px(30, 42);
+        assert!(bl > 200 && r < 60, "low monitor is blue: {:?}", px(30, 42));
+        let (r, g, bl) = px(2, 48);
+        assert!(r < 20 && g < 20 && bl < 20, "the gap is the theme colour");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_colour_is_painted_with_arguments_each_tool_accepts() {
         assert_eq!(
@@ -1090,7 +1338,7 @@ mod tests {
         assert!(!w.theme_enabled("DP-1"));
         assert!(w.theme_enabled("eDP-1"));
         assert_eq!(w.effective_scale("DP-1"), "fit");
-        assert_eq!(w.effective_scale("eDP-1"), "fill");
+        assert_eq!(w.effective_scale("eDP-1"), "smart");
         fs::remove_dir_all(&dir).ok();
     }
 

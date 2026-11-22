@@ -127,8 +127,11 @@ mode = "random"
 file = ""
 # Minutes between changes. 0 disables rotation.
 rotation_minutes = 10
-# How a picture fills the screen: fill (crop), fit (letterbox), stretch, center.
-scale = "fill"
+# How a picture fills each screen: smart (crop when the shapes are close,
+# otherwise the whole picture over a blurred copy of itself: right on any
+# screen, ultrawide and portrait too), fill (crop), fit (letterbox), stretch,
+# center.
+scale = "smart"
 # Rotate through these files instead of the whole directory. Empty = the
 # directory, for example:
 #   files = ["~/Pictures/one.jpg", "~/Pictures/two.png"]

@@ -6300,8 +6300,8 @@ fn wallpaper_apply(args: &[String]) -> Result<()> {
     }
     for (key, value) in &settings {
         match key.as_str() {
-            "scale" if !["fill", "fit", "stretch", "center"].contains(&value.as_str()) => {
-                return Err("wallpaper scale must be fill, fit, stretch or center".into())
+            "scale" if !["smart", "fill", "fit", "stretch", "center"].contains(&value.as_str()) => {
+                return Err("wallpaper scale must be smart, fill, fit, stretch or center".into())
             }
             "rotation" if value.parse::<u32>().is_err() => {
                 return Err("rotation must be minutes".into())
@@ -6643,8 +6643,8 @@ fn set_output_entry(
                 change.fail("output scale needs a value");
                 return change;
             };
-            if !["fill", "fit", "stretch", "center"].contains(&scale) {
-                change.fail("output scale must be fill, fit, stretch or center");
+            if !["smart", "fill", "fit", "stretch", "center"].contains(&scale) {
+                change.fail("output scale must be smart, fill, fit, stretch or center");
                 return change;
             }
             table["scale"] = toml_edit::value(scale);
@@ -7096,8 +7096,8 @@ fn wallpaper_update(args: &[String]) -> Result<()> {
         }
         "scale" => {
             let value = args.get(1).map(String::as_str).ok_or(USAGE)?;
-            if !["fill", "fit", "stretch", "center"].contains(&value) {
-                return Err("wallpaper scale must be fill, fit, stretch or center".into());
+            if !["smart", "fill", "fit", "stretch", "center"].contains(&value) {
+                return Err("wallpaper scale must be smart, fill, fit, stretch or center".into());
             }
             document["wallpaper"]["enabled"] = toml_edit::value(true);
             document["wallpaper"]["scale"] = toml_edit::value(value);

@@ -883,7 +883,7 @@ impl Default for WallpaperConfig {
             mode: "random".into(),
             file: String::new(),
             rotation_minutes: 10,
-            scale: "fill".into(),
+            scale: "smart".into(),
             files: Vec::new(),
             shuffle_on_start: true,
             follow_theme: true,
@@ -1543,10 +1543,10 @@ impl Config {
                 .into());
             }
             if !o.scale.is_empty()
-                && !["fill", "fit", "stretch", "center"].contains(&o.scale.as_str())
+                && !["smart", "fill", "fit", "stretch", "center"].contains(&o.scale.as_str())
             {
                 return Err(format!(
-                    "wallpaper.outputs {} scale must be empty, fill, fit, stretch or center",
+                    "wallpaper.outputs {} scale must be empty, smart, fill, fit, stretch or center",
                     o.output
                 )
                 .into());
@@ -1660,8 +1660,8 @@ impl Config {
                 return Err("rules entries need a class".into());
             }
         }
-        if !["fill", "fit", "stretch", "center"].contains(&self.wallpaper.scale.as_str()) {
-            return Err("wallpaper.scale must be fill, fit, stretch or center".into());
+        if !["smart", "fill", "fit", "stretch", "center"].contains(&self.wallpaper.scale.as_str()) {
+            return Err("wallpaper.scale must be smart, fill, fit, stretch or center".into());
         }
         if self.wallpaper.rotation_minutes > 100_000 {
             return Err("wallpaper.rotation_minutes is too large".into());
