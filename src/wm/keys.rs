@@ -153,6 +153,11 @@ impl Wm {
 
     pub(super) fn dispatch(&mut self, action: Action) -> Result<bool> {
         let focused = self.focus;
+        // Where the pointer stands when a key or `niructl do` moves windows.
+        // A window the action puts under that still pointer must not take
+        // the focus (see `layout_crossing`). Asked before anything is sent,
+        // so the action's own requests still go out together.
+        self.layout_pointer = Some(self.pointer_position_now());
         match action {
             Action::Unbind => {}
             Action::Terminal => self.start_terminal(self.cfg.terminal.clone()),

@@ -312,6 +312,10 @@ pub(crate) struct Wm {
     pub(crate) focus_rate: scratch::FocusRate,
     /// Pointer focus is paused until then after a focus loop was noticed.
     pub(crate) pointer_focus_paused: Option<std::time::Instant>,
+    /// Where the pointer stood when a key or `niructl do` action last ran. A
+    /// crossing at exactly that spot is a window moving under a still
+    /// pointer (swap, layout change), not the user moving the mouse.
+    pub(crate) layout_pointer: Option<(i16, i16)>,
     /// When a focus loop was last reported, so the log gets one line, not
     /// thousands.
     pub(crate) focus_loop_reported: Option<std::time::Instant>,
@@ -563,6 +567,7 @@ impl Wm {
             scratch_enter_quiet: None,
             focus_rate: scratch::FocusRate::default(),
             pointer_focus_paused: None,
+            layout_pointer: None,
             focus_loop_reported: None,
             scratch_hide_pending: false,
             adopting: false,

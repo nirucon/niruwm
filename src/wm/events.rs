@@ -258,7 +258,13 @@ impl Wm {
                         let paused = self
                             .pointer_focus_paused
                             .is_some_and(|until| std::time::Instant::now() < until);
-                        if ours || paused {
+                        // A window that the layout moved under a pointer
+                        // that stood still: without this, swapping into the
+                        // spot under the pointer handed it the focus, and the
+                        // next swap moved that window instead (the centered
+                        // layout's middle got stuck between two windows).
+                        let moved_under = layout_crossing(self.layout_pointer, e.root_x, e.root_y);
+                        if ours || paused || moved_under {
                             return Ok(true);
                         }
                         if monitor != self.focused_monitor {
@@ -707,5 +713,26 @@ mod state_tests {
         assert_eq!(states, vec![7, 13, 11]);
         assert_eq!(next_state_atoms(&states, 11, false), vec![7, 13]);
         assert_eq!(next_state_atoms(&states, 11, true), vec![7, 13, 11]);
+    }
+}
+
+/// True when a crossing happened where the pointer already stood at the last
+/// layout, so the window moved, not the mouse.
+pub(crate) fn layout_crossing(at_layout: Option<(i16, i16)>, x: i16, y: i16) -> bool {
+    at_layout == Some((x, y))
+}
+
+#[cfg(test)]
+mod layout_crossing_tests {
+    use super::layout_crossing;
+
+    #[test]
+    fn a_window_moved_under_a_still_pointer_does_not_take_the_focus() {
+        assert!(layout_crossing(Some((960, 540)), 960, 540));
+        assert!(
+            !layout_crossing(Some((960, 540)), 961, 540),
+            "the mouse moved"
+        );
+        assert!(!layout_crossing(None, 960, 540), "nothing laid out yet");
     }
 }
