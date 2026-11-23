@@ -2058,19 +2058,12 @@ impl Wm {
         if scroll {
             return self.swap(delta);
         }
-        let tag = self.active_tag();
-        let slots: Vec<usize> = self
-            .clients
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                c.monitor == self.focused_monitor
-                    && c.tag == tag
-                    && !c.floating
-                    && c.swallowed_by.is_none()
-            })
-            .map(|(i, _)| i)
-            .collect();
+        let slots = rotation_slots(
+            &self.clients,
+            self.focused_monitor,
+            self.active_tag(),
+            &self.withdrawn,
+        );
         if !rotate_slots(&mut self.clients, &slots, delta) {
             return Ok(());
         }
@@ -2439,6 +2432,33 @@ mod tests {
     }
 
     #[test]
+    fn a_hidden_scratchpad_is_no_step_in_a_rotation() {
+        // Three windows and a hidden scratchpad on the workspace: one round
+        // is three presses, every one of them moving what is on screen.
+        let withdrawn = HashSet::new();
+        let mut scratch = client(9, 0);
+        scratch.scratch = Some(0);
+        let mut clients = vec![client(1, 0), scratch, client(2, 0), client(3, 0)];
+        let slots = rotation_slots(&clients, 0, 0, &withdrawn);
+        assert_eq!(slots, vec![0, 2, 3]);
+        let order = |c: &[Client]| -> Vec<Window> {
+            c.iter()
+                .filter(|c| tiles(c, 0, 0, &withdrawn))
+                .map(|c| c.win)
+                .collect()
+        };
+        let mut seen = vec![order(&clients)];
+        for _ in 0..3 {
+            assert!(rotate_slots(&mut clients, &slots, 1));
+            let now = order(&clients);
+            assert_ne!(&now, seen.last().unwrap(), "every press moves a window");
+            seen.push(now);
+        }
+        assert_eq!(seen[3], seen[0], "three presses make a round");
+        assert_eq!(clients[1].win, 9, "the scratchpad stays where it was");
+    }
+
+    #[test]
     fn floating_fullscreen_and_withdrawn_windows_do_not_tile() {
         let mut withdrawn = HashSet::new();
         let mut floating = client(1, 0);
@@ -2504,6 +2524,24 @@ mod tests {
 /// `delta > 0` moves the last to the first slot, `delta < 0` the first to
 /// the last. Items outside `slots` stay where they are. False when there is
 /// nothing to turn.
+/// The places in the client list that rotate: exactly the windows the
+/// layout tiles. A hidden scratchpad, a fullscreen or a withdrawn window
+/// counted as a slot once made every round have a step where nothing on
+/// screen moved (0.37.4 and 0.37.5).
+pub(crate) fn rotation_slots(
+    clients: &[Client],
+    monitor: usize,
+    active: u32,
+    withdrawn: &HashSet<Window>,
+) -> Vec<usize> {
+    clients
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| tiles(c, monitor, active, withdrawn))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 pub(crate) fn rotate_slots<T>(items: &mut [T], slots: &[usize], delta: isize) -> bool {
     if slots.len() < 2 || delta == 0 {
         return false;
