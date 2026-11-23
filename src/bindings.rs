@@ -112,6 +112,10 @@ pub enum Action {
     /// Keep the screen awake until toggled off.
     IdleToggle,
     SwapPrev,
+    /// Rotate every tiled window on the workspace one place, as dwm's
+    /// rotatestack: the focus stays on the same window (Super+Shift+J/K).
+    RotateNext,
+    RotatePrev,
     /// Go to the window that asked for attention most recently: its screen
     /// and workspace, or its scratchpad (Super+Shift+U).
     FocusUrgent,
@@ -401,8 +405,10 @@ impl Action {
         add("super+l", "inc_master_ratio");
         add("super+i", "inc_master");
         add("super+d", "dec_master");
-        add("super+shift+j", "swap_next");
-        add("super+shift+k", "swap_prev");
+        // dwm's rotatestack: the whole stack turns one place, so repeated
+        // presses bring each window into the master (or middle) in turn.
+        add("super+shift+j", "rotate_next");
+        add("super+shift+k", "rotate_prev");
         // Super+U is the centred floating layout; Shift goes to the window
         // that asked for attention (dwm marks it urgent).
         add("super+shift+u", "focus_urgent");
@@ -424,10 +430,10 @@ impl Action {
         add("super+Down", "focus_next");
         add("super+Left", "focus_prev");
         add("super+Up", "focus_prev");
-        add("super+shift+Right", "move_next"); // dwm rotatestack
-        add("super+shift+Down", "move_next");
-        add("super+shift+Left", "move_prev");
-        add("super+shift+Up", "move_prev");
+        add("super+shift+Right", "rotate_next"); // dwm rotatestack
+        add("super+shift+Down", "rotate_next");
+        add("super+shift+Left", "rotate_prev");
+        add("super+shift+Up", "rotate_prev");
 
         // ── Floating movement ───────────────────────────────────────────────
         add("super+ctrl+Left", "move_float left");
@@ -613,6 +619,8 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "overview" => Action::Overview,
         "swap_next" | "move_next" => Action::SwapNext,
         "swap_prev" | "move_prev" => Action::SwapPrev,
+        "rotate_next" | "rotatestack_next" => Action::RotateNext,
+        "rotate_prev" | "rotatestack_prev" => Action::RotatePrev,
         "move_float" => {
             let (dx, dy) = direction(arg()?, "move_float")?;
             Action::MoveFloat(dx, dy)
@@ -717,6 +725,8 @@ pub const DO_ACTIONS: &[(&str, &str, &str)] = &[
     ),
     ("swap_next", "", "Move the window down the stack"),
     ("swap_prev", "", "Move the window up the stack"),
+    ("rotate_next", "", "Rotate the stack down, the focus stays"),
+    ("rotate_prev", "", "Rotate the stack up, the focus stays"),
     ("close", "", "Close the focused window"),
     ("toggle_fullscreen", "", "Fullscreen on or off"),
     ("toggle_float", "", "Floating on or off"),
@@ -1083,6 +1093,8 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::FocusPrev => s(focus, "Focus the previous window"),
         Action::SwapNext => s(focus, "Move the window down the stack"),
         Action::SwapPrev => s(focus, "Move the window up the stack"),
+        Action::RotateNext => s(focus, "Rotate the stack down, the focus stays"),
+        Action::RotatePrev => s(focus, "Rotate the stack up, the focus stays"),
         Action::ToggleFloat => s(focus, "Floating on or off"),
         Action::ToggleFullscreen => s(focus, "Fullscreen on or off"),
         Action::ToggleSticky => s(focus, "Sticky (on every workspace) on or off"),

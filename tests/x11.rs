@@ -2590,6 +2590,97 @@ fn swapping_under_a_still_pointer_keeps_the_focus_on_the_moved_window() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+#[ignore = "requires isolated X server"]
+fn rotating_the_stack_brings_every_window_into_the_middle_like_dwm() {
+    // In the centered layout the middle is under the pointer. Swapping a
+    // window into it handed the focus to whatever the layout put under the
+    // still pointer, so the next swap moved that window back: the middle
+    // flipped between two windows and the wanted one never got there.
+    let dir = std::env::temp_dir().join(format!("niruwm-rotate-{}", std::process::id()));
+    let mut wm = scratch_wm(&dir, "[monitors]\nlayouts = [\"centered\"]\n");
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let (sw, sh) = (
+        c.setup().roots[s].width_in_pixels as i16,
+        c.setup().roots[s].height_in_pixels as i16,
+    );
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let mut windows = Vec::new();
+    // The X server is shared between the tests, so the previous manager's
+    // check window can still be there: wait until each window is managed,
+    // not until it is focused. The focus is set below.
+    for _ in 0..6 {
+        let w = create(&c, root, b"tile\0Tile\0");
+        wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&w));
+        windows.push(w);
+    }
+    let moved = *windows.last().unwrap();
+    warp(&c, root, sw / 2, sh / 2);
+    thread::sleep(Duration::from_millis(150));
+    // Focus may have gone to the window under the pointer when it was warped
+    // there; that is the user's own crossing. Give it back to `moved`.
+    let ctl = |action: &str| {
+        Command::new(env!("CARGO_BIN_EXE_niructl"))
+            .args(["do", action])
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("XDG_STATE_HOME", dir.join("state"))
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+    };
+    for _ in 0..windows.len() {
+        if values(&c, root, "_NET_ACTIVE_WINDOW") == vec![moved] {
+            break;
+        }
+        ctl("focus_next");
+        thread::sleep(Duration::from_millis(80));
+    }
+    assert_eq!(values(&c, root, "_NET_ACTIVE_WINDOW"), vec![moved]);
+    let widest = |c: &RustConnection| *windows.iter().max_by_key(|w| geometry(c, **w).2).unwrap();
+    // dwm's rotatestack: every press turns the whole stack one place and
+    // the focus stays where it was, so each window reaches the middle once
+    // per round and the order is kept.
+    let mut seen = Vec::new();
+    for step in 0..windows.len() {
+        ctl("rotate_prev");
+        thread::sleep(Duration::from_millis(120));
+        assert_eq!(
+            values(&c, root, "_NET_ACTIVE_WINDOW"),
+            vec![moved],
+            "rotation {step} moved the focus"
+        );
+        seen.push(widest(&c));
+    }
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        windows.len(),
+        "not every window reached the middle: {seen:?}"
+    );
+    for _ in 0..windows.len() {
+        ctl("rotate_next");
+    }
+    thread::sleep(Duration::from_millis(150));
+    assert_eq!(
+        widest(&c),
+        seen[windows.len() - 1],
+        "rotating back returns the same order"
+    );
+
+    for w in windows {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Stubs for studio mode: a notification daemon and power-profiles-daemon
 /// that keep their state in files, and a "picom" (a copy of `sleep`, so the
 /// process is really called picom and can be started again from its command

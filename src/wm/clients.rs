@@ -2044,6 +2044,39 @@ impl Wm {
         self.arrange()
     }
 
+    /// Turn every tiled window on the focused workspace one place in the
+    /// tiling order, like dwm's rotatestack: `1` moves the last window first,
+    /// `-1` moves the first window last. The focus stays on the same window,
+    /// so repeated presses bring each window into the master (the middle of
+    /// `centered`) in turn. `scroll` keeps its column move: turning a whole
+    /// strip would throw the view around.
+    pub(crate) fn rotate(&mut self, delta: isize) -> Result<()> {
+        let scroll = self
+            .monitors
+            .get(self.focused_monitor)
+            .is_some_and(|m| m.layout() == Layout::Scroll);
+        if scroll {
+            return self.swap(delta);
+        }
+        let tag = self.active_tag();
+        let slots: Vec<usize> = self
+            .clients
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.monitor == self.focused_monitor
+                    && c.tag == tag
+                    && !c.floating
+                    && c.swallowed_by.is_none()
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if !rotate_slots(&mut self.clients, &slots, delta) {
+            return Ok(());
+        }
+        self.arrange()
+    }
+
     /// Close the focused window politely, then forcibly.
     pub(crate) fn close(&mut self, w: Window) -> Result<()> {
         if self.has_protocol(w, "WM_DELETE_WINDOW") {
@@ -2464,5 +2497,45 @@ mod tests {
             hidden.remove(&w);
         }
         assert!(hidden.is_empty(), "no leftover bookkeeping after cycles");
+    }
+}
+
+/// Turn the items at `slots` (indices into `items`, in order) one place:
+/// `delta > 0` moves the last to the first slot, `delta < 0` the first to
+/// the last. Items outside `slots` stay where they are. False when there is
+/// nothing to turn.
+pub(crate) fn rotate_slots<T>(items: &mut [T], slots: &[usize], delta: isize) -> bool {
+    if slots.len() < 2 || delta == 0 {
+        return false;
+    }
+    let n = slots.len();
+    // Walk the cycle with swaps so no item needs to be cloned.
+    if delta > 0 {
+        for k in (1..n).rev() {
+            items.swap(slots[k], slots[k - 1]);
+        }
+    } else {
+        for k in 0..n - 1 {
+            items.swap(slots[k], slots[k + 1]);
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod rotate_slots_tests {
+    use super::rotate_slots;
+
+    #[test]
+    fn rotating_turns_only_the_tiled_slots_one_place() {
+        // f is floating (slot 2 is not part of the turn).
+        let mut v = vec!['a', 'b', 'f', 'c', 'd'];
+        assert!(rotate_slots(&mut v, &[0, 1, 3, 4], 1));
+        assert_eq!(v, vec!['d', 'a', 'f', 'b', 'c']);
+        assert!(rotate_slots(&mut v, &[0, 1, 3, 4], -1));
+        assert_eq!(v, vec!['a', 'b', 'f', 'c', 'd']);
+        assert!(rotate_slots(&mut v, &[0, 1, 3, 4], -1));
+        assert_eq!(v, vec!['b', 'c', 'f', 'd', 'a']);
+        assert!(!rotate_slots(&mut v, &[3], 1));
     }
 }

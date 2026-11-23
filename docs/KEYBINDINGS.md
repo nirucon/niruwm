@@ -91,8 +91,8 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+Alt+S` | Sticky (on every workspace) on or off |
 | `Super+Alt+P` | Picture-in-picture: small in a corner on every workspace, or back |
 | `Super+Ctrl+P` | Picture-in-picture to the next corner |
-| `Super+Shift+J` / `Super+Shift+Right` / `Super+Shift+Down` | Move the window down the stack |
-| `Super+Shift+K` / `Super+Shift+Left` / `Super+Shift+Up` | Move the window up the stack |
+| `Super+Shift+J` / `Super+Shift+Right` / `Super+Shift+Down` | Rotate the stack down, the focus stays |
+| `Super+Shift+K` / `Super+Shift+Left` / `Super+Shift+Up` | Rotate the stack up, the focus stays |
 | `Super+Shift+U` | Go to the window that asked for attention (urgent) |
 | `Super+,` / `Super+Alt+,` | Focus the previous screen |
 | `Super+Alt+.` | Focus the next screen |

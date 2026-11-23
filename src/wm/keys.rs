@@ -449,6 +449,8 @@ impl Wm {
             }
             Action::SwapNext => self.swap(1)?,
             Action::SwapPrev => self.swap(-1)?,
+            Action::RotateNext => self.rotate(1)?,
+            Action::RotatePrev => self.rotate(-1)?,
             Action::FocusUrgent => self.focus_urgent()?,
             Action::SwallowToggle => {
                 let on = !self.swallow_enabled;

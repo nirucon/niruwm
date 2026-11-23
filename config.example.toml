@@ -606,7 +606,7 @@ hide_on_focus_loss = false
 #   scroll_columns 1|2|toggle,
 #   layout_next, layout_prev,
 #   inc_master, dec_master, inc_master_ratio, dec_master_ratio,
-#   toggle_float, toggle_fullscreen, swap_next, swap_prev,
+#   toggle_float, toggle_fullscreen, swap_next, swap_prev, rotate_next, rotate_prev,
 #   move_float left|right|up|down, resize_float dx dy,
 #   media_key NAME, brightness_step N, nightlight_toggle, dnd_toggle, idle_toggle,
 #   focus_urgent (the window that asked for attention), swallow_toggle,
