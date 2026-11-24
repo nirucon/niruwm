@@ -409,7 +409,7 @@ position = "top"
 # otherwise). Its popup lists used/free/total; a click opens a terminal with
 # `nirux clean`, which asks once before freeing anything.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "headset", "brightness", "display", "tailscale", "network", "wifi", "mode", "battery", "updates", "niruxupdate", "restart", "agent", "nirusec", "dnd", "timer", "disk", "drives", "quicksettings", "share", "clock"]
+modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "headset", "brightness", "display", "tailscale", "network", "wifi", "bluetooth", "mode", "battery", "updates", "niruxupdate", "restart", "agent", "nirusec", "dnd", "timer", "disk", "drives", "quicksettings", "share", "clock"]
 # true (default): `nirux update` keeps `modules` on the default list above, so
 # new modules arrive by themselves (your old file is kept in the config history:
 # `niructl config undo`). false: your own `modules` list is never changed.

@@ -81,7 +81,7 @@ do ACTION [ARG...]|do goto MONITOR TAG [WINDOW]|do --list [--json] | \
 pip toggle|corner | \
 lock [--manual|--silent|--reason NAME] | screensaver | logout | suspend | reboot | shutdown | update-shutdown | update-reboot | dnd on|off|toggle|status | \
 audio status [--json]|outputs|sources [--json]|output ID|next|source ID|next|input ID|next|mute|mic-status [--json]|mic-mute [on|off|toggle]|mic-level up|down|set N|mic-test [SECONDS] [--json] [--keep]|volume up|down | \
-bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC | \
+bluetooth status|list|power on|off|toggle|connect MAC|disconnect MAC|scan [SECONDS]|pair MAC|forget MAC | \
 proximity status|devices|set MAC|off|test [MAC] | \
 place status [--json]|list|save NAME|set NAME KEY VALUE|delete NAME|rename OLD NEW|apply|watch [--quiet] | \
 explain [--launcher] | idle on|off|toggle|status [MINUTES] | \
@@ -1800,6 +1800,11 @@ fn audio_streams_from(text: &str) -> Vec<AudioNode> {
 
 /// Audio queries must not hold the launcher or a status worker indefinitely.
 fn provider_query(program: &str, args: &[String]) -> Result<String> {
+    provider_query_for(program, args, Duration::from_secs(2))
+}
+
+/// `provider_query` with a longer deadline: a Bluetooth scan or pairing.
+fn provider_query_for(program: &str, args: &[String], limit: Duration) -> Result<String> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -1819,7 +1824,7 @@ fn provider_query(program: &str, args: &[String]) -> Result<String> {
         let result = stdout.take(65_537).read_to_end(&mut bytes);
         let _ = sender.send((result, bytes));
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + limit;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break Some(status);
@@ -2433,6 +2438,129 @@ fn parse_bluetooth_info(mac: String, name: String, text: &str) -> BluetoothDevic
     }
 }
 
+/// bluetoothctl with a deadline of its own (scan, pair).
+fn bluetoothctl_for(args: &[&str], limit: Duration) -> Result<String> {
+    let program =
+        program("bluetoothctl").ok_or("Bluetooth control needs bluetoothctl (bluez-utils)")?;
+    provider_query_for(
+        &program,
+        &args
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>(),
+        limit,
+    )
+}
+
+/// A device seen nearby during a scan, not paired yet.
+#[derive(Clone, Debug, PartialEq)]
+struct NearbyDevice {
+    mac: String,
+    name: String,
+    /// BlueZ's icon name: audio-headset, input-mouse, phone …
+    kind: String,
+    rssi: Option<i32>,
+}
+
+fn parse_nearby(mac: &str, text: &str) -> Option<NearbyDevice> {
+    let field = |key: &str| {
+        text.lines()
+            .find_map(|line| line.trim_start().strip_prefix(key))
+            .map(str::trim)
+    };
+    if field("Paired:") == Some("yes") {
+        return None;
+    }
+    // A device without a name is a beacon or something far away: not
+    // something a person picks from a list.
+    let name = field("Name:").or_else(|| field("Alias:"))?;
+    if name.is_empty() || name.replace('-', ":").eq_ignore_ascii_case(mac) {
+        return None;
+    }
+    Some(NearbyDevice {
+        mac: mac.to_string(),
+        name: name.to_string(),
+        kind: field("Icon:").unwrap_or("").to_string(),
+        rssi: field("RSSI:").and_then(|v| {
+            // "RSSI: 0xffffffc4 (-60)" or "RSSI: -60"
+            v.split_once('(')
+                .map(|(_, r)| r.trim_end_matches(')'))
+                .unwrap_or(v)
+                .trim()
+                .parse()
+                .ok()
+        }),
+    })
+}
+
+/// Turn the adapter on when it is off: scanning and pairing need it.
+fn bluetooth_power_on() -> Result<()> {
+    let state = bluetooth_state()?;
+    if state.adapter.is_none() {
+        return Err("no Bluetooth adapter is available".into());
+    }
+    if !state.powered {
+        bluetoothctl(&["power", "on"])?;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    Ok(())
+}
+
+fn bluetooth_scan(seconds: u64) -> Result<Vec<NearbyDevice>> {
+    bluetooth_power_on()?;
+    let secs = seconds.clamp(3, 60);
+    let _ = bluetoothctl_for(
+        &["--timeout", &secs.to_string(), "scan", "on"],
+        Duration::from_secs(secs + 4),
+    );
+    let mut found = Vec::new();
+    for (mac, _) in parse_bluetooth_devices(&bluetoothctl(&["devices"])?)
+        .into_iter()
+        .take(80)
+    {
+        if let Ok(info) = bluetoothctl(&["info", &mac]) {
+            if let Some(d) = parse_nearby(&mac, &info) {
+                found.push(d);
+            }
+        }
+    }
+    // Strongest (nearest) first; unknown strength last.
+    found.sort_by_key(|d| std::cmp::Reverse(d.rssi.unwrap_or(i32::MIN)));
+    Ok(found)
+}
+
+/// Pair, trust (so it reconnects by itself) and connect. Devices that need
+/// no code (headphones, mice, most keyboards and speakers) pair here; one
+/// that asks for a code is reported.
+fn bluetooth_pair(mac: &str) -> Result<()> {
+    bluetooth_power_on()?;
+    let out = bluetoothctl_for(
+        &["--agent", "NoInputNoOutput", "--timeout", "30", "pair", mac],
+        Duration::from_secs(35),
+    )
+    .unwrap_or_default();
+    let info = bluetoothctl(&["info", mac])?;
+    if !info.lines().any(|l| l.trim() == "Paired: yes") {
+        let why = out
+            .lines()
+            .rev()
+            .find(|l| l.contains("Failed") || l.contains("rror"))
+            .unwrap_or("the device did not accept the pairing")
+            .trim()
+            .to_string();
+        return Err(format!(
+            "could not pair {mac}: {why}. Put the device in pairing mode and try again"
+        )
+        .into());
+    }
+    let _ = bluetoothctl(&["trust", mac]);
+    let _ = bluetoothctl_for(
+        &["--timeout", "15", "connect", mac],
+        Duration::from_secs(18),
+    );
+    Ok(())
+}
+
 fn bluetooth_state() -> Result<BluetoothState> {
     let show = bluetoothctl(&["show"])?;
     let (adapter, powered) = parse_bluetooth_show(&show);
@@ -2646,6 +2774,56 @@ fn bluetooth(args: &[String]) -> Result<()> {
                 bluetoothctl(&["power", if target { "on" } else { "off" }])?;
             }
             println!("bluetooth power {}", if target { "on" } else { "off" });
+        }
+        "scan" => {
+            let secs = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(10);
+            for d in bluetooth_scan(secs)? {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    d.mac,
+                    d.name,
+                    d.kind,
+                    d.rssi.map(|r| r.to_string()).unwrap_or_default()
+                );
+            }
+        }
+        "pair" => {
+            let mac = args.get(1).ok_or("bluetooth pair needs a device MAC")?;
+            if !mac.contains(':') {
+                return Err("bluetooth device must be a MAC address".into());
+            }
+            let name = bluetoothctl(&["info", mac])
+                .ok()
+                .and_then(|i| {
+                    i.lines().find_map(|l| {
+                        l.trim_start()
+                            .strip_prefix("Name:")
+                            .map(|n| n.trim().to_string())
+                    })
+                })
+                .unwrap_or_else(|| mac.clone());
+            match bluetooth_pair(mac) {
+                Ok(()) => {
+                    notify(
+                        "Bluetooth",
+                        &format!("{name} is paired and connected"),
+                        None,
+                    );
+                    println!("bluetooth paired {mac}");
+                }
+                Err(e) => {
+                    notify("Bluetooth", &e.to_string(), None);
+                    return Err(e);
+                }
+            }
+        }
+        "forget" | "remove" => {
+            let mac = args.get(1).ok_or("bluetooth forget needs a device MAC")?;
+            if !mac.contains(':') {
+                return Err("bluetooth device must be a MAC address".into());
+            }
+            bluetoothctl(&["remove", mac])?;
+            println!("bluetooth forgot {mac}");
         }
         "connect" | "disconnect" => {
             let mac = args.get(1).ok_or("bluetooth needs a device MAC")?;
@@ -12104,6 +12282,28 @@ DisplayPort-6 connected (normal left inverted right x axis y axis)
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn nearby_bluetooth_devices_need_a_name_and_no_pairing() {
+        let info = "Device AA:BB:CC:DD:EE:FF (public)\n\tName: WH-1000XM4\n\tAlias: WH-1000XM4\n\tIcon: audio-headset\n\tPaired: no\n\tRSSI: 0xffffffc4 (-60)\n";
+        let d = parse_nearby("AA:BB:CC:DD:EE:FF", info).unwrap();
+        assert_eq!(d.name, "WH-1000XM4");
+        assert_eq!(d.kind, "audio-headset");
+        assert_eq!(d.rssi, Some(-60));
+        let plain = "\tName: Mouse\n\tPaired: no\n\tRSSI: -71\n";
+        assert_eq!(
+            parse_nearby("11:22:33:44:55:66", plain).unwrap().rssi,
+            Some(-71)
+        );
+        assert!(parse_nearby("11:22", "\tName: Phone\n\tPaired: yes\n").is_none());
+        // Only an address for a name: a beacon, left out.
+        assert!(parse_nearby(
+            "11:22:33:44:55:66",
+            "\tAlias: 11-22-33-44-55-66\n\tPaired: no\n"
+        )
+        .is_none());
+    }
+
     #[test]
     fn mic_mute_sounds_follow_a_real_change_only() {
         use super::mic_mute_sound;

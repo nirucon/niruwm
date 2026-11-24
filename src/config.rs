@@ -1202,6 +1202,7 @@ impl Default for Bar {
                 "tailscale".into(),
                 "network".into(),
                 "wifi".into(),
+                "bluetooth".into(),
                 "mode".into(),
                 "battery".into(),
                 "updates".into(),
