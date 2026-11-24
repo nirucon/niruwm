@@ -166,6 +166,7 @@ impl Wm {
                                 self.kept.remove(&e.window);
                                 self.hidden.remove(&e.window);
                                 self.withdrawn.insert(e.window);
+                                self.arrange()?;
                             }
                             Some(false) => {}
                             None => {
@@ -187,7 +188,13 @@ impl Wm {
                             .and_then(|cookie| cookie.reply().ok())
                         {
                             Some(attributes) if attributes.map_state == MapState::UNMAPPED => {
-                                self.withdrawn.insert(e.window);
+                                // Its tile is free now: the windows left on the
+                                // workspace take the space at once (a window
+                                // closed to a tray used to leave a hole until
+                                // the next workspace switch).
+                                if self.withdrawn.insert(e.window) {
+                                    self.arrange()?;
+                                }
                             }
                             Some(_) => {}
                             None => {
