@@ -208,7 +208,10 @@ At login `niructl autostart` starts the `[[autostart.apps]]` of `config.toml`
 entries in `~/.config/autostart/*.desktop`, which tray programs such as
 Nextcloud and niruprodrive write. An entry is skipped when it is `Hidden`,
 `X-GNOME-Autostart-enabled=false`, not shown in NIRUWM (`OnlyShowIn`,
-`NotShowIn`), its `TryExec` is missing, or its program already runs. The
+`NotShowIn`), its `TryExec` is missing, or its program already runs. An entry
+for a program that `[[autostart.apps]]` also starts (Nextcloud or Proton Mail
+Bridge listed in both) is left to `[[autostart.apps]]`, and the XDG entries
+start after that list. The
 system entries in `/etc/xdg/autostart` are not run: the session starts its own
 helpers.
 

@@ -176,6 +176,33 @@ pub fn user_entries() -> Vec<Start> {
         .collect()
 }
 
+fn key(text: &str) -> String {
+    text.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Whether an XDG entry is a program NIRUWM's own autostart already starts
+/// (Nextcloud or Proton Mail Bridge listed in both places): compared by
+/// program and name with punctuation and case left out, either one inside
+/// the other ("ProtonMailBridge" and `protonmail-bridge-gui`).
+pub fn same_program(xdg: &Start, own: &[Start]) -> bool {
+    let mine: Vec<String> = [key(&xdg.name), key(&xdg.program())]
+        .into_iter()
+        .filter(|k| k.len() >= 4)
+        .collect();
+    own.iter().any(|o| {
+        [key(&o.name), key(&o.program())]
+            .into_iter()
+            .filter(|k| k.len() >= 4)
+            .any(|theirs| {
+                mine.iter()
+                    .any(|m| m.contains(&theirs) || theirs.contains(m.as_str()))
+            })
+    })
+}
+
 /// Whether a process of this user runs `program` (its argv[0], its binary
 /// or its short name).
 pub fn running(program: &str) -> bool {
@@ -298,6 +325,38 @@ pub fn read_snapshot(text: &str) -> Vec<Start> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_entry_niruwm_already_starts_is_recognised() {
+        let own = |name: &str, cmd: &str| Start {
+            name: name.into(),
+            command: vec![cmd.into()],
+        };
+        let mine = vec![
+            own("nextcloud", "nextcloud"),
+            own("protonmail-bridge-gui", "/usr/bin/protonmail-bridge-gui"),
+        ];
+        assert!(same_program(&own("Nextcloud", "/usr/bin/nextcloud"), &mine));
+        assert!(same_program(
+            &own("ProtonMailBridge", "/usr/bin/protonmail-bridge-gui"),
+            &mine
+        ));
+        assert!(same_program(
+            &own(
+                "Proton Mail Bridge",
+                "/usr/lib/protonmail/bridge/proton-bridge"
+            ),
+            &mine
+        ));
+        assert!(!same_program(
+            &own("niruprodrive service", "/home/u/.local/bin/niruprodrive"),
+            &mine
+        ));
+        assert!(!same_program(
+            &own("Signal", "/opt/Signal/signal-desktop"),
+            &mine
+        ));
+    }
 
     #[test]
     fn exec_lines_are_split_and_field_codes_dropped() {

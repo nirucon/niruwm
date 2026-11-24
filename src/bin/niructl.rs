@@ -7789,13 +7789,47 @@ fn session_starts(cfg: &Config) -> Vec<xdg_autostart::Start> {
             out.push(xdg_autostart::Start { name, ..s });
         }
     }
-    out.extend(xdg_autostart::user_entries());
+    let own = out.clone();
+    out.extend(
+        xdg_autostart::user_entries()
+            .into_iter()
+            .filter(|s| !xdg_autostart::same_program(s, &own)),
+    );
     out
 }
 
-/// The user's XDG autostart entries that do not run yet.
-fn start_xdg_entries() {
+/// NIRUWM's own `[[autostart.apps]]` as starts, for comparing.
+fn own_starts(cfg: &Config) -> Vec<xdg_autostart::Start> {
+    cfg.autostart
+        .apps
+        .iter()
+        .filter(|a| !a.command.is_empty())
+        .map(|a| {
+            let program = xdg_autostart::Start {
+                name: String::new(),
+                command: a.command.clone(),
+            }
+            .program();
+            xdg_autostart::Start {
+                name: a.class.clone().unwrap_or(program),
+                command: a.command.clone(),
+            }
+        })
+        .collect()
+}
+
+/// The user's XDG autostart entries that do not run yet, except programs
+/// NIRUWM's own autostart starts (those keep their workspace and order).
+fn start_xdg_entries(cfg: &Config, own_ran: bool) {
+    let own = if own_ran { own_starts(cfg) } else { Vec::new() };
     for s in xdg_autostart::user_entries() {
+        if xdg_autostart::same_program(&s, &own) {
+            eprintln!(
+                "niructl: autostart: {} is in [[autostart.apps]]; started from there",
+                s.name
+            );
+            continue;
+        }
         if xdg_autostart::running(&s.program()) {
             continue;
         }
@@ -7872,15 +7906,18 @@ fn autostart(
 ) -> Result<()> {
     let cfg = Config::load()?;
     // Tray programs and services: not part of a saved session, so they start
-    // also when the session is restored.
-    start_xdg_entries();
-    if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() {
+    // also when the session is restored, after NIRUWM's own sequence (a
+    // program that is already up by then is not started twice).
+    if !cfg.autostart.enabled
+        || cfg.autostart.apps.is_empty()
+        || autostart_suppressed(cfg.restore_session, !session_state::load().is_empty())
+    {
+        // NIRUWM's own list did not run (off, empty, or a restored session):
+        // the XDG entries are all there is.
+        start_xdg_entries(&cfg, false);
         return Ok(());
     }
-    if autostart_suppressed(cfg.restore_session, !session_state::load().is_empty()) {
-        return Ok(());
-    }
-    launch_sequence(
+    let r = launch_sequence(
         c,
         root,
         atom,
@@ -7888,7 +7925,9 @@ fn autostart(
         cfg.autostart.settle_seconds,
         cfg.autostart.window_timeout_ms,
         (cfg.autostart.return_workspace > 0).then_some(cfg.autostart.return_workspace),
-    )
+    );
+    start_xdg_entries(&cfg, true);
+    r
 }
 
 fn recipe(
