@@ -1482,6 +1482,46 @@ impl Config {
         table
     }
 
+    /// Settings that are valid but probably not meant. A window rule counts
+    /// workspaces from 0 while autostart and recipes count from 1, so a rule
+    /// written as `workspace = 8` for a program that autostart or a recipe
+    /// puts on workspace 8 sends its later windows (a reply, a second window)
+    /// to workspace 9.
+    #[allow(dead_code)] // read by `niruwm --check-config`, not by niructl
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let starts = self.autostart.apps.iter().map(|a| ("autostart", a)).chain(
+            self.recipes
+                .iter()
+                .flat_map(|r| r.apps.iter().map(|a| ("recipe", a))),
+        );
+        let mut seen = std::collections::HashSet::new();
+        for (from, app) in starts {
+            let Some(class) = app.class.as_deref().filter(|c| !c.is_empty()) else {
+                continue;
+            };
+            for rule in &self.rules {
+                let Some(index) = rule.workspace else {
+                    continue;
+                };
+                if rule.class.is_empty() || !class.contains(rule.class.as_str()) {
+                    continue;
+                }
+                if index == app.workspace && seen.insert(&rule.class) {
+                    out.push(format!(
+                        "the rule for \"{}\" has workspace = {index}, which is workspace {} (rules count from 0), \
+                         but {from} starts it on workspace {}; write workspace = {} in the rule",
+                        rule.class,
+                        index + 1,
+                        app.workspace,
+                        app.workspace.saturating_sub(1)
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     #[allow(dead_code)] // niructl validates a candidate before writing it
     pub fn validate(&self) -> Result<()> {
         use std::fmt::Write as _;
@@ -2744,6 +2784,18 @@ pub fn theme_hide(id: &str, hide: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rule_numbered_from_one_next_to_a_recipe_is_warned_about() {
+        let text = "[[rules]]\nclass = \"thunderbird\"\nworkspace = 8\n\n\
+                    [[recipes]]\nname = \"mail\"\n[[recipes.apps]]\nworkspace = 8\n\
+                    class = \"thunderbird\"\ncommand = [\"thunderbird\"]\n";
+        let w = Config::from_text(text).unwrap().warnings();
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("write workspace = 7"), "{}", w[0]);
+        let right = text.replacen("workspace = 8", "workspace = 7", 1);
+        assert!(Config::from_text(&right).unwrap().warnings().is_empty());
+    }
 
     #[test]
     fn a_typing_error_is_described_in_a_few_words() {

@@ -574,6 +574,9 @@ hide_on_focus_loss = false
 # daw_classes = ["REAPER"]       # what counts as a DAW window (WM_CLASS)
 
 # ── Window rules ────────────────────────────────────────────────────────────
+# `workspace` in a rule counts from 0 (workspace = 7 is workspace 8), unlike
+# [autostart] and [[recipes]], which count from 1. `niruwm --check-config`
+# warns when a rule and a recipe for the same program disagree by one.
 # [[rules]]
 # class = "localsend"
 # floating = true

@@ -42,6 +42,8 @@ mod studio;
 #[path = "../wallpaper.rs"]
 #[allow(dead_code)] // status resolves assets without applying a wallpaper.
 mod wallpaper;
+#[path = "../xdg_autostart.rs"]
+mod xdg_autostart;
 
 use chrono::{Local, TimeZone, Timelike};
 use config::{Config, Result, Theme};
@@ -62,7 +64,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | \
-theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | restart-wm [--check] | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
+theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | restart-wm [--check] | autostart [list|snapshot|revive [--keep]] | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
 layout NAME|columns 1|2|toggle | layouts | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
@@ -7770,12 +7772,108 @@ fn autostart_suppressed(restore_session: bool, saved_session: bool) -> bool {
     restore_session && saved_session
 }
 
+/// Everything that starts with the session: NIRUWM's `[[autostart.apps]]`
+/// (when autostart is on) and the user's XDG autostart entries.
+fn session_starts(cfg: &Config) -> Vec<xdg_autostart::Start> {
+    let mut out = Vec::new();
+    if cfg.autostart.enabled {
+        for a in &cfg.autostart.apps {
+            if a.command.is_empty() {
+                continue;
+            }
+            let s = xdg_autostart::Start {
+                name: String::new(),
+                command: a.command.clone(),
+            };
+            let name = a.class.clone().unwrap_or_else(|| s.program());
+            out.push(xdg_autostart::Start { name, ..s });
+        }
+    }
+    out.extend(xdg_autostart::user_entries());
+    out
+}
+
+/// The user's XDG autostart entries that do not run yet.
+fn start_xdg_entries() {
+    for s in xdg_autostart::user_entries() {
+        if xdg_autostart::running(&s.program()) {
+            continue;
+        }
+        match xdg_autostart::spawn(&s) {
+            Ok(()) => eprintln!("niructl: autostart: {} ({})", s.name, s.command[0]),
+            Err(e) => eprintln!("niructl: autostart: {}: {e}", s.name),
+        }
+    }
+}
+
+/// `niructl autostart list|snapshot|revive [--keep]`.
+fn autostart_command(sub: &str, rest: &[String]) -> Result<()> {
+    let cfg = Config::load()?;
+    match sub {
+        "list" => {
+            for s in session_starts(&cfg) {
+                let on = if xdg_autostart::running(&s.program()) {
+                    "running"
+                } else {
+                    "not running"
+                };
+                println!("{}\t{}\t{}", s.name, on, s.command.join(" "));
+            }
+            Ok(())
+        }
+        "snapshot" => {
+            let up: Vec<_> = session_starts(&cfg)
+                .into_iter()
+                .filter(|s| xdg_autostart::running(&s.program()))
+                .collect();
+            xdg_autostart::write_snapshot(&up)?;
+            Ok(())
+        }
+        "revive" => {
+            let keep = rest.iter().any(|a| a == "--keep");
+            let path = xdg_autostart::snapshot_path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                return Ok(());
+            };
+            // A list from long ago (a crash before a wake-up) is not used.
+            let fresh = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < Duration::from_secs(14 * 24 * 3600));
+            if !keep {
+                let _ = std::fs::remove_file(&path);
+            }
+            if !fresh {
+                return Ok(());
+            }
+            for s in xdg_autostart::read_snapshot(&text) {
+                if xdg_autostart::running(&s.program()) {
+                    continue;
+                }
+                match xdg_autostart::spawn(&s) {
+                    Ok(()) => println!("{}", s.name),
+                    Err(e) => eprintln!("niructl: autostart revive: {}: {e}", s.name),
+                }
+            }
+            Ok(())
+        }
+        other => Err(format!(
+            "autostart: unknown subcommand {other}; use list, snapshot or revive"
+        )
+        .into()),
+    }
+}
+
 fn autostart(
     c: &x11rb::rust_connection::RustConnection,
     root: Window,
     atom: &dyn Fn(&str) -> Result<Atom>,
 ) -> Result<()> {
     let cfg = Config::load()?;
+    // Tray programs and services: not part of a saved session, so they start
+    // also when the session is restored.
+    start_xdg_entries();
     if !cfg.autostart.enabled || cfg.autostart.apps.is_empty() {
         return Ok(());
     }
@@ -9992,7 +10090,10 @@ fn run() -> Result<()> {
         return recipe(&c, root, &atom, &args[1..]);
     }
     if cmd == "autostart" {
-        return autostart(&c, root, &atom);
+        return match args.get(1).map(String::as_str) {
+            None => autostart(&c, root, &atom),
+            Some(sub) => autostart_command(sub, &args[2..]),
+        };
     }
 
     let (action, value) = match cmd.as_str() {

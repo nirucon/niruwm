@@ -201,6 +201,25 @@ For a TTY login, run `startx "$HOME/.local/bin/niruwm-session"` (or plain
 Startup errors and WM errors are recorded in
 `${XDG_STATE_HOME:-$HOME/.local/state}/niruwm/session.log`.
 
+### Programs that start with the session
+
+At login `niructl autostart` starts the `[[autostart.apps]]` of `config.toml`
+(unless a saved session is restored instead) and the user's XDG autostart
+entries in `~/.config/autostart/*.desktop`, which tray programs such as
+Nextcloud and niruprodrive write. An entry is skipped when it is `Hidden`,
+`X-GNOME-Autostart-enabled=false`, not shown in NIRUWM (`OnlyShowIn`,
+`NotShowIn`), its `TryExec` is missing, or its program already runs. The
+system entries in `/etc/xdg/autostart` are not run: the session starts its own
+helpers.
+
+When the machine is about to sleep, `niruwm-session` runs `niructl autostart
+snapshot`, which writes down which of these programs run
+(`$XDG_RUNTIME_DIR/niruwm-autostart-<display>.before-sleep`). After the
+wake-up `nirux resume-check` runs `niructl autostart revive`: a program on that
+list that no longer runs died with the suspend and is started again, once at
+once and once more a minute later. `niructl autostart list` shows every
+program and whether it runs.
+
 ### Restart in place
 
 `niructl restart-wm` replaces the running window manager with the installed

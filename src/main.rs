@@ -41,8 +41,11 @@ fn main() {
         }
     }
     if arg == "--check-config" {
-        match Config::load().and_then(|c| Theme::load(&c.theme)) {
-            Ok(t) => {
+        match Config::load().and_then(|c| Theme::load(&c.theme).map(|t| (c, t))) {
+            Ok((c, t)) => {
+                for w in c.warnings() {
+                    eprintln!("niruwm: warning: {w}");
+                }
                 println!("Configuration OK · {}", t.name);
                 return;
             }

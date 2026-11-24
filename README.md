@@ -265,7 +265,7 @@ previous settings in effect.
 |---|---|
 | top level | `theme`, `gap`, `border_width`, `bar_height`, `master_ratio`, `terminal`, `browser`, `launcher`, `font_size`, weather coordinates |
 | `[wallpaper]`, `[[wallpaper.outputs]]` | Theme wallpapers (Art or Signature style), single file, scale, rotation, per-screen pictures |
-| `[autostart]`, `[[recipes]]` | Programs started at login, workspace recipes |
+| `[autostart]`, `[[recipes]]` | Programs started at login (also the user's `~/.config/autostart` entries), workspace recipes |
 | `[nightlight]`, `[brightness]` | Night light and brightness |
 | `[monitors]` | Per-workspace layouts, master ratios and counts, per-screen profiles |
 | `[idle]` | `screensaver_timeout`, `lock_after_screensaver`, `dpms_off_after_lock` (minutes, default 15 each; `lock_after_screensaver = 0` locks at `screensaver_timeout` instead of showing the screensaver first), `lock_on_lid_close`, `honor_app_inhibit` (default `true`: a browser playing a video or holding a call, mpv or VLC can pause the screensaver, lock and display-off; `false` ignores them), `proximity_device` and `proximity_lock_after` (lock when a paired phone has been out of Bluetooth reach for that many seconds, default off and 30; `niructl proximity`) |
@@ -273,7 +273,7 @@ previous settings in effect.
 | `[scratchpad]`, `[[scratchpad.slot]]` | Default scratchpad command and size, `hide_on_focus_loss`, numbered slots |
 | `[swallow]` | Window swallowing: `enabled` (default `true`), `terminals`, `exclude` |
 | `[studio]` | Studio mode: `idle`, `dnd`, `compositor` (default `true`), `power_profile` (`performance`), `auto_enable` (`false`), `daw_classes` (`["REAPER"]`) |
-| `[[rules]]` | Window rules: `class`, `workspace`, `floating`, `center`, `sticky`, opacity |
+| `[[rules]]` | Window rules: `class`, `workspace` (counted from 0), `floating`, `center`, `sticky`, opacity |
 | `[[keys]]` | Key bindings; an entry with the same keys replaces a default, `action = "unbind"` removes one; an optional `description` is shown in the cheat sheet |
 
 ### Scratchpads and focus
