@@ -1122,6 +1122,90 @@ fn coming_back_to_a_workspace_focuses_the_window_last_used_there() {
 
 #[test]
 #[ignore = "requires isolated X server"]
+fn a_window_withdrawn_while_its_workspace_is_hidden_stays_hidden() {
+    let dir = std::env::temp_dir().join(format!("niruwm-hidden-withdraw-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let teams = create(&c, root, b"teams\0Teams\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![teams]);
+    wait(|| geometry(&c, teams).2 > screen_w / 2);
+    let whole = geometry(&c, teams).2;
+    let drive = create(&c, root, b"niruprodrive\0NIRUPRODRIVE\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    wait(|| geometry(&c, teams).2 < whole - 100);
+    let mapped = |w: Window| {
+        c.get_window_attributes(w)
+            .unwrap()
+            .reply()
+            .unwrap()
+            .map_state
+            == MapState::VIEWABLE
+    };
+
+    // Leave the workspace: the WM hides both windows.
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    wait(|| !mapped(drive));
+
+    // The tray app closes its window meanwhile (ICCCM 4.1.4): the window is
+    // already unmapped, so only the synthetic UnmapNotify tells the WM.
+    c.unmap_window(drive).unwrap();
+    let ev = UnmapNotifyEvent {
+        response_type: UNMAP_NOTIFY_EVENT,
+        sequence: 0,
+        event: root,
+        window: drive,
+        from_configure: false,
+    };
+    c.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        ev,
+    )
+    .unwrap();
+    c.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // Coming back shows Teams on the whole screen, not an empty window.
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    wait(|| mapped(teams));
+    wait(|| geometry(&c, teams).2 == whole);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(!mapped(drive), "the withdrawn window was shown again");
+
+    // Opening it again works as before.
+    c.map_window(drive).unwrap();
+    c.flush().unwrap();
+    wait(|| mapped(drive));
+
+    c.destroy_window(drive).unwrap();
+    c.destroy_window(teams).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
 fn a_tray_icon_is_never_a_tile() {
     let dir = std::env::temp_dir().join(format!("niruwm-tray-icon-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("niruwm")).unwrap();

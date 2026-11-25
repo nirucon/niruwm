@@ -114,6 +114,10 @@ impl Wm {
 
     /// Handle one event. Returns `false` when the WM should exit.
     pub(crate) fn handle(&mut self, event: Event) -> Result<bool> {
+        // A client that withdraws a window it cannot unmap (one the WM
+        // already hid on another workspace) says so with a synthetic
+        // UnmapNotify on the root (ICCCM 4.1.4).
+        let synthetic = event.sent_event();
         let outcome: Result<bool> = (|| {
             match event {
                 Event::MapRequest(e) => self.manage(e.window)?,
@@ -175,7 +179,19 @@ impl Wm {
                             }
                         }
                     } else if self.hidden.contains(&e.window) {
-                        // expected: we unmapped it
+                        // Normally ours: we unmapped it to hide its workspace.
+                        // A synthetic one is its client withdrawing it while
+                        // hidden (a tray app closing its window). The real
+                        // unmap made no event because the window was already
+                        // unmapped, so without this the next visit to that
+                        // workspace mapped it again, empty, in a tile.
+                        if synthetic && self.clients.iter().any(|c| c.win == e.window) {
+                            self.hidden.remove(&e.window);
+                            self.kept.remove(&e.window);
+                            if self.withdrawn.insert(e.window) {
+                                self.arrange()?;
+                            }
+                        }
                     } else if self.clients.iter().any(|c| c.win == e.window) {
                         // A visible managed client that is now unmapped withdrew
                         // itself (a tray hide or a minimized main window). Record
