@@ -24,6 +24,7 @@ Run `niructl keys --update-doc docs/KEYBINDINGS.md` after changing a default.
 | `Super+B` | Open the web browser |
 | `Super+P` | Application launcher |
 | `Super+Shift+P` / `Super+Shift+B` / `Super+Shift+M` | Unified launcher: apps, windows, actions and settings |
+| `Super+Space` | NIRUPANEL: apps, today, system, updates, media and switches |
 | `Super+A` | NIRU Actions: maintenance, diagnostics, contexts and OpenCode |
 | `Super+S` | Web search: type a phrase, Enter opens it |
 | `Super+V` | Clipboard history |

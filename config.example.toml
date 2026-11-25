@@ -638,6 +638,12 @@ action = "launcher"
 keys = "super+shift+p"
 action = "launcher_unified"
 
+# NIRUPANEL: apps with icons, today, the system, updates, what plays, quick
+# switches and power, floating in the middle. The same key closes it.
+[[keys]]
+keys = "super+space"
+action = "launcher_panel"
+
 # Practical system actions (maintenance, diagnostics, contexts and optional
 # OpenCode assistance) in one focused view.
 [[keys]]

@@ -219,6 +219,11 @@ impl Wm {
                     self.start(&["nirulauncher".into(), "--manual".into()]);
                 }
             }
+            Action::LauncherPanel => {
+                if self.command_present("nirulauncher") {
+                    self.start(&["nirulauncher".into(), "--panel".into()]);
+                }
+            }
             Action::LauncherFiles => {
                 if self.command_present("nirulauncher") {
                     self.start(&["nirulauncher".into(), "--files".into()]);

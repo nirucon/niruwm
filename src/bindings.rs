@@ -29,6 +29,7 @@ pub enum Action {
     LauncherEmoji,
     /// File search (`nirulauncher --files`).
     LauncherFiles,
+    LauncherPanel,
     /// Jump to a visible window by its label (`nirulauncher --hints`).
     WindowHints,
     /// One line to the notes inbox, optionally shared (`nirulauncher --note`).
@@ -301,6 +302,8 @@ impl Action {
         // Prefer the native launcher; the configured app launcher is fallback.
         add("super+p", "launcher");
         add("super+shift+p", "launcher_unified");
+        // NIRUPANEL in the middle of the screen; again closes it.
+        add("super+space", "launcher_panel");
         // Practical system actions: maintenance, diagnostics, contexts and
         // the optional OpenCode handoff. Super+A is free by default.
         add("super+a", "launcher_actions");
@@ -533,6 +536,7 @@ pub fn parse_action(spec: &str) -> Result<Action, String> {
         "launcher_keys" => Action::LauncherKeys,
         "launcher_emoji" => Action::LauncherEmoji,
         "launcher_files" => Action::LauncherFiles,
+        "launcher_panel" => Action::LauncherPanel,
         "window_hints" => Action::WindowHints,
         "quick_note" => Action::QuickNote,
         "launcher_manual" => Action::LauncherManual,
@@ -680,6 +684,7 @@ pub const DO_ACTIONS: &[(&str, &str, &str)] = &[
     ("launcher_keys", "", "Keybinding cheat sheet"),
     ("launcher_emoji", "", "Emoji and symbol picker"),
     ("launcher_files", "", "File search"),
+    ("launcher_panel", "", "NIRUPANEL"),
     ("launcher_manual", "", "The NIRUX manual"),
     ("window_hints", "", "Jump to a visible window by its label"),
     ("window_switcher", "", "Window switcher"),
@@ -1020,6 +1025,10 @@ pub fn describe_action(spec: &str) -> (&'static str, String) {
         Action::LauncherKeys => s(apps, "Keybinding cheat sheet (this list)"),
         Action::LauncherEmoji => s(apps, "Emoji and symbol picker"),
         Action::LauncherFiles => s(apps, "Find files in the home folder"),
+        Action::LauncherPanel => s(
+            apps,
+            "NIRUPANEL: apps, today, system, updates, media and switches",
+        ),
         Action::WindowHints => s(apps, "Jump to a visible window by its label"),
         Action::QuickNote => s(
             apps,
@@ -1409,6 +1418,7 @@ mod tests {
         assert_eq!(parse_action("launcher_emoji"), Ok(Action::LauncherEmoji));
         assert_eq!(find("super+o"), Some("launcher_files"));
         assert_eq!(parse_action("launcher_files"), Ok(Action::LauncherFiles));
+        assert_eq!(parse_action("launcher_panel"), Ok(Action::LauncherPanel));
         assert_eq!(find("super+shift+F1"), Some("launcher_manual"));
         assert_eq!(parse_action("launcher_manual"), Ok(Action::LauncherManual));
     }
