@@ -1069,6 +1069,144 @@ fn the_window_left_takes_the_space_of_one_closed_to_a_tray() {
 }
 
 #[test]
+#[ignore = "requires isolated X server"]
+fn coming_back_to_a_workspace_focuses_the_window_last_used_there() {
+    let dir = std::env::temp_dir().join(format!("niruwm-last-focus-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let first = create(&c, root, b"first\0First\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![first]);
+    let second = create(&c, root, b"second\0Second\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    // Use the first window, go to another workspace and come back.
+    message(&c, root, first, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![first]);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![first]);
+    // And the other one.
+    message(&c, root, second, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![second]);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![second]);
+    // The remembered window closes: another one there takes the focus.
+    c.destroy_window(second).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![first]);
+
+    c.destroy_window(first).unwrap();
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_tray_icon_is_never_a_tile() {
+    let dir = std::env::temp_dir().join(format!("niruwm-tray-icon-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut wm = Process(
+        Command::new(env!("CARGO_BIN_EXE_niruwm"))
+            .env("XDG_CONFIG_HOME", &dir)
+            .env("PATH", "/nonexistent")
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    let screen_w = c.setup().roots[s].width_in_pixels;
+    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    let teams = create(&c, root, b"teams\0Teams\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![teams]);
+    wait(|| geometry(&c, teams).2 > screen_w / 2);
+    let whole = geometry(&c, teams);
+
+    // An icon waiting for a tray (it has _XEMBED_INFO) is left alone.
+    let icon = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        icon,
+        root,
+        0,
+        0,
+        22,
+        22,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    let xembed = atom(&c, "_XEMBED_INFO");
+    c.change_property32(PropMode::REPLACE, icon, xembed, xembed, &[0, 1])
+        .unwrap();
+    c.map_window(icon).unwrap();
+    c.flush().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(values(&c, root, "_NET_CLIENT_LIST"), vec![teams]);
+    assert_eq!(geometry(&c, teams), whole);
+
+    // A managed window that a bar takes into itself leaves the layout.
+    let late = create(&c, root, b"late\0Late\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").len() == 2);
+    wait(|| geometry(&c, teams).2 < whole.2 - 100);
+    let bar = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        bar,
+        root,
+        0,
+        0,
+        200,
+        24,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new().override_redirect(1),
+    )
+    .unwrap();
+    c.map_window(bar).unwrap();
+    c.reparent_window(late, bar, 0, 0).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST") == vec![teams]);
+    wait(|| geometry(&c, teams) == whole);
+
+    for w in [icon, late, bar, teams] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 #[ignore = "requires isolated X server and xdotool"]
 fn niructl_tag_and_root_pointer_motion_follow_the_focused_screen() {
     let dir = std::env::temp_dir().join(format!("niruwm-local-tag-{}", std::process::id()));

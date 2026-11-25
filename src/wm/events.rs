@@ -210,6 +210,22 @@ impl Wm {
                         self.arrange()?;
                     }
                 }
+                // A managed window taken into another one (a tray icon the
+                // bar docks) leaves the layout at once.
+                Event::ReparentNotify(e) if e.parent != self.root => {
+                    let known = self.clients.iter().any(|c| c.win == e.window)
+                        || self.withdrawn.contains(&e.window)
+                        || self.hidden.contains(&e.window)
+                        || self.kept.contains(&e.window);
+                    if known {
+                        eprintln!(
+                            "niruwm: window {:#x} went into {:#x}; no longer managed",
+                            e.window, e.parent
+                        );
+                        self.unmanage(e.window);
+                        self.arrange()?;
+                    }
+                }
                 Event::ConfigureRequest(e) => self.configure_request(e)?,
                 // A window asks for attention, or stops asking.
                 Event::PropertyNotify(e) if e.atom == u32::from(AtomEnum::WM_HINTS) => {

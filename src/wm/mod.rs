@@ -354,6 +354,8 @@ pub(crate) struct Wm {
     pub(crate) studio_off_at: Option<std::time::Instant>,
     /// Window to focus once restore has settled, with its saved screen/workspace.
     pub(crate) restore_focus: Option<(Window, usize, u32)>,
+    /// The window last focused on each (screen, workspace).
+    pub(crate) last_focus: HashMap<(usize, u32), Window>,
     /// Entries still waiting for a mapped window.
     pub(crate) restore_remaining: usize,
     /// When to stop waiting for programs that open fewer windows than saved.
@@ -464,6 +466,7 @@ impl Wm {
             "_NET_WM_DESKTOP",
             "_NET_WM_WINDOW_TYPE",
             "_NET_WM_WINDOW_TYPE_DOCK",
+            "_XEMBED_INFO",
             "_NET_WM_WINDOW_TYPE_DESKTOP",
             "_NET_WM_WINDOW_TYPE_DIALOG",
             "_NET_WM_WINDOW_TYPE_NORMAL",
@@ -583,6 +586,7 @@ impl Wm {
             studio_auto: false,
             studio_off_at: None,
             restore_focus: None,
+            last_focus: HashMap::new(),
             restore_remaining: 0,
             restore_deadline: None,
             restart_requested: false,

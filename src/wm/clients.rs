@@ -107,7 +107,36 @@ impl Wm {
             .unwrap_or(true)
     }
 
+    /// A window that belongs inside another one: a tray icon docked in the
+    /// bar (XEmbed), or anything an application put into a window of its
+    /// own. This WM has no frames, so all of its clients are children of
+    /// the root window.
+    pub(crate) fn embedded(&self, w: Window) -> bool {
+        self.c
+            .query_tree(w)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|tree| tree.parent != self.root)
+    }
+
+    /// A tray icon: it carries `_XEMBED_INFO` and waits for a tray to take
+    /// it. Managing one made it a tile of its own and hid it from the bar
+    /// on other workspaces.
+    fn tray_icon(&self, w: Window) -> bool {
+        let atom = self.atom("_XEMBED_INFO");
+        self.c
+            .get_property(false, w, atom, AtomEnum::ANY, 0, 2)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .is_some_and(|reply| reply.type_ != u32::from(AtomEnum::NONE))
+    }
+
     pub(crate) fn manage(&mut self, w: Window) -> Result<()> {
+        if self.clients.iter().any(|c| c.win == w) && self.embedded(w) {
+            // Taken into another window since it was managed: not ours.
+            self.unmanage(w);
+            return self.arrange();
+        }
         if let Some(client) = self.clients.iter().find(|c| c.win == w) {
             if suppress_transient(&self.withdrawn, client.parent)
                 || (self.orphan_transient(client.parent)
@@ -127,6 +156,11 @@ impl Wm {
         let a = self.c.get_window_attributes(w)?.reply()?;
         // Override-redirect (menus, tooltips, splash screens) stay unmanaged.
         if a.override_redirect {
+            return Ok(());
+        }
+        // A tray icon, or a window inside another one (after a restart the
+        // saved client list can name one), is the tray's or its parent's.
+        if self.embedded(w) || self.tray_icon(w) {
             return Ok(());
         }
         // An input-only helper has no visible surface and cannot be tiled or
@@ -689,6 +723,7 @@ impl Wm {
     }
 
     pub(crate) fn unmanage(&mut self, w: Window) {
+        self.last_focus.retain(|_, v| *v != w);
         self.studio_window_removed(w);
         self.withdrawn.remove(&w);
         self.hidden.remove(&w);
@@ -858,6 +893,16 @@ impl Wm {
             .map(|c| c.take_focus)
             .unwrap_or(false);
         let previous = self.focus;
+        // Each workspace remembers the window last used on it, so coming
+        // back lands where you left. Scratchpads and picture-in-picture
+        // windows float over every workspace and are not remembered.
+        if let Some(c) = self
+            .clients
+            .iter()
+            .find(|c| c.win == w && c.pip.is_none() && c.scratch.is_none())
+        {
+            self.last_focus.insert((c.monitor, c.tag), w);
+        }
         // Never raise an unmanaged window; the WM owns stacking for tiles.
         // The window goes to the top together with its own dialogs, which
         // stay above it.
@@ -1611,19 +1656,36 @@ impl Wm {
         // Focus stays on a visible window of the focused screen.
         let focus_ok = self.focus.map(|w| visible.contains(&w)).unwrap_or(false);
         if !focus_ok {
-            // A picture-in-picture window is never chosen: it is there to be
+            // The window last used on the workspace comes first. A
+            // picture-in-picture window is never chosen: it is there to be
             // watched, so a workspace switch never hands it the keyboard.
-            let next = self
-                .clients
-                .iter()
-                .filter(|c| {
-                    visible.contains(&c.win)
-                        && c.monitor == self.focused_monitor
-                        && c.focus_on_map
-                        && c.pip.is_none()
+            let tag = self.active_tag();
+            let remembered = self
+                .last_focus
+                .get(&(self.focused_monitor, tag))
+                .copied()
+                .filter(|w| {
+                    visible.contains(w)
+                        && self.clients.iter().any(|c| {
+                            c.win == *w
+                                && c.monitor == self.focused_monitor
+                                && c.tag == tag
+                                && c.pip.is_none()
+                        })
+                });
+            let next = remembered
+                .or_else(|| {
+                    self.clients
+                        .iter()
+                        .filter(|c| {
+                            visible.contains(&c.win)
+                                && c.monitor == self.focused_monitor
+                                && c.focus_on_map
+                                && c.pip.is_none()
+                        })
+                        .map(|c| c.win)
+                        .next()
                 })
-                .map(|c| c.win)
-                .next()
                 .or_else(|| {
                     self.clients
                         .iter()
@@ -1657,6 +1719,15 @@ impl Wm {
             self.focus_dirty = false;
         } else {
             self.focus_dirty = false;
+        }
+        // Some paths give the focus without `set_focus` (an activation, a
+        // swap): remember it here as well.
+        if let Some(c) = self.focus.and_then(|w| {
+            self.clients
+                .iter()
+                .find(|c| c.win == w && c.pip.is_none() && c.scratch.is_none())
+        }) {
+            self.last_focus.insert((c.monitor, c.tag), c.win);
         }
 
         self.publish_desktop_state()?;
@@ -1907,6 +1978,7 @@ impl Wm {
 
     /// Switch to a global EWMH desktop, focusing its owning monitor.
     pub(crate) fn view_global(&mut self, global: u32) -> Result<()> {
+        self.layout_pointer = Some(self.pointer_position_now());
         self.drop_pip_focus();
         if let Some((monitor, workspace)) = crate::monitor::find_global(&self.monitors, global) {
             self.focused_monitor = monitor;
@@ -1955,6 +2027,10 @@ impl Wm {
     /// `tag` is an index into that screen's own workspace list, so each screen
     /// keeps its set independent of the others.
     pub(crate) fn view_tag(&mut self, tag: u32) -> Result<()> {
+        // The windows shown appear under a pointer that stands still: that
+        // crossing must not take the focus from the window last used there
+        // (a click on the bar or a pager switches without a key).
+        self.layout_pointer = Some(self.pointer_position_now());
         self.drop_pip_focus();
         if let Some(m) = self.monitors.get_mut(self.focused_monitor) {
             if (tag as usize) < m.workspaces.len() {
