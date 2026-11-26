@@ -58,6 +58,12 @@ pub(crate) struct SavedClient {
     /// A swallowed terminal: the window in its place.
     #[serde(default)]
     pub swallowed_by: Option<u32>,
+    /// Unmapped by its own client (closed to a tray), not hidden by the
+    /// manager. It stays withdrawn: only its client's next map request
+    /// shows it. Adopting it as hidden put it back on the screen as soon
+    /// as its workspace was shown.
+    #[serde(default)]
+    pub withdrawn: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -246,6 +252,7 @@ impl Wm {
                     .map(|h| (h.output.clone(), h.tag, h.moved_to.clone())),
                 urgent: c.urgent,
                 swallowed_by: c.swallowed_by,
+                withdrawn: self.withdrawn.contains(&c.win),
             })
             .collect();
         let monitors = self
@@ -283,6 +290,24 @@ impl Wm {
             eprintln!("niruwm: restart refused: the screen is locked");
             return false;
         }
+        // A client that unmapped its window a moment ago may not have been
+        // heard yet (its UnmapNotify is still queued). Ask the server, so
+        // such a window is saved as withdrawn and left out of the save-set;
+        // otherwise the server would map it again when this manager leaves.
+        let unheard: Vec<Window> = self
+            .clients
+            .iter()
+            .filter(|c| !self.kept_unmapped(c) && !self.kept.contains(&c.win))
+            .map(|c| c.win)
+            .filter(|w| {
+                self.c
+                    .get_window_attributes(*w)
+                    .ok()
+                    .and_then(|cookie| cookie.reply().ok())
+                    .is_some_and(|a| a.map_state == MapState::UNMAPPED)
+            })
+            .collect();
+        self.withdrawn.extend(unheard);
         let state = self.restart_state();
         if let Err(e) = write(&state) {
             eprintln!("niruwm: restart refused: cannot save the window state: {e}");
@@ -298,6 +323,17 @@ impl Wm {
             }
         }
         let _ = self.c.flush();
+        // Wait until the server has carried out those requests. The manager
+        // exits right after this, and a socket closed while events are still
+        // unread is reset: the server then drops the requests it had not
+        // read yet, the save-set changes among them, and maps every hidden
+        // and withdrawn window when the connection goes (seen in tests: a
+        // window closed to the tray was back after a restart).
+        let _ = self
+            .c
+            .get_input_focus()
+            .ok()
+            .and_then(|cookie| cookie.reply().ok());
         eprintln!(
             "niruwm: restart in place requested; {} windows saved",
             state.clients.len()
@@ -416,6 +452,9 @@ impl Wm {
                 c.geom = rect(saved.geom, c.geom);
             }
         }
+        if saved.withdrawn && !saved.mapped {
+            self.withdrawn.insert(w);
+        }
         if saved.mapped && saved.scratch.is_some() {
             // The scratchpad that was up stays up: marking it shown before
             // the first arrange keeps it from being hidden and shown again.
@@ -503,6 +542,7 @@ mod tests {
                 home: None,
                 urgent: true,
                 swallowed_by: None,
+                withdrawn: true,
             }],
             monitors: vec![SavedMonitor {
                 name: "HDMI-1".into(),
@@ -528,6 +568,21 @@ mod tests {
         let state = sample();
         let text = serde_json::to_string(&state).unwrap();
         let back: RestartState = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, state);
+    }
+
+    #[test]
+    fn a_state_from_an_older_manager_reads_without_the_withdrawn_mark() {
+        // 0.37.16 and older wrote no `withdrawn`: such a window is read as
+        // hidden by the manager, as before.
+        let mut state = sample();
+        let mut value = serde_json::to_value(&state).unwrap();
+        value["clients"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("withdrawn");
+        let back: RestartState = serde_json::from_value(value).unwrap();
+        state.clients[0].withdrawn = false;
         assert_eq!(back, state);
     }
 

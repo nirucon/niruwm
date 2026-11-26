@@ -64,7 +64,7 @@ use x11rb::{
 };
 
 const USAGE: &str = "Usage: niructl status | tag N | movetotag N | \
-theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | restart-wm [--check] | autostart [list|snapshot|revive [--keep]] | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
+theme NAME | themes | theme-catalog | theme-import | theme-remove | theme-hide | theme-show | keys | monitors | reload | restart-bar | restart-wm [--check] | debug windows | autostart [list|snapshot|revive [--keep]] | bar top|bottom|hide|show|toggle|cycle|status | quit | save | save-session | \
 layout NAME|columns 1|2|toggle | layouts | \
 clear-session | brightness up|down|set N|status | nightlight on|off|toggle|status|temperature K|apply|watch | \
 compositor on|off|toggle|status | \
@@ -10045,6 +10045,10 @@ fn run() -> Result<()> {
         return restart_wm(&c, root, &args[1..]);
     }
 
+    if cmd == "debug" {
+        return debug_command(&c, root, &args[1..]);
+    }
+
     if cmd == "restart-bar" {
         let owner = property_u32(&c, root, atom("_NET_SUPPORTING_WM_CHECK")?)
             .ok_or("no window manager is running")?;
@@ -10354,6 +10358,66 @@ fn do_send(text: &str) -> Result<String> {
     let _ = c.destroy_window(win);
     let _ = c.flush();
     answer.ok_or_else(|| "the window manager did not answer".into())
+}
+
+/// `niructl debug windows`: what the running NIRUWM tracks about every
+/// window (managed, withdrawn, hidden, kept off the screen, waiting for a
+/// tray), so a window that does not show up can be explained at once.
+fn debug_command(
+    c: &x11rb::rust_connection::RustConnection,
+    root: Window,
+    args: &[String],
+) -> Result<()> {
+    if args.len() != 1 || args[0] != "windows" {
+        return Err("usage: niructl debug windows".into());
+    }
+    property_u32(c, root, atom_named(c, "_NET_SUPPORTING_WM_CHECK")?)
+        .ok_or("no window manager is running")?;
+    let win = c.generate_id()?;
+    c.create_window(
+        0,
+        win,
+        root,
+        -1,
+        -1,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_ONLY,
+        0,
+        &CreateWindowAux::new(),
+    )?;
+    let result = atom_named(c, "_NIRUWM_DEBUG_RESULT")?;
+    send(
+        c,
+        root,
+        atom_named(c, CMD_ATOM)?,
+        [24, win, command_serial(), 0, 0],
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let answer = loop {
+        let reply = c
+            .get_property(false, win, result, AtomEnum::ANY, 0, 1 << 20)?
+            .reply()?;
+        if reply.type_ != 0 {
+            break Some(String::from_utf8_lossy(&reply.value).to_string());
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = c.destroy_window(win);
+    let _ = c.flush();
+    match answer {
+        Some(text) => {
+            print!("{text}");
+            Ok(())
+        }
+        None => Err(
+            "the window manager did not answer; debug windows needs NIRUWM 0.37.17 or later".into(),
+        ),
+    }
 }
 
 /// Exit status of `niructl restart-wm` when the running manager or session

@@ -4036,7 +4036,7 @@ fn modal_dialog_of_a_hidden_group_leader_is_shown_but_a_popup_is_not() {
     let mut wm = scratch_wm(&dir, "");
     let (c, s) = x11rb::connect(None).unwrap();
     let root = c.setup().roots[s].root;
-    wait(|| !values(&c, root, "_NET_SUPPORTING_WM_CHECK").is_empty());
+    wait_ready(&c, root, &wm);
     let viewable = |w: Window| {
         c.get_window_attributes(w)
             .ok()
@@ -4085,5 +4085,629 @@ fn modal_dialog_of_a_hidden_group_leader_is_shown_but_a_popup_is_not() {
     c.flush().unwrap();
     message(&c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
     wait(|| wm.0.try_wait().unwrap().is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Tray popups and dialogs of a never-mapped group leader (NIRUWM 0.37.17).
+//
+// Qt (the Nextcloud client) gives every window `_XEMBED_INFO`, points every
+// parentless dialog at a 1x1 group leader that is never mapped, and believes
+// a window is shown once it called show(): a manager that keeps it off the
+// screen without telling it makes every later show() a no-op.
+
+fn plain_wm(dir: &std::path::Path, envs: &[(&str, &std::path::Path)], restarted: bool) -> Process {
+    std::fs::create_dir_all(dir.join("niruwm")).unwrap();
+    std::fs::write(
+        dir.join("niruwm/config.toml"),
+        "[bar]\nenabled = false\n[wallpaper]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_niruwm"));
+    cmd.env("XDG_CONFIG_HOME", dir)
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("PATH", "/nonexistent")
+        .stdout(Stdio::null());
+    if std::env::var_os("NIRUWM_TEST_LOG").is_none() {
+        cmd.stderr(Stdio::null());
+    }
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    if restarted {
+        cmd.env("NIRUWM_RESTARTED", "1");
+    }
+    Process(cmd.spawn().unwrap())
+}
+
+fn viewable(c: &RustConnection, w: Window) -> bool {
+    c.get_window_attributes(w)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .is_some_and(|attrs| attrs.map_state == MapState::VIEWABLE)
+}
+
+fn now_secs() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as u32
+}
+
+/// What NIRUBAR does on a tray click (`ago` seconds back).
+fn tray_click(c: &RustConnection, root: Window, ago: u32) {
+    c.change_property32(
+        PropMode::REPLACE,
+        root,
+        atom(c, "_NIRU_TRAY_ACTIVATE"),
+        AtomEnum::CARDINAL,
+        &[now_secs() - ago],
+    )
+    .unwrap();
+    c.flush().unwrap();
+}
+
+/// Qt's group leader: 1x1, never mapped, `_XEMBED_INFO` like every Qt window.
+fn qt_leader(c: &RustConnection, root: Window) -> Window {
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        0,
+        0,
+        1,
+        1,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    let xembed = atom(c, "_XEMBED_INFO");
+    c.change_property32(PropMode::REPLACE, w, xembed, xembed, &[0, 1])
+        .unwrap();
+    c.flush().unwrap();
+    w
+}
+
+/// A Qt window as the Nextcloud client creates it, not yet mapped.
+/// `leader`: transient for it and a DIALOG (`popup` adds Qt's frameless
+/// `_KDE_NET_WM_WINDOW_TYPE_OVERRIDE`); 0 for a main window (no type).
+fn qt_window(
+    c: &RustConnection,
+    root: Window,
+    leader: Window,
+    popup: bool,
+    pid: u32,
+    delete: bool,
+) -> Window {
+    let w = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        w,
+        root,
+        40,
+        40,
+        420,
+        500,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    c.change_property8(
+        PropMode::REPLACE,
+        w,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"nextcloud\0Nextcloud\0",
+    )
+    .unwrap();
+    let xembed = atom(c, "_XEMBED_INFO");
+    c.change_property32(PropMode::REPLACE, w, xembed, xembed, &[0, 1])
+        .unwrap();
+    c.change_property32(
+        PropMode::REPLACE,
+        w,
+        atom(c, "_NET_WM_PID"),
+        AtomEnum::CARDINAL,
+        &[pid],
+    )
+    .unwrap();
+    if delete {
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom(c, "WM_PROTOCOLS"),
+            AtomEnum::ATOM,
+            &[atom(c, "WM_DELETE_WINDOW")],
+        )
+        .unwrap();
+    }
+    if leader != 0 {
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            AtomEnum::WM_TRANSIENT_FOR,
+            AtomEnum::WINDOW,
+            &[leader],
+        )
+        .unwrap();
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom(c, "WM_CLIENT_LEADER"),
+            AtomEnum::WINDOW,
+            &[leader],
+        )
+        .unwrap();
+        let mut types = vec![atom(c, "_NET_WM_WINDOW_TYPE_DIALOG")];
+        if popup {
+            types.insert(0, atom(c, "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE"));
+        }
+        c.change_property32(
+            PropMode::REPLACE,
+            w,
+            atom(c, "_NET_WM_WINDOW_TYPE"),
+            AtomEnum::ATOM,
+            &types,
+        )
+        .unwrap();
+    }
+    c.flush().unwrap();
+    w
+}
+
+/// Withdraw a window as ICCCM 4.1.4 says (and Qt does on hide()).
+fn withdraw(c: &RustConnection, root: Window, w: Window) {
+    c.unmap_window(w).unwrap();
+    let event = UnmapNotifyEvent {
+        response_type: UNMAP_NOTIFY_EVENT,
+        sequence: 0,
+        event: root,
+        window: w,
+        from_configure: false,
+    };
+    c.send_event(
+        false,
+        root,
+        EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+        event,
+    )
+    .unwrap();
+    c.flush().unwrap();
+}
+
+/// Whether the manager asked this connection to close `w` since the last
+/// call (events of other kinds are dropped).
+fn asked_to_close(c: &RustConnection, w: Window) -> bool {
+    let protocols = atom(c, "WM_PROTOCOLS");
+    let delete = atom(c, "WM_DELETE_WINDOW");
+    let mut asked = false;
+    while let Some(event) = c.poll_for_event().unwrap() {
+        if let x11rb::protocol::Event::ClientMessage(m) = event {
+            if m.window == w && m.type_ == protocols && m.data.as_data32()[0] == delete {
+                asked = true;
+            }
+        }
+    }
+    asked
+}
+
+fn wait_for(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + limit;
+    while Instant::now() < end {
+        if f() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    f()
+}
+
+fn debug_windows() -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_niructl"))
+        .args(["debug", "windows"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+fn quit_wm(c: &RustConnection, root: Window, wm: &mut Process) {
+    message(c, root, root, "_NIRUWM_COMMAND", [5, 0, 0, 0, 0]);
+    wait(|| wm.0.try_wait().unwrap().is_some());
+    forget_tray_click(c, root);
+}
+
+/// A server that is not reset between tests (`-noreset`) keeps root
+/// properties: a tray click of one test must not count in the next.
+fn forget_tray_click(c: &RustConnection, root: Window) {
+    c.delete_property(root, atom(c, "_NIRU_TRAY_ACTIVATE"))
+        .unwrap();
+    c.flush().unwrap();
+}
+
+/// This test's manager runs and owns the display: its check window names
+/// its process (the root properties of a previous manager can linger on a
+/// server that is not reset), and it has published its own client list.
+fn wait_ready(c: &RustConnection, root: Window, wm: &Process) {
+    forget_tray_click(c, root);
+    let pid = wm.0.id();
+    wait(|| {
+        values(c, root, "_NET_SUPPORTING_WM_CHECK")
+            .first()
+            .and_then(|check| {
+                c.get_property(false, *check, atom(c, "_NET_WM_PID"), AtomEnum::ANY, 0, 1)
+                    .ok()?
+                    .reply()
+                    .ok()
+            })
+            .and_then(|reply| reply.value32().and_then(|mut v| v.next()))
+            == Some(pid)
+    });
+    thread::sleep(Duration::from_millis(100));
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn qt_windows_carrying_xembed_info_are_managed_and_a_tray_popup_shows_on_every_click() {
+    let dir = std::env::temp_dir().join(format!("niruwm-qt-tray-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+
+    // A Qt main window: _XEMBED_INFO, no window type. 0.37.12 to 0.37.16
+    // took it for a tray icon and never mapped it.
+    let main = qt_window(&c, root, 0, false, 5151, true);
+    c.map_window(main).unwrap();
+    c.flush().unwrap();
+    assert!(
+        wait_for(Duration::from_millis(1500), || viewable(&c, main)),
+        "a Qt main window was not mapped"
+    );
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&main));
+
+    // The tray popup: shown, hidden by its client, shown again, three times.
+    let leader = qt_leader(&c, root);
+    let popup = qt_window(&c, root, leader, true, 4242, true);
+    for round in 0..3 {
+        tray_click(&c, root, 0);
+        c.map_window(popup).unwrap();
+        c.flush().unwrap();
+        assert!(
+            wait_for(Duration::from_millis(1500), || viewable(&c, popup)),
+            "round {round}: the tray popup did not show"
+        );
+        wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&popup));
+        withdraw(&c, root, popup);
+        wait(|| !viewable(&c, popup));
+    }
+    // The settings dialog the popup opens (Qt: another DIALOG transient for
+    // the leader) shows too.
+    let settings = qt_window(&c, root, leader, false, 4242, true);
+    tray_click(&c, root, 0);
+    c.map_window(settings).unwrap();
+    c.flush().unwrap();
+    assert!(wait_for(Duration::from_millis(1500), || viewable(
+        &c, settings
+    )));
+
+    for w in [settings, popup, leader, main] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut wm);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_tray_popup_left_on_another_workspace_is_closed_and_shows_on_the_next_click() {
+    let dir = std::env::temp_dir().join(format!("niruwm-tray-dismiss-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+    let leader = qt_leader(&c, root);
+    let popup = qt_window(&c, root, leader, true, 4242, true);
+    tray_click(&c, root, 0);
+    c.map_window(popup).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(&c, popup));
+    asked_to_close(&c, popup);
+
+    // The click is long past; the user goes to workspace 2.
+    tray_click(&c, root, 60);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    wait(|| !viewable(&c, popup));
+    // The client is told, so it knows the popup is gone.
+    assert!(
+        wait_for(Duration::from_secs(2), || asked_to_close(&c, popup)),
+        "the client was not asked to close its dismissed popup"
+    );
+    // It hides the popup, as Qt does on close.
+    withdraw(&c, root, popup);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        !viewable(&c, popup),
+        "a dismissed popup came back by itself"
+    );
+    // The next tray click shows it, on the workspace the user is on.
+    tray_click(&c, root, 0);
+    c.map_window(popup).unwrap();
+    c.flush().unwrap();
+    assert!(wait_for(Duration::from_millis(1500), || viewable(
+        &c, popup
+    )));
+    assert_eq!(values(&c, popup, "_NET_WM_DESKTOP"), vec![0]);
+
+    // A client that cannot be asked to close (no WM_DELETE_WINDOW) and
+    // never noticed its popup went away asks for it with an activation.
+    let old = qt_window(&c, root, leader, true, 4343, false);
+    c.map_window(old).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(&c, old));
+    tray_click(&c, root, 60);
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| !viewable(&c, old));
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    thread::sleep(Duration::from_millis(200));
+    assert!(!viewable(&c, old));
+    tray_click(&c, root, 0);
+    message(&c, root, old, "_NET_ACTIVE_WINDOW", [1, 0, 0, 0, 0]);
+    assert!(
+        wait_for(Duration::from_millis(1500), || viewable(&c, old)),
+        "an activation did not bring back a popup kept off the screen"
+    );
+
+    for w in [old, popup, leader] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut wm);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_dialog_of_a_never_mapped_leader_is_refused_politely_unless_asked_for() {
+    let dir = std::env::temp_dir().join(format!("niruwm-leader-dialog-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+    let leader = qt_leader(&c, root);
+
+    // Nobody asked for it: it is kept off the screen, and its client is
+    // told so instead of believing it is shown.
+    tray_click(&c, root, 60);
+    let unasked = qt_window(&c, root, leader, true, 4242, true);
+    c.map_window(unasked).unwrap();
+    c.flush().unwrap();
+    assert!(wait_for(Duration::from_secs(2), || asked_to_close(
+        &c, unasked
+    )));
+    assert!(!viewable(&c, unasked));
+
+    // The program is in use (one of its windows has the focus): a dialog
+    // it opens now was asked for by the user, with no tray click at all.
+    let main = qt_window(&c, root, 0, false, 4242, true);
+    c.map_window(main).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![main]);
+    let settings = qt_window(&c, root, leader, false, 4242, true);
+    c.map_window(settings).unwrap();
+    c.flush().unwrap();
+    assert!(
+        wait_for(Duration::from_millis(1500), || viewable(&c, settings)),
+        "a dialog opened from the program's own window was not shown"
+    );
+    // Not a popup: it stays on its workspace like any dialog.
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| !viewable(&c, settings));
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    assert!(wait_for(Duration::from_millis(1500), || viewable(
+        &c, settings
+    )));
+    assert!(!asked_to_close(&c, settings));
+
+    for w in [settings, main, unasked, leader] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut wm);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_recycled_window_id_starts_clean() {
+    let dir = std::env::temp_dir().join(format!("niruwm-id-reuse-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+
+    // A first program: its first window is managed, closed to a tray (the
+    // manager records it as withdrawn), and its popup is left behind on
+    // another workspace. Then the program exits.
+    let (first_ids, base) = {
+        let (a, _) = x11rb::connect(None).unwrap();
+        let tray = qt_window(&a, root, 0, false, 1111, false);
+        a.map_window(tray).unwrap();
+        a.flush().unwrap();
+        wait(|| viewable(&c, tray));
+        wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&tray));
+        withdraw(&a, root, tray);
+        wait(|| !viewable(&c, tray));
+        let leader = qt_leader(&a, root);
+        let popup = qt_window(&a, root, leader, true, 1111, false);
+        tray_click(&c, root, 0);
+        a.map_window(popup).unwrap();
+        a.flush().unwrap();
+        wait(|| viewable(&c, popup));
+        tray_click(&c, root, 60);
+        message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+        wait(|| !viewable(&c, popup));
+        message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+        wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+        ((tray, leader, popup), a.setup().resource_id_base)
+    };
+    // The X server reuses the program's resource base for the next client,
+    // so a restarted program gets the very same window ids.
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").is_empty());
+    let (b, _) = x11rb::connect(None).unwrap();
+    assert_eq!(
+        b.setup().resource_id_base,
+        base,
+        "the X server did not reuse the resource base; the test proves nothing"
+    );
+    // This time the first id is the never-mapped group leader, which the
+    // first program's withdrawn window had: its dialogs must still show.
+    let leader = qt_leader(&b, root);
+    assert_eq!(leader, first_ids.0);
+    let popup = qt_window(&b, root, leader, true, 2222, true);
+    let dialog = qt_window(&b, root, leader, false, 2222, true);
+    assert_eq!(popup, first_ids.1);
+    assert_eq!(dialog, first_ids.2);
+    tray_click(&c, root, 0);
+    b.map_window(popup).unwrap();
+    b.map_window(dialog).unwrap();
+    b.flush().unwrap();
+    assert!(
+        wait_for(Duration::from_millis(1500), || viewable(&c, popup)
+            && viewable(&c, dialog)),
+        "windows with recycled ids were kept off the screen"
+    );
+    let report = debug_windows();
+    assert!(
+        report.contains("stale records (a bug if not none): none"),
+        "{report}"
+    );
+    assert!(
+        report.contains(&format!("{popup:#x} nextcloud")),
+        "{report}"
+    );
+    drop(b);
+    quit_wm(&c, root, &mut wm);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_restart_in_place_keeps_withdrawn_windows_withdrawn_and_tray_popups_shown() {
+    let dir = std::env::temp_dir().join(format!("niruwm-restart-tray-{}", std::process::id()));
+    let run = dir.join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::set_permissions(&run, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let mut first = plain_wm(
+        &dir,
+        &[
+            ("XDG_RUNTIME_DIR", &run),
+            ("NIRUWM_SESSION_RESTART", std::path::Path::new("1")),
+        ],
+        false,
+    );
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &first);
+    let main = qt_window(&c, root, 0, false, 3131, true);
+    c.map_window(main).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(&c, main));
+    // Closed to the tray on the workspace that is shown.
+    let closed = qt_window(&c, root, 0, false, 3232, true);
+    c.map_window(closed).unwrap();
+    c.flush().unwrap();
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&closed));
+    withdraw(&c, root, closed);
+    wait(|| !viewable(&c, closed));
+    // A tray popup that is up when the restart happens.
+    let leader = qt_leader(&c, root);
+    let popup = qt_window(&c, root, leader, true, 3333, true);
+    tray_click(&c, root, 0);
+    c.map_window(popup).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(&c, popup));
+    tray_click(&c, root, 60);
+
+    message(&c, root, root, "_NIRUWM_COMMAND", [22, 77, 0, 0, 0]);
+    wait(|| first.0.try_wait().unwrap().is_some());
+    let mut second = plain_wm(&dir, &[("XDG_RUNTIME_DIR", &run)], true);
+    wait_ready(&c, root, &second);
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&main));
+    thread::sleep(Duration::from_millis(500));
+    if std::env::var_os("NIRUWM_TEST_LOG").is_some() {
+        eprintln!("{}", debug_windows());
+    }
+    assert!(viewable(&c, main));
+    assert!(
+        !viewable(&c, closed),
+        "a window closed to the tray came back after the restart"
+    );
+    assert!(
+        viewable(&c, popup),
+        "a tray popup that was up was taken off the screen by the restart"
+    );
+    assert!(!asked_to_close(&c, popup));
+    // The closed window comes back when its client shows it.
+    c.map_window(closed).unwrap();
+    c.flush().unwrap();
+    assert!(wait_for(Duration::from_millis(1500), || viewable(
+        &c, closed
+    )));
+
+    for w in [popup, leader, closed, main] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut second);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn an_icon_no_tray_takes_is_managed_after_a_moment() {
+    let dir = std::env::temp_dir().join(format!("niruwm-icon-grace-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+    let icon = c.generate_id().unwrap();
+    c.create_window(
+        0,
+        icon,
+        root,
+        0,
+        0,
+        22,
+        22,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        0,
+        &CreateWindowAux::new(),
+    )
+    .unwrap();
+    let xembed = atom(&c, "_XEMBED_INFO");
+    c.change_property32(PropMode::REPLACE, icon, xembed, xembed, &[0, 1])
+        .unwrap();
+    c.map_window(icon).unwrap();
+    c.flush().unwrap();
+    thread::sleep(Duration::from_millis(500));
+    assert!(values(&c, root, "_NET_CLIENT_LIST").is_empty());
+    assert!(
+        wait_for(Duration::from_secs(5), || viewable(&c, icon)),
+        "a window that only looked like a tray icon stayed invisible"
+    );
+    c.destroy_window(icon).unwrap();
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut wm);
     std::fs::remove_dir_all(dir).unwrap();
 }

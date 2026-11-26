@@ -14,6 +14,7 @@ niructl reload                 # reload WM, bar and theme
 niructl restart-bar
 niructl restart-wm             # run the installed NIRUWM now; windows stay
 niructl restart-wm --check     # exit 0 when the running session can do that
+niructl debug windows          # what the WM tracks about every window
 niructl bar top|bottom|hide|show|toggle|cycle|status
 niructl theme niru-nord
 niructl themes                 # catalogue, origin and active marker
@@ -253,6 +254,35 @@ seconds, the session runs the previous one again.
   session from before NIRUWM 0.23.0 needs one more logout and login.
 - The log says `restart in place requested`, `restart: replaced helpers: ...`
   and `restarted in place from NIRUWM X; N of M windows adopted`.
+- A window its program had closed to the tray stays closed after the
+  restart (0.37.17; before, it could come back on its workspace), and a tray
+  popup that is up stays up.
+
+### Tray popups and dialogs of tray programs
+
+Qt programs (the Nextcloud client among them) open their tray popup and
+their parentless dialogs as transients of a small group leader window that is
+never shown. NIRUWM treats such a window like this:
+
+- It is shown when a tray click just asked for it (NIRUBAR marks each click),
+  when it is modal, or when its own program has the focus or had it in the
+  last 5 seconds (a settings window opened from the tray popup).
+- Otherwise it stays off the screen, and the program is asked to close it
+  (`WM_DELETE_WINDOW`), so it knows the window is not shown and the next tray
+  click opens it again. Before 0.37.17 the program was not told, believed the
+  window was up, and later clicks did nothing.
+- A popup (frameless, or kept out of the task bar) that is left behind when
+  you change workspace closes the same way; a dialog stays on its workspace.
+- A window that looks like a tray icon waiting for the tray (`_XEMBED_INFO`,
+  icon sized, no window type, no parent) is left to the tray; if no tray
+  takes it within 2 seconds it is managed like any window. Qt puts
+  `_XEMBED_INFO` on every window, and 0.37.12 to 0.37.16 never showed a new
+  Qt window because of it.
+- `niructl debug windows` lists every managed window with its marks
+  (withdrawn, hidden, orphan-popup, floating, scratchpad and more), the
+  windows kept off the screen, windows waiting for a tray, the time since the
+  last tray click, and stale records (always `none` unless something is
+  wrong).
 
 ### NIRUX hooks: what's new and after sleep
 

@@ -54,6 +54,10 @@ the same commands, the same history file and the same gestures.
 - A crash of the window manager does not end the session: `niruwm-session`
   starts it again, and every open window keeps its workspace and scratchpad;
   a swallowed terminal stays hidden behind its program.
+- Tray programs work like on a full desktop: a tray click always opens the
+  program's popup, and a dialog it opens from there shows (Qt programs such
+  as the Nextcloud client included). `niructl debug windows` shows what the
+  window manager knows about every window when one does not appear.
 - Update without logging out: `niructl restart-wm` runs the installed NIRUWM
   in the same session. Every window keeps its screen, workspace, floating or
   tiled state, place in the layout and focus; each workspace keeps its layout;

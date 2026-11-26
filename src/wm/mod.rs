@@ -1,5 +1,6 @@
 mod attention;
 mod clients;
+mod debug;
 mod events;
 mod keys;
 mod mouse;
@@ -278,6 +279,24 @@ pub(crate) struct Wm {
     present_off_for: Option<(u32, std::time::Instant)>,
     /// Parents that unmapped themselves rather than being hidden by the WM.
     pub(crate) withdrawn: HashSet<Window>,
+    /// Unmanaged windows this manager kept off the screen although their
+    /// client mapped them: a dialog of a hidden group leader that no tray
+    /// click asked for, or a tray popup dismissed by leaving its workspace.
+    /// The client was asked to close them (WM_DELETE_WINDOW) when it can.
+    /// An activation request for one of them maps it after all. Cleared
+    /// when the window maps, withdraws or is destroyed, so a later window
+    /// with the same id starts clean.
+    pub(crate) dismissed: HashSet<Window>,
+    /// Windows that look like tray icons waiting to be docked (XEmbed), with
+    /// when they asked to be mapped. A tray takes one within milliseconds;
+    /// one no tray took after `TRAY_DOCK_GRACE` is managed like any window,
+    /// so a toolkit window that merely carries `_XEMBED_INFO` (Qt sets it
+    /// on every window) can never be left invisible.
+    pub(crate) tray_pending: HashMap<Window, std::time::Instant>,
+    /// The process whose window last had the focus, and when it still had
+    /// it. A parentless dialog that process opens right after (the Settings
+    /// button of a tray popup) was asked for by the user.
+    pub(crate) focus_pid_seen: Option<(u32, std::time::Instant)>,
     /// The client an active Super+drag owns. While this is set, arrange must
     /// leave that window's geometry alone: the pointer, not the source
     /// monitor's tiling area, decides where it is.
@@ -555,6 +574,9 @@ impl Wm {
             present_checked: std::time::Instant::now(),
             present_off_for: None,
             withdrawn: HashSet::new(),
+            dismissed: HashSet::new(),
+            tray_pending: HashMap::new(),
+            focus_pid_seen: None,
             dragging: None,
             focus_dirty: false,
             bindings: Vec::new(),

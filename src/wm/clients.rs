@@ -29,6 +29,42 @@ fn suppress_transient(withdrawn: &HashSet<Window>, parent: Option<Window>) -> bo
     parent.is_some_and(|parent| withdrawn.contains(&parent))
 }
 
+/// How long a window that looks like a tray icon waits for a tray to take
+/// it before it is managed like any other window.
+pub(crate) const TRAY_DOCK_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// How long after its program lost the focus a dialog of a hidden group
+/// leader still counts as opened by the user.
+const FOCUS_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Whether a window that asks to be mapped looks like a tray icon waiting
+/// for the tray: `_XEMBED_INFO`, no window type but NORMAL, no transient
+/// parent, and icon sized (at most 128 pixels each way). Qt sets
+/// `_XEMBED_INFO` on every window, so a Qt dialog (a type, a transient
+/// parent) or main window (its size) is not mistaken for one.
+pub(crate) fn tray_icon_like(
+    xembed: bool,
+    special_type: bool,
+    transient: bool,
+    (width, height): (u16, u16),
+) -> bool {
+    xembed && !special_type && !transient && width <= 128 && height <= 128
+}
+
+/// The program with process `pid` is in use: one of its windows has the
+/// focus, or had it less than `FOCUS_GRACE` ago.
+fn same_program_in_use(
+    pid: u32,
+    focused_pid: Option<u32>,
+    seen: Option<(u32, std::time::Instant)>,
+    now: std::time::Instant,
+) -> bool {
+    focused_pid == Some(pid)
+        || seen.is_some_and(|(seen_pid, at)| {
+            seen_pid == pid && now.saturating_duration_since(at) <= FOCUS_GRACE
+        })
+}
+
 impl Wm {
     pub(crate) fn values(&self, w: Window, n: &str) -> Vec<u32> {
         self.c
@@ -119,33 +155,194 @@ impl Wm {
             .is_some_and(|tree| tree.parent != self.root)
     }
 
-    /// A tray icon: it carries `_XEMBED_INFO` and waits for a tray to take
-    /// it. Managing one made it a tile of its own and hid it from the bar
-    /// on other workspaces.
-    fn tray_icon(&self, w: Window) -> bool {
+    /// A tray icon waiting for a tray to take it (XEmbed). Managing one made
+    /// it a tile of its own and hid it from the bar on other workspaces.
+    ///
+    /// `_XEMBED_INFO` alone does not say so: Qt puts it on every window it
+    /// creates, and 0.37.12 to 0.37.16 left every new Qt window (all of the
+    /// Nextcloud client's) unmapped for that reason. See `tray_icon_like`.
+    fn tray_icon(&self, w: Window, transient: Option<Window>, types: &[u32]) -> bool {
         let atom = self.atom("_XEMBED_INFO");
-        self.c
+        let xembed = self
+            .c
             .get_property(false, w, atom, AtomEnum::ANY, 0, 2)
             .ok()
             .and_then(|cookie| cookie.reply().ok())
-            .is_some_and(|reply| reply.type_ != u32::from(AtomEnum::NONE))
+            .is_some_and(|reply| reply.type_ != u32::from(AtomEnum::NONE));
+        if !xembed {
+            return false;
+        }
+        let normal = self.atom("_NET_WM_WINDOW_TYPE_NORMAL");
+        let size = self
+            .c
+            .get_geometry(w)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|g| (g.width, g.height))
+            .unwrap_or((0, 0));
+        tray_icon_like(
+            xembed,
+            types.iter().any(|t| *t != normal),
+            transient.is_some(),
+            size,
+        )
     }
 
+    /// A tray popup rather than a dialog: frameless (Qt marks those with
+    /// `_KDE_NET_WM_WINDOW_TYPE_OVERRIDE`), a menu/popup type, or kept out
+    /// of the task bar and pager.
+    fn popup_like(&self, w: Window, types: &[u32]) -> bool {
+        let popup_types = [
+            "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE",
+            "_NET_WM_WINDOW_TYPE_POPUP_MENU",
+            "_NET_WM_WINDOW_TYPE_DROPDOWN_MENU",
+            "_NET_WM_WINDOW_TYPE_MENU",
+            "_NET_WM_WINDOW_TYPE_UTILITY",
+        ];
+        if types
+            .iter()
+            .any(|t| popup_types.iter().any(|name| self.atom(name) == *t))
+        {
+            return true;
+        }
+        let skip = self.atom("_NET_WM_STATE_SKIP_TASKBAR");
+        self.values(w, "_NET_WM_STATE").contains(&skip)
+    }
+
+    /// Remember which process has the focus now, so a dialog it opens right
+    /// after it lost the focus (its tray popup closing as the Settings
+    /// button opens the settings) still counts as asked for.
+    pub(crate) fn note_focus_seen(&mut self) {
+        let pid = self
+            .focus
+            .and_then(|f| self.clients.iter().find(|c| c.win == f))
+            .and_then(|c| c.pid);
+        if let Some(pid) = pid {
+            self.focus_pid_seen = Some((pid, std::time::Instant::now()));
+        }
+    }
+
+    /// A dialog of a hidden group leader (Qt's never-mapped leader window)
+    /// may show: the user clicked a tray icon just now, it is modal, or its
+    /// own program has (or just had) the focus, so the user opened it from
+    /// one of that program's windows.
+    fn orphan_may_show(&self, w: Window) -> bool {
+        if self.tray_activation_recent() || self.modal(w) {
+            return true;
+        }
+        let Some(pid) = self.window_pid(w) else {
+            return false;
+        };
+        let focused_pid = self
+            .focus
+            .and_then(|f| self.clients.iter().find(|c| c.win == f))
+            .and_then(|c| c.pid);
+        same_program_in_use(
+            pid,
+            focused_pid,
+            self.focus_pid_seen,
+            std::time::Instant::now(),
+        )
+    }
+
+    /// Keep a window off the screen that its client mapped, and tell the
+    /// client: a toolkit that is not told keeps believing the window is
+    /// shown, and its next show() does nothing at all (Qt returns early for
+    /// a visible window), so the window could never come back. A client
+    /// that takes WM_DELETE_WINDOW closes it; the next show() is then a new
+    /// map request. `ask_close` is false where closing would lose work (a
+    /// dialog of a main window its client withdrew).
+    fn keep_off_screen(&mut self, w: Window, why: &str, ask_close: bool) -> Result<()> {
+        let _ = self.c.unmap_window(w);
+        let asked = ask_close && self.has_protocol(w, "WM_DELETE_WINDOW");
+        if asked {
+            self.send_delete(w)?;
+        }
+        if !self.clients.iter().any(|c| c.win == w) && self.dismissed.insert(w) {
+            eprintln!(
+                "niruwm: window {w:#x} not shown ({why}); {}",
+                if asked {
+                    "asked its client to close it"
+                } else {
+                    "left unmapped"
+                }
+            );
+        }
+        self.c.flush()?;
+        Ok(())
+    }
+
+    /// Ask the client to close `w` (ICCCM WM_DELETE_WINDOW).
+    fn send_delete(&self, w: Window) -> Result<()> {
+        self.c.send_event(
+            false,
+            w,
+            EventMask::NO_EVENT,
+            ClientMessageEvent::new(
+                32,
+                w,
+                self.atom("WM_PROTOCOLS"),
+                [self.atom("WM_DELETE_WINDOW"), x11rb::CURRENT_TIME, 0, 0, 0],
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// Tray icons that no tray took within `TRAY_DOCK_GRACE` are ordinary
+    /// windows after all: manage them.
+    pub(crate) fn tray_pending_tick(&mut self) -> Result<()> {
+        let now = std::time::Instant::now();
+        let due: Vec<Window> = self
+            .tray_pending
+            .iter()
+            .filter(|(_, since)| now.duration_since(**since) >= TRAY_DOCK_GRACE)
+            .map(|(w, _)| *w)
+            .collect();
+        for w in due {
+            self.tray_pending.remove(&w);
+            let waiting = self
+                .c
+                .get_window_attributes(w)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .is_some_and(|a| !a.override_redirect && a.map_state == MapState::UNMAPPED);
+            if waiting && !self.embedded(w) && !self.clients.iter().any(|c| c.win == w) {
+                eprintln!(
+                    "niruwm: window {w:#x} looked like a tray icon but no tray took it; managing it"
+                );
+                self.manage_window(w, false)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A window asks to be mapped (MapRequest), or is adopted at start-up.
     pub(crate) fn manage(&mut self, w: Window) -> Result<()> {
+        self.manage_window(w, true)
+    }
+
+    /// `defer_tray_icons`: a window that looks like a tray icon waits for a
+    /// tray first (false once it waited long enough).
+    fn manage_window(&mut self, w: Window, defer_tray_icons: bool) -> Result<()> {
+        // It asks to be shown: whatever this manager did to it before
+        // (kept it off the screen, waited for a tray) is over.
+        self.dismissed.remove(&w);
         if self.clients.iter().any(|c| c.win == w) && self.embedded(w) {
             // Taken into another window since it was managed: not ours.
             self.unmanage(w);
             return self.arrange();
         }
         if let Some(client) = self.clients.iter().find(|c| c.win == w) {
-            if suppress_transient(&self.withdrawn, client.parent)
-                || (self.orphan_transient(client.parent)
-                    && !self.tray_activation_recent()
-                    && !self.modal(w))
-            {
-                let _ = self.c.unmap_window(w);
-                self.c.flush()?;
-                return Ok(());
+            let parent = client.parent;
+            if suppress_transient(&self.withdrawn, parent) {
+                return self.keep_off_screen(w, "its parent window is withdrawn", false);
+            }
+            if self.orphan_transient(parent) && !self.orphan_may_show(w) {
+                return self.keep_off_screen(
+                    w,
+                    "a dialog of a hidden window, not asked for by a tray click",
+                    true,
+                );
             }
             self.withdrawn.remove(&w);
             self.hidden.remove(&w);
@@ -158,9 +355,9 @@ impl Wm {
         if a.override_redirect {
             return Ok(());
         }
-        // A tray icon, or a window inside another one (after a restart the
-        // saved client list can name one), is the tray's or its parent's.
-        if self.embedded(w) || self.tray_icon(w) {
+        // A window inside another one (after a restart the saved client
+        // list can name one) is its parent's.
+        if self.embedded(w) {
             return Ok(());
         }
         // An input-only helper has no visible surface and cannot be tiled or
@@ -202,19 +399,54 @@ impl Wm {
             .and_then(|mut v| v.next())
             .filter(|w| *w != 0);
 
+        // A tray icon waits for the tray to take it. One that no tray takes
+        // is managed after `TRAY_DOCK_GRACE` (see `tray_pending_tick`).
+        if defer_tray_icons && !self.adopting && self.tray_icon(w, transient, &types) {
+            self.tray_pending
+                .entry(w)
+                .or_insert_with(std::time::Instant::now);
+            return Ok(());
+        }
+        self.tray_pending.remove(&w);
+
+        // A new window with a recycled id: nothing recorded for an earlier
+        // window with this id may apply to it.
         self.withdrawn.remove(&w);
+        self.kept.remove(&w);
+        if !self.adopting {
+            self.hidden.remove(&w);
+        }
         let orphan = self.orphan_transient(transient) && !self.modal(w);
         // A dialog belongs to its parent's workspace. Suppress it only when the
         // parent withdrew itself (a tray hide or a closed main window). A parent
         // that is merely hidden by the WM on another workspace still allows a
         // new dialog, which is placed with that parent below.
-        if suppress_transient(&self.withdrawn, transient)
-            || (orphan && !self.tray_activation_recent())
-        {
-            let _ = self.c.unmap_window(w);
-            self.c.flush()?;
-            return Ok(());
+        //
+        // A window adopted at start-up that is on the screen stays there: the
+        // previous manager showed it, and unmapping it behind its client's
+        // back would leave the client believing it is still shown.
+        let adopted_visible = self.adopting && a.map_state == MapState::VIEWABLE;
+        if !adopted_visible && suppress_transient(&self.withdrawn, transient) {
+            if self.adopting {
+                return Ok(());
+            }
+            return self.keep_off_screen(w, "its parent window is withdrawn", false);
         }
+        if !adopted_visible && orphan && !self.orphan_may_show(w) {
+            if self.adopting {
+                return Ok(());
+            }
+            return self.keep_off_screen(
+                w,
+                "a dialog of a hidden window, not asked for by a tray click",
+                true,
+            );
+        }
+
+        // Only a popup (frameless, or kept out of the task bar) that a tray
+        // click brought up is one-shot and goes away when its workspace is
+        // left. A settings window opened from it stays, like any dialog.
+        let orphan = orphan && self.popup_like(w, &types);
 
         // Dialogs, utilities, splash screens, notifications and menu/popup
         // helpers float above the tile layout. The popup family is normally
@@ -673,8 +905,12 @@ impl Wm {
         if keep_hidden {
             // Hidden before the restart (another workspace, a hidden
             // scratchpad, a swallowed terminal): arrange() maps it when it is
-            // shown, so it never flashes up now.
-            self.hidden.insert(w);
+            // shown, so it never flashes up now. A window its client had
+            // withdrawn stays withdrawn (`apply_restart_client`): only its
+            // client's next map request brings it back.
+            if !self.withdrawn.contains(&w) {
+                self.hidden.insert(w);
+            }
         } else {
             self.c.map_window(w)?;
         }
@@ -723,7 +959,12 @@ impl Wm {
     }
 
     pub(crate) fn unmanage(&mut self, w: Window) {
+        if self.focus == Some(w) {
+            self.note_focus_seen();
+        }
         self.last_focus.retain(|_, v| *v != w);
+        self.dismissed.remove(&w);
+        self.tray_pending.remove(&w);
         self.studio_window_removed(w);
         self.withdrawn.remove(&w);
         self.hidden.remove(&w);
@@ -892,6 +1133,7 @@ impl Wm {
             .find(|c| c.win == w)
             .map(|c| c.take_focus)
             .unwrap_or(false);
+        self.note_focus_seen();
         let previous = self.focus;
         // Each workspace remembers the window last used on it, so coming
         // back lands where you left. Scratchpads and picture-in-picture
@@ -1330,6 +1572,7 @@ impl Wm {
     /// Lay out every screen. A screen that is about to leave a workspace is
     /// captured for the overview first (see `overview.rs`).
     pub(crate) fn arrange(&mut self) -> Result<()> {
+        self.note_focus_seen();
         let timed = self.overview_before_arrange();
         let result = self.arrange_screens();
         if let Some(started) = timed {
@@ -1580,7 +1823,16 @@ impl Wm {
             self.c.unmap_window(w)?;
         }
         for w in dismiss_orphans {
+            // Still shown as far as its client knows (it did not withdraw
+            // it): ask it to close the popup, so its idea of what is shown
+            // stays true and the next tray click maps it again. Unmapping
+            // alone left Qt sure the popup was up, and every later show()
+            // did nothing.
+            let client_shows_it = !self.withdrawn.contains(&w);
             self.unmanage(w);
+            if client_shows_it {
+                self.keep_off_screen(w, "a tray popup left behind on another workspace", true)?;
+            }
         }
 
         for (_, win, r, b, fullscreen) in geometry {
@@ -2149,17 +2401,7 @@ impl Wm {
     /// Close the focused window politely, then forcibly.
     pub(crate) fn close(&mut self, w: Window) -> Result<()> {
         if self.has_protocol(w, "WM_DELETE_WINDOW") {
-            self.c.send_event(
-                false,
-                w,
-                EventMask::NO_EVENT,
-                ClientMessageEvent::new(
-                    32,
-                    w,
-                    self.atom("WM_PROTOCOLS"),
-                    [self.atom("WM_DELETE_WINDOW"), x11rb::CURRENT_TIME, 0, 0, 0],
-                ),
-            )?;
+            self.send_delete(w)?;
         } else {
             self.c.kill_client(w)?;
         }
@@ -2552,6 +2794,48 @@ mod tests {
             );
         }
         assert!(tiles(&other, 0, 1, &withdrawn));
+    }
+
+    #[test]
+    fn only_an_icon_sized_plain_xembed_window_waits_for_the_tray() {
+        // A docked-icon candidate: _XEMBED_INFO, no type, no parent, 22x22.
+        assert!(tray_icon_like(true, false, false, (22, 22)));
+        assert!(tray_icon_like(true, false, false, (1, 1)));
+        // Qt puts _XEMBED_INFO on every window. Its dialogs (a type and a
+        // transient parent: the Nextcloud tray popup and settings) and its
+        // main windows (their size) are never taken for tray icons.
+        assert!(!tray_icon_like(true, true, true, (400, 500)));
+        assert!(!tray_icon_like(true, true, false, (22, 22)));
+        assert!(!tray_icon_like(true, false, true, (22, 22)));
+        assert!(!tray_icon_like(true, false, false, (800, 600)));
+        assert!(!tray_icon_like(true, false, false, (129, 22)));
+        // No _XEMBED_INFO, no tray icon.
+        assert!(!tray_icon_like(false, false, false, (22, 22)));
+    }
+
+    #[test]
+    fn a_dialog_its_program_opens_while_in_use_counts_as_asked_for() {
+        let now = std::time::Instant::now();
+        // One of its windows has the focus now.
+        assert!(same_program_in_use(7, Some(7), None, now));
+        // It had the focus a moment ago (the tray popup closed as its
+        // Settings button opened the settings).
+        assert!(same_program_in_use(7, None, Some((7, now)), now));
+        assert!(same_program_in_use(
+            7,
+            Some(9),
+            Some((7, now)),
+            now + std::time::Duration::from_secs(4)
+        ));
+        // Long ago, or another program.
+        assert!(!same_program_in_use(
+            7,
+            None,
+            Some((7, now)),
+            now + std::time::Duration::from_secs(6)
+        ));
+        assert!(!same_program_in_use(7, Some(9), Some((9, now)), now));
+        assert!(!same_program_in_use(7, None, None, now));
     }
 
     #[test]

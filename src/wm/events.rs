@@ -103,6 +103,9 @@ impl Wm {
             // The same tick notices a bar that died. It is cheap: one
             // try_wait per child, once a second, and nothing else.
             self.restart_bars();
+            // A window that looked like a tray icon and that no tray took
+            // is managed after all.
+            self.tray_pending_tick()?;
             // A restored program may open fewer windows than it did when the
             // session was saved. Stop waiting after the deadline.
             self.finish_restore_if_due()?;
@@ -221,6 +224,10 @@ impl Wm {
                                 self.arrange()?;
                             }
                         }
+                    } else if self.dismissed.contains(&e.window) && !synthetic {
+                        // Our own unmap of a popup kept off the screen. Only
+                        // its client withdrawing it (or destroying it) ends
+                        // that record.
                     } else {
                         self.unmanage(e.window);
                         self.arrange()?;
@@ -229,6 +236,9 @@ impl Wm {
                 // A managed window taken into another one (a tray icon the
                 // bar docks) leaves the layout at once.
                 Event::ReparentNotify(e) if e.parent != self.root => {
+                    // A tray icon the tray docked: nothing to wait for.
+                    self.tray_pending.remove(&e.window);
+                    self.dismissed.remove(&e.window);
                     let known = self.clients.iter().any(|c| c.win == e.window)
                         || self.withdrawn.contains(&e.window)
                         || self.hidden.contains(&e.window)
@@ -467,6 +477,19 @@ impl Wm {
                 }
                 return Ok(keep_going);
             }
+            if d[0] == 24 {
+                // `niructl debug windows`: d[1] is the caller's window.
+                let report = self.debug_windows();
+                let _ = self.c.change_property8(
+                    PropMode::REPLACE,
+                    d[1],
+                    self.atom("_NIRUWM_DEBUG_RESULT"),
+                    self.atom("UTF8_STRING"),
+                    report.as_bytes(),
+                );
+                self.c.flush()?;
+                return Ok(true);
+            }
             if d[0] == 22 {
                 // `niructl restart-wm`: d[1] is the serial it waits for. The
                 // answer is published before leaving; the high bit says no.
@@ -682,6 +705,11 @@ impl Wm {
             // and workspace, or shows its scratchpad. See `activate`.
             if self.clients.iter().any(|c| c.win == e.window) {
                 self.activate(e.window)?;
+            } else if self.dismissed.contains(&e.window) {
+                // A window kept off the screen that its client wants up
+                // again (it never noticed it was not shown): treat the
+                // request as the map request it would have sent.
+                self.manage(e.window)?;
             }
         } else if e.type_ == self.atom("_NET_WM_STATE") {
             self.handle_wm_state(e)?;
