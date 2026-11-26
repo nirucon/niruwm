@@ -422,7 +422,9 @@ impl InputClock {
     fn start() -> Option<Self> {
         let (conn, screen_num) = x11rb::connect(None).ok()?;
         let root = conn.setup().roots[screen_num].root;
-        conn.extension_information(xinput::X11_EXTENSION_NAME).ok().flatten()?;
+        conn.extension_information(xinput::X11_EXTENSION_NAME)
+            .ok()
+            .flatten()?;
         let version = conn.xinput_xi_query_version(2, 2).ok()?.reply().ok()?;
         if (version.major_version, version.minor_version) < (2, 1) {
             return None;
@@ -484,7 +486,8 @@ impl InputClock {
     /// Count now as activity: niruidle's own resets (an inhibition, an unlock,
     /// a program's `SimulateUserActivity`) restart this clock as well.
     fn touch(&self) {
-        self.last_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+        self.last_ms
+            .store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Seconds since the last input, or `None` once the thread has stopped.
