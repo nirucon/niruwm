@@ -129,6 +129,14 @@ wallpaper, bar and running-session propagation.
 
 ## Idle, screensaver and lock timing
 
+NIRUIDLE counts idle time from real input: raw XInput 2 key, button, motion
+and touch events on the root window (they arrive whatever holds a grab), plus
+a pointer that moved between two polls (XTEST motion makes no raw event on
+every server). Resets of the X server's own clock (`XResetScreenSaver`,
+`ForceScreenSaver(Reset)`, `xset s reset`) do not hold the ladder; right after
+one, niruidle waits a single poll so `niructl lock` can finish. Without
+XInput 2.1 it falls back to the MIT-SCREEN-SAVER idle time.
+
 Screensaver and lock timing live in the shared config under `[idle]`:
 
 ```toml

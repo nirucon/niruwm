@@ -6,8 +6,14 @@
 //!   2. the screen locker (nirulock, NIRULOCK, or slock)
 //!   3. display off
 //!
-//! Idle time comes from the X server's MIT-SCREEN-SAVER extension, so user
-//! activity is reported by X itself and no input device is watched.
+//! Idle time is the time since the last real input: keys, buttons, pointer
+//! motion and touch from any device, read as raw XInput 2 events on the root
+//! window. A program cannot reset it: `XResetScreenSaver` and
+//! `ForceScreenSaver(Reset)`, which browsers and games call to keep a screen
+//! awake, only reset the X server's own clock (MIT-SCREEN-SAVER). Programs
+//! that want the screen to stay on ask over D-Bus (`org.freedesktop.ScreenSaver`
+//! Inhibit), which is shown in `niructl idle status`. Without XInput 2 the
+//! MIT-SCREEN-SAVER idle time is used as before.
 //!
 //! The times are read from `~/.config/niruui/screensaver.toml`, the same file
 //! NIRUSCREENSAVER uses, so the settings describe the whole sequence in one
@@ -19,12 +25,19 @@
 mod stdout;
 use std::{
     process::{Child, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
     thread,
     time::{Duration, Instant},
 };
 use x11rb::{
     connection::{Connection, RequestConnection as _},
-    protocol::{dpms::ConnectionExt as _, screensaver::ConnectionExt as _, xproto::*},
+    protocol::{
+        dpms::ConnectionExt as _, screensaver::ConnectionExt as _, xinput,
+        xinput::ConnectionExt as _, xproto::*, Event,
+    },
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
@@ -46,6 +59,10 @@ mod proximity;
 /// How often the idle time is checked. Five seconds is precise enough for a
 /// fifteen minute timer and costs nothing.
 const POLL: Duration = Duration::from_secs(5);
+
+/// At most one log line per this long for `SimulateUserActivity` calls; some
+/// programs send one every thirty seconds.
+const ACTIVITY_LOG_EVERY: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Copy)]
 struct Settings {
@@ -381,6 +398,124 @@ fn xset_saver(force: &str, dpms: &str) {
         .status();
 }
 
+/// How long the input thread sleeps after an event before it drains the
+/// queue: a moving mouse sends up to a thousand events a second, and the
+/// clock only needs to know that one came.
+const INPUT_BATCH: Duration = Duration::from_millis(250);
+
+/// The time of the last real input, kept by a thread on its own X connection.
+///
+/// Raw XInput 2 events reach the root window whatever holds a grab (the
+/// screensaver and the locker grab the keyboard and pointer), and only input
+/// devices produce them, the XTEST devices included, so `xdotool` and remote
+/// desktop input still count as activity.
+struct InputClock {
+    start: Instant,
+    /// Milliseconds after `start` of the last input or [`InputClock::touch`].
+    last_ms: Arc<AtomicU64>,
+    alive: Arc<AtomicBool>,
+}
+
+impl InputClock {
+    /// Start the thread. `None` when the X server has no XInput 2.1 or the
+    /// selection fails; the caller then uses the MIT-SCREEN-SAVER idle time.
+    fn start() -> Option<Self> {
+        let (conn, screen_num) = x11rb::connect(None).ok()?;
+        let root = conn.setup().roots[screen_num].root;
+        conn.extension_information(xinput::X11_EXTENSION_NAME).ok().flatten()?;
+        let version = conn.xinput_xi_query_version(2, 2).ok()?.reply().ok()?;
+        if (version.major_version, version.minor_version) < (2, 1) {
+            return None;
+        }
+        let mask = xinput::XIEventMask::RAW_KEY_PRESS
+            | xinput::XIEventMask::RAW_BUTTON_PRESS
+            | xinput::XIEventMask::RAW_MOTION
+            | xinput::XIEventMask::RAW_TOUCH_BEGIN;
+        conn.xinput_xi_select_events(
+            root,
+            &[xinput::EventMask {
+                deviceid: xinput::Device::ALL_MASTER.into(),
+                mask: vec![mask],
+            }],
+        )
+        .ok()?
+        .check()
+        .ok()?;
+        let clock = InputClock {
+            start: Instant::now(),
+            last_ms: Arc::new(AtomicU64::new(0)),
+            alive: Arc::new(AtomicBool::new(true)),
+        };
+        let (start, last, alive) = (clock.start, clock.last_ms.clone(), clock.alive.clone());
+        let spawned = thread::Builder::new().name("input-clock".into()).spawn(move || {
+            let is_input = |e: &Event| {
+                matches!(
+                    e,
+                    Event::XinputRawKeyPress(_)
+                        | Event::XinputRawButtonPress(_)
+                        | Event::XinputRawMotion(_)
+                        | Event::XinputRawTouchBegin(_)
+                )
+            };
+            loop {
+                match conn.wait_for_event() {
+                    Ok(e) if is_input(&e) => {
+                        last.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                        thread::sleep(INPUT_BATCH);
+                        while let Ok(Some(e)) = conn.poll_for_event() {
+                            if is_input(&e) {
+                                last.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!("niruidle: input clock lost its X connection ({e}); using the X idle time");
+                        alive.store(false, Ordering::Relaxed);
+                        return;
+                    }
+                }
+            }
+        });
+        spawned.ok()?;
+        Some(clock)
+    }
+
+    /// Count now as activity: niruidle's own resets (an inhibition, an unlock,
+    /// a program's `SimulateUserActivity`) restart this clock as well.
+    fn touch(&self) {
+        self.last_ms.store(self.start.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// Seconds since the last input, or `None` once the thread has stopped.
+    fn idle(&self) -> Option<u64> {
+        if !self.alive.load(Ordering::Relaxed) {
+            return None;
+        }
+        let now = self.start.elapsed().as_millis() as u64;
+        Some(now.saturating_sub(self.last_ms.load(Ordering::Relaxed)) / 1000)
+    }
+}
+
+/// The idle time the ladder runs on. The X server's clock counts input
+/// before niruidle started, so the larger of the two is right: after start
+/// they agree until a program resets the X clock, which is then ignored.
+fn ladder_idle(input: Option<u64>, x: Option<u64>) -> u64 {
+    match input {
+        Some(i) => i.max(x.unwrap_or(0)),
+        None => x.unwrap_or(0),
+    }
+}
+
+/// Seconds since the last input, ignoring the X clock reset that
+/// `niructl lock` makes before it starts the locker: one poll of grace when
+/// the X clock was just reset without input, so niruidle neither starts the
+/// screensaver over a lock in progress nor a second locker. Only one: a
+/// program that resets the X clock every few seconds cannot hold the ladder.
+fn just_reset(input_idle: u64, x_idle: Option<u64>) -> bool {
+    x_idle.is_some_and(|x| x < POLL.as_secs() + 1 && input_idle > x + POLL.as_secs())
+}
+
 fn idle_seconds(conn: &x11rb::rust_connection::RustConnection, root: Window) -> Option<u64> {
     let info = conn.screensaver_query_info(root).ok()?.reply().ok()?;
     Some(u64::from(info.ms_since_user_input) / 1000)
@@ -531,6 +666,15 @@ fn main() {
         eprintln!("niruidle: proximity lock: {prox_device}, locks {prox_after}s after it leaves");
     }
     let prox_shared = std::sync::Arc::new(std::sync::Mutex::new(prox_device));
+    let clock = InputClock::start();
+    if clock.is_some() {
+        eprintln!("niruidle: idle time from real input (XInput 2); programs cannot reset it");
+    } else {
+        eprintln!("niruidle: no XInput 2.1: idle time from the X server, which programs can reset");
+    }
+    let mut graced = false;
+    let mut pointer_at: Option<(i16, i16)> = None;
+    let mut last_activity_log: Option<Instant> = None;
     let prox_results = start_proximity(prox_shared.clone());
     let mut prox_tracker = proximity::Tracker::default();
     let mut prox_last: Option<proximity::Presence> = None;
@@ -585,6 +729,13 @@ fn main() {
             shared.saver_active = saver_child.is_some() || blanked || locker_child.is_some();
             if std::mem::take(&mut shared.activity) {
                 let _ = conn.force_screen_saver(ScreenSaver::RESET);
+                if let Some(c) = &clock {
+                    c.touch();
+                }
+                if last_activity_log.map_or(true, |t: Instant| t.elapsed() >= ACTIVITY_LOG_EVERY) {
+                    eprintln!("niruidle: a program reported user activity (SimulateUserActivity)");
+                    last_activity_log = Some(Instant::now());
+                }
             }
             if settings.honor_apps && !shared.inhibitors.is_empty() {
                 apps = Some((shared.inhibitors.len(), shared.inhibitors.summary()));
@@ -637,6 +788,9 @@ fn main() {
                     }
                     let _ = conn.force_screen_saver(ScreenSaver::RESET);
                     let _ = conn.flush();
+                    if let Some(c) = &clock {
+                        c.touch();
+                    }
                 }
                 proximity::Action::Nothing => {}
             }
@@ -647,6 +801,9 @@ fn main() {
             if status.success() {
                 let _ = conn.force_screen_saver(ScreenSaver::RESET);
                 let _ = conn.flush();
+                if let Some(c) = &clock {
+                    c.touch();
+                }
             } else {
                 eprintln!("niruidle: locker exited unsuccessfully: {status}");
                 retry_lock_at = Instant::now() + POLL;
@@ -683,6 +840,9 @@ fn main() {
             }
             let _ = conn.force_screen_saver(ScreenSaver::RESET);
             let _ = conn.flush();
+            if let Some(c) = &clock {
+                c.touch();
+            }
             thread::sleep(POLL);
             continue;
         }
@@ -695,7 +855,30 @@ fn main() {
             file_inhibited = false;
         }
 
-        let idle = idle_seconds(&conn, root).unwrap_or(0);
+        // XTEST pointer motion (xdotool, remote desktops) makes no raw
+        // motion event on every server, so a pointer that moved since the
+        // last poll counts as input too. A program cannot fake this without
+        // moving the pointer, which is input.
+        if let Some(p) = conn.query_pointer(root).ok().and_then(|c| c.reply().ok()) {
+            let at = (p.root_x, p.root_y);
+            if pointer_at.is_some_and(|last| last != at) {
+                if let Some(c) = &clock {
+                    c.touch();
+                }
+            }
+            pointer_at = Some(at);
+        }
+        let x_idle = idle_seconds(&conn, root);
+        let input_idle = clock.as_ref().and_then(InputClock::idle);
+        let idle = ladder_idle(input_idle, x_idle);
+        // One poll of grace after an X clock reset without input (see
+        // `just_reset`), then the ladder goes on whatever resets the X clock.
+        let hold = !graced && input_idle.is_some() && just_reset(idle, x_idle);
+        graced = hold;
+        if hold && idle >= screen_at.max(1) {
+            thread::sleep(POLL);
+            continue;
+        }
         let external_lock = lock_ready_window(&conn, root, lock_ready);
         if external_lock.is_some() != external_locked {
             external_locked = external_lock.is_some();
@@ -766,6 +949,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_program_resetting_the_x_clock_does_not_reset_the_ladder() {
+        // A browser called XResetScreenSaver: X says 3 s, real input 400 s ago.
+        assert_eq!(ladder_idle(Some(400), Some(3)), 400);
+        // Input before niruidle started is only known to the X server.
+        assert_eq!(ladder_idle(Some(10), Some(900)), 900);
+        // Without XInput 2 the X clock is all there is.
+        assert_eq!(ladder_idle(None, Some(42)), 42);
+        assert_eq!(ladder_idle(None, None), 0);
+    }
+
+    #[test]
+    fn only_a_fresh_x_reset_without_input_gets_grace() {
+        assert!(just_reset(400, Some(2)));
+        // Real input: both clocks agree.
+        assert!(!just_reset(2, Some(2)));
+        // An older reset is not fresh.
+        assert!(!just_reset(400, Some(30)));
+        assert!(!just_reset(400, None));
+    }
 
     fn timing(screen: u64, lock_after: u64) -> Settings {
         Settings {
