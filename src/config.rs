@@ -1182,7 +1182,7 @@ impl Default for Bar {
         Self {
             enabled: true,
             position: "top".into(),
-            show_title: false,
+            show_title: true,
             title_max: 20,
             cell_width: 30,
             separator: "|".into(),
@@ -1208,14 +1208,12 @@ impl Default for Bar {
                 "updates".into(),
                 "niruxupdate".into(),
                 "restart".into(),
-                "agent".into(),
                 "nirusec".into(),
-                "dnd".into(),
                 "timer".into(),
                 "disk".into(),
                 "drives".into(),
-                "quicksettings".into(),
                 "share".into(),
+                "weather".into(),
                 "clock".into(),
             ],
             follow_default_modules: true,
@@ -1232,7 +1230,7 @@ impl Default for Bar {
             media_width: 32,
             update_check_minutes: 30,
             tray: true,
-            popup_timeout_seconds: 4,
+            popup_timeout_seconds: 6,
             battery: true,
             network: true,
             icons: true,
@@ -2848,7 +2846,7 @@ mod tests {
     fn defaults_are_minimal() {
         let c = Config::default();
         assert!(c.bar.enabled);
-        assert!(!c.bar.show_title, "the bar defaults to tags and clock only");
+        assert!(c.bar.show_title, "the bar shows the focused window title");
         assert_eq!(c.bar.cell_width, 30);
     }
 
@@ -3058,7 +3056,8 @@ mod tests {
         assert!(d.modules.iter().any(|m| m == "updates"));
         let disk = d.modules.iter().position(|m| m == "disk").unwrap();
         assert_eq!(d.modules[disk + 1], "drives");
-        assert_eq!(d.modules[disk + 2], "quicksettings");
+        assert_eq!(d.modules[disk + 2], "share");
+        assert_eq!(d.modules[disk + 3], "weather");
         assert!(example.bar.follow_default_modules && d.follow_default_modules);
         assert_eq!((example.bar.disk_warn, d.disk_warn), (90, 90));
         assert_eq!(example.bar.presenting_hide, d.presenting_hide);

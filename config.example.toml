@@ -409,7 +409,7 @@ position = "top"
 # otherwise). Its popup lists used/free/total; a click opens a terminal with
 # `nirux clean`, which asks once before freeing anything.
 # Weather settings live in ~/.config/nirubar/config.toml; see weather.example.toml.
-modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "headset", "brightness", "display", "tailscale", "network", "wifi", "bluetooth", "mode", "battery", "updates", "niruxupdate", "restart", "agent", "nirusec", "dnd", "timer", "disk", "drives", "quicksettings", "share", "clock"]
+modules = ["workspaces", "dictation", "privacy", "recording", "scratchpad", "layout", "media", "volume", "microphone", "headset", "brightness", "display", "tailscale", "network", "wifi", "bluetooth", "mode", "battery", "updates", "niruxupdate", "restart", "nirusec", "timer", "disk", "drives", "share", "weather", "clock"]
 # true (default): `nirux update` keeps `modules` on the default list above, so
 # new modules arrive by themselves (your old file is kept in the config history:
 # `niructl config undo`). false: your own `modules` list is never changed.
@@ -463,7 +463,7 @@ cell_width = 30
 # transparent = true
 # opacity = 94
 # Show the focused window title between the workspaces and the status.
-title = false
+title = true
 title_max = 20
 # Seconds before the title appears. With 2, switching through windows shows no
 # titles at all and the one you settle on appears. 0 shows it at once. Only
@@ -485,7 +485,7 @@ popups = true
 # weather, tasks, pulse, notifications) always wait for a click or Escape.
 # Per-panel overrides go in NIRUBAR's own ~/.config/nirubar/config.toml,
 # never here:  [popup_timeout]  calendar = 0  volume = 2
-popup_timeout_seconds = 4
+popup_timeout_seconds = 6
 # Characters kept from the media title before an ellipsis.
 media_width = 32
 # Width of the graph in the pulse panel, in characters.
