@@ -254,6 +254,10 @@ impl Wm {
     /// dialog of a main window its client withdrew).
     fn keep_off_screen(&mut self, w: Window, why: &str, ask_close: bool) -> Result<()> {
         let _ = self.c.unmap_window(w);
+        // Not managed, so not shown again by the server should this manager
+        // crash (a popup dismissed after it was managed is in the save-set).
+        let _ = self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[0, 0]);
+        let _ = self.c.change_save_set(SetMode::DELETE, w);
         let asked = ask_close && self.has_protocol(w, "WM_DELETE_WINDOW");
         if asked {
             self.send_delete(w)?;
@@ -272,6 +276,23 @@ impl Wm {
         Ok(())
     }
 
+    /// A click on the empty desktop closes a tray popup that has the focus,
+    /// like a click anywhere else outside it. No window takes the focus on
+    /// such a click, so the popup (the Nextcloud panel) never heard it was
+    /// left and stayed up until the next tray click.
+    pub(crate) fn desktop_clicked(&mut self) -> Result<()> {
+        let popup = self.focus.filter(|f| {
+            !self.withdrawn.contains(f) && self.clients.iter().any(|c| c.win == *f && c.orphan)
+        });
+        if let Some(w) = popup {
+            if self.has_protocol(w, "WM_DELETE_WINDOW") {
+                self.send_delete(w)?;
+                self.c.flush()?;
+            }
+        }
+        Ok(())
+    }
+
     /// Ask the client to close `w` (ICCCM WM_DELETE_WINDOW).
     fn send_delete(&self, w: Window) -> Result<()> {
         self.c.send_event(
@@ -286,6 +307,122 @@ impl Wm {
             ),
         )?;
         Ok(())
+    }
+
+    /// Its client withdrew managed window `w` (ICCCM 4.1.4: it unmapped the
+    /// window, or said so with a synthetic UnmapNotify). The record stays,
+    /// so the window comes back as it was when its client maps it again,
+    /// but to everything outside this manager the window is gone: WM_STATE
+    /// says Withdrawn, `_NET_WM_DESKTOP` goes (EWMH) and so does its place
+    /// in `_NET_CLIENT_LIST` (see `publish_desktop_state`), and it leaves the
+    /// save-set. Before 0.37.19 a window closed to the tray stayed listed
+    /// (NIRUBAR showed its workspace as occupied for good, a window list
+    /// could activate it) and stayed in the save-set, so a manager that
+    /// crashed made the server map every window closed to a tray again, as
+    /// an empty ghost the program did not know was up.
+    /// Returns whether it was newly withdrawn.
+    pub(crate) fn withdraw(&mut self, w: Window) -> bool {
+        if !self.withdrawn.insert(w) {
+            return false;
+        }
+        if self.clients.iter().any(|c| c.win == w) {
+            let _ = self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[0, 0]);
+            let _ = self.c.delete_property(w, self.atom("_NET_WM_DESKTOP"));
+            let _ = self.c.change_save_set(SetMode::DELETE, w);
+        }
+        true
+    }
+
+    /// A window its client had withdrawn is mapped again. ICCCM calls that
+    /// a new map (Withdrawn to Normal), so it is placed like a new window:
+    /// with its parent, on the workspace its client asks for
+    /// (`_NET_WM_DESKTOP`, set again since the withdrawal), or on the screen
+    /// under the pointer and the workspace that screen shows. A window that
+    /// a rule pins to a workspace, a scratchpad and a sticky or
+    /// picture-in-picture window keep their place.
+    ///
+    /// Before 0.37.19 it came back on the workspace it was closed on: a tray
+    /// click on another workspace showed the window there, out of sight, or
+    /// its activation request switched the screen back to that workspace.
+    fn rejoin(&mut self, w: Window) -> Result<()> {
+        self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
+        self.c.change_save_set(SetMode::INSERT, w)?;
+        let Some(c) = self.clients.iter().find(|c| c.win == w) else {
+            return Ok(());
+        };
+        if c.scratch.is_some() || c.sticky || c.pip.is_some() || c.swallowed_by.is_some() {
+            return Ok(());
+        }
+        let parent = c.parent;
+        let focus_on_map = c.focus_on_map;
+        let parent_place = parent.and_then(|p| {
+            self.clients
+                .iter()
+                .find(|pc| pc.win == p && !self.withdrawn.contains(&pc.win))
+                .map(|pc| (pc.monitor, pc.tag))
+        });
+        let requested = self
+            .values(w, "_NET_WM_DESKTOP")
+            .first()
+            .copied()
+            .and_then(|t| crate::monitor::find_global(&self.monitors, t))
+            .map(|(monitor, tag)| (monitor, tag as u32));
+        let pinned = self.rule_for(w).is_some_and(|r| r.workspace.is_some());
+        let place = match (parent_place, requested) {
+            (Some(place), _) | (None, Some(place)) => Some(place),
+            (None, None) if pinned => None,
+            (None, None) => {
+                let monitor = self.pointer_monitor();
+                let tag = self
+                    .monitors
+                    .get(monitor)
+                    .map(|m| m.active as u32)
+                    .unwrap_or_else(|| self.active_tag());
+                Some((monitor, tag))
+            }
+        };
+        let name =
+            place.and_then(|(monitor, _)| self.monitors.get(monitor).map(|m| m.name.clone()));
+        if let (Some((monitor, tag)), Some(c)) =
+            (place, self.clients.iter_mut().find(|c| c.win == w))
+        {
+            if c.monitor != monitor || c.tag != tag {
+                c.home = None;
+            }
+            c.monitor = monitor;
+            c.tag = tag;
+            if let Some(name) = name {
+                c.monitor_name = name;
+            }
+        }
+        let shown_here = self.clients.iter().find(|c| c.win == w).is_some_and(|c| {
+            self.monitors
+                .get(c.monitor)
+                .map_or(true, |m| m.active as u32 == c.tag)
+        });
+        if focus_on_map && shown_here {
+            if let Some(monitor) = self.clients.iter().find(|c| c.win == w).map(|c| c.monitor) {
+                self.focused_monitor = monitor;
+            }
+            self.focus = Some(w);
+            self.focus_dirty = true;
+        }
+        Ok(())
+    }
+
+    /// The screen a new window belongs to: the one under the pointer, or the
+    /// focused one when the pointer is outside every screen.
+    fn pointer_monitor(&self) -> usize {
+        if self.monitors.is_empty() {
+            return 0;
+        }
+        let (px, py) = self.pointer_position();
+        let by_pointer = crate::monitor::monitor_at(&self.monitors, px, py);
+        if self.monitors.get(by_pointer).is_some() {
+            by_pointer
+        } else {
+            self.focused_monitor
+        }
     }
 
     /// Tray icons that no tray took within `TRAY_DOCK_GRACE` are ordinary
@@ -344,8 +481,11 @@ impl Wm {
                     true,
                 );
             }
-            self.withdrawn.remove(&w);
+            let was_withdrawn = self.withdrawn.remove(&w);
             self.hidden.remove(&w);
+            if was_withdrawn {
+                self.rejoin(w)?;
+            }
             self.c.map_window(w)?;
             self.c.flush()?;
             return self.arrange();
@@ -588,7 +728,9 @@ impl Wm {
             Some(r) => (r.monitor.min(self.monitors.len().saturating_sub(1)), r.tag),
             None => match parent_place {
                 Some((monitor, tag)) => (monitor, tag),
-                None if transient.is_some() => {
+                // Adopted after a crash, it keeps the workspace it was on
+                // (`_NET_WM_DESKTOP`, written by the manager that crashed).
+                None if transient.is_some() && !(self.adopting && requested.is_some()) => {
                     // A tray dialog is often transient for an unmanaged 1x1
                     // helper that asks for desktop 0. Keep it on the workspace
                     // the user is actually looking at instead of hiding it.
@@ -851,8 +993,16 @@ impl Wm {
                 }
             }
         }
-        self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
-        self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
+        if self.withdrawn.contains(&w) {
+            // Adopted after a restart in place as closed to the tray: still
+            // withdrawn, and out of the save-set (see `withdraw`).
+            self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[0, 0])?;
+            self.c.delete_property(w, self.atom("_NET_WM_DESKTOP"))?;
+            self.c.change_save_set(SetMode::DELETE, w)?;
+        } else {
+            self.prop(w, "WM_STATE", self.atom("WM_STATE"), &[1, 0])?;
+            self.prop(w, "_NET_WM_DESKTOP", AtomEnum::CARDINAL.into(), &[tag])?;
+        }
         // Keep floating windows centred if the client asked for a 1x1 size
         // (common for dialogs that size themselves after mapping).
         if floating && !is_scratchpad && swallowed.is_none() && (g.width <= 1 || g.height <= 1) {
@@ -1124,7 +1274,9 @@ impl Wm {
     pub(crate) fn set_focus(&mut self, w: Window) -> Result<()> {
         // A swallowed terminal is hidden; the window in its place has the focus.
         let w = self.swallower_of(w).unwrap_or(w);
-        if !self.clients.iter().any(|c| c.win == w) {
+        // A window its client withdrew is not on the screen: focusing it
+        // fails (BadMatch) and leaves the keyboard nowhere.
+        if !self.clients.iter().any(|c| c.win == w) || self.withdrawn.contains(&w) {
             return Ok(());
         }
         let take_focus = self
@@ -1454,6 +1606,16 @@ impl Wm {
             return Ok(());
         }
         self.focused_monitor = target;
+        // The workspace being looked at is that screen's, at once: a program
+        // that opens its window there (`niruprodrive show` reads
+        // `_NET_CURRENT_DESKTOP`) opened it on the screen the pointer had
+        // left when the new one was empty and nothing arranged in between.
+        let current = crate::monitor::global_active(&self.monitors, target);
+        self.publish_root32(
+            "_NET_CURRENT_DESKTOP",
+            AtomEnum::CARDINAL.into(),
+            &[current],
+        )?;
         // Focus a window on that screen when there is one, so typing has a
         // destination. An empty screen keeps the pointer focus.
         let active = self.monitors[target].active as u32;
@@ -1464,6 +1626,7 @@ impl Wm {
                 c.monitor == target
                     && c.tag == active
                     && c.swallowed_by.is_none()
+                    && !self.withdrawn.contains(&c.win)
                     && self.scratch_owner(c.win).is_none()
             })
             .map(|c| c.win);
@@ -2080,17 +2243,27 @@ impl Wm {
         self.publish_root32("_NET_CURRENT_DESKTOP", AtomEnum::CARDINAL.into(), &[active])?;
         // Scratchpads are not workspace members, so window lists and workspace
         // indicators never count them; `_NIRUWM_SCRATCHPADS` describes them.
-        // A swallowed terminal is hidden behind its window and listed nowhere.
+        // A swallowed terminal is hidden behind its window and listed nowhere,
+        // and so is a window its client withdrew (closed to a tray): it is
+        // not on any workspace until its client maps it again.
         let list: Vec<Window> = self
             .clients
             .iter()
-            .filter(|c| self.scratch_owner(c.win).is_none() && c.swallowed_by.is_none())
+            .filter(|c| {
+                self.scratch_owner(c.win).is_none()
+                    && c.swallowed_by.is_none()
+                    && !self.withdrawn.contains(&c.win)
+            })
             .map(|c| c.win)
             .collect();
         let placements: Vec<(Window, u32)> = self
             .clients
             .iter()
-            .filter(|c| self.scratch_owner(c.win).is_none() && c.swallowed_by.is_none())
+            .filter(|c| {
+                self.scratch_owner(c.win).is_none()
+                    && c.swallowed_by.is_none()
+                    && !self.withdrawn.contains(&c.win)
+            })
             .map(|client| {
                 (
                     client.win,
@@ -2132,7 +2305,12 @@ impl Wm {
             )?;
         }
         // Every client advertises its global desktop for panels using EWMH.
-        for c in &self.clients {
+        // A withdrawn one has none (EWMH; see `withdraw`).
+        for c in self
+            .clients
+            .iter()
+            .filter(|c| !self.withdrawn.contains(&c.win))
+        {
             // EWMH: 0xFFFFFFFF is "on all desktops", which is how a
             // scratchpad behaves while it is shown.
             let global = if self.scratch_owner(c.win).is_some() {
@@ -2424,6 +2602,7 @@ impl Wm {
                 c.monitor == monitor
                     && c.tag == tag
                     && c.swallowed_by.is_none()
+                    && !self.withdrawn.contains(&c.win)
                     && !self.scratch_hidden(c)
             })
             .map(|c| c.win)

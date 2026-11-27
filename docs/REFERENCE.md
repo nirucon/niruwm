@@ -273,6 +273,9 @@ never shown. NIRUWM treats such a window like this:
   window was up, and later clicks did nothing.
 - A popup (frameless, or kept out of the task bar) that is left behind when
   you change workspace closes the same way; a dialog stays on its workspace.
+- A click on the empty desktop closes a tray popup that has the focus, like
+  a click anywhere else outside it (0.37.19; before, the Nextcloud panel
+  stayed up until the next tray click).
 - A window that looks like a tray icon waiting for the tray (`_XEMBED_INFO`,
   icon sized, no window type, no parent) is left to the tray; if no tray
   takes it within 2 seconds it is managed like any window. Qt puts
@@ -283,6 +286,32 @@ never shown. NIRUWM treats such a window like this:
   windows kept off the screen, windows waiting for a tray, the time since the
   last tray click, and stale records (always `none` unless something is
   wrong).
+
+### Windows closed to the tray
+
+A program that closes its window to the tray unmaps it (ICCCM: the window
+is withdrawn). Since 0.37.19 NIRUWM then treats the window as gone for
+everyone else, and keeps only what it needs to show it again:
+
+- It leaves `_NET_CLIENT_LIST`, its `WM_STATE` says Withdrawn and its
+  `_NET_WM_DESKTOP` is removed. NIRUBAR no longer marks its workspace as
+  occupied, a window list can no longer activate it, and the overview and
+  focus keys skip it. An activation request for it is ignored (it used to
+  switch to the workspace the window was closed on).
+- It leaves the X save-set, so it stays closed if NIRUWM crashes. Before,
+  the server mapped every window closed to a tray again when the manager
+  went away, and they came back as empty ghosts (niruprodrive as a black
+  tile, the Nextcloud panel and settings) that their programs believed hidden.
+- Shown again (a tray click, `niruprodrive show`), it is placed like a new
+  window: with its parent, on the workspace its program asks for, or on the
+  screen under the pointer and the workspace that screen shows, and it gets
+  the focus. A rule that pins it to a workspace, a scratchpad and a sticky or
+  picture-in-picture window keep their place. Before, it came back on the
+  workspace it was closed on, out of sight, or its activation switched you
+  there.
+- Moving the pointer onto another screen updates `_NET_CURRENT_DESKTOP` at
+  once, also when that screen is empty, so a window a program opens "where
+  you are" opens on that screen.
 
 ### NIRUX hooks: what's new and after sleep
 

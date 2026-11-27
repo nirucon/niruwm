@@ -130,6 +130,12 @@ impl Wm {
     pub(crate) fn activate(&mut self, w: Window) -> Result<()> {
         // A swallowed terminal is shown through the window in its place.
         let w = self.swallower_of(w).unwrap_or(w);
+        // A window its client withdrew (closed to a tray) is not on any
+        // workspace: only its client's next map shows it. Activating it
+        // switched the screen to the workspace it was closed on.
+        if self.withdrawn.contains(&w) {
+            return Ok(());
+        }
         // Activating a scratchpad (a window switcher, a notification) shows
         // it where the user is instead of switching workspace.
         if self.is_scratch(w) {

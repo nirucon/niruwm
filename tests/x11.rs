@@ -4711,3 +4711,182 @@ fn an_icon_no_tray_takes_is_managed_after_a_moment() {
     quit_wm(&c, root, &mut wm);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// The first value of WM_STATE (1 Normal, 0 Withdrawn), if any.
+fn wm_state(c: &RustConnection, w: Window) -> Option<u32> {
+    values(c, w, "WM_STATE").first().copied()
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_window_closed_to_a_tray_is_gone_from_lists_and_stays_closed_when_the_manager_crashes() {
+    let dir = std::env::temp_dir().join(format!("niruwm-tray-ghost-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+
+    // A window on workspace 2, hidden by the manager: the control case.
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [1, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![1]);
+    let other = create(&c, root, b"other\0Other\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&other));
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    wait(|| !viewable(&c, other));
+
+    // A tray program's window, shown and then closed to the tray.
+    let drive = create(&c, root, b"niruprodrive\0NIRUPRODRIVE\0");
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&drive));
+    assert_eq!(wm_state(&c, drive), Some(1));
+    withdraw(&c, root, drive);
+    // Gone for everybody outside the manager: no workspace for NIRUBAR to
+    // mark as occupied, nothing for a window list to activate.
+    wait(|| !values(&c, root, "_NET_CLIENT_LIST").contains(&drive));
+    wait(|| wm_state(&c, drive) == Some(0));
+    assert!(values(&c, drive, "_NET_WM_DESKTOP").is_empty());
+    assert!(values(&c, root, "_NET_CLIENT_LIST").contains(&other));
+    // Still known inside: it comes back when its client maps it.
+    c.map_window(drive).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(&c, drive));
+    wait(|| values(&c, root, "_NET_CLIENT_LIST").contains(&drive));
+    wait(|| wm_state(&c, drive) == Some(1));
+    assert_eq!(values(&c, drive, "_NET_WM_DESKTOP"), vec![0]);
+    withdraw(&c, root, drive);
+    wait(|| wm_state(&c, drive) == Some(0));
+
+    // The manager crashes. The server maps every window of its save-set
+    // again: the hidden one comes back (a new manager adopts it on its
+    // workspace), the one closed to the tray must not. Before 0.37.19 it
+    // came up as an empty window its program did not know was shown.
+    let _ = wm.0.kill();
+    let _ = wm.0.wait();
+    wait(|| viewable(&c, other));
+    thread::sleep(Duration::from_millis(300));
+    assert!(
+        !viewable(&c, drive),
+        "a window closed to the tray came back when the manager crashed"
+    );
+
+    for w in [drive, other] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    forget_tray_click(&c, root);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_window_shown_again_from_the_tray_opens_where_the_user_is() {
+    let dir = std::env::temp_dir().join(format!("niruwm-tray-here-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+
+    // A Qt tray popup and a main window, both closed on workspace 1.
+    let leader = qt_leader(&c, root);
+    let popup = qt_window(&c, root, leader, true, 4242, true);
+    let main = qt_window(&c, root, 0, false, 4242, true);
+    tray_click(&c, root, 0);
+    for w in [popup, main] {
+        c.map_window(w).unwrap();
+        c.flush().unwrap();
+        wait(|| viewable(&c, w));
+        withdraw(&c, root, w);
+        wait(|| !viewable(&c, w));
+    }
+
+    // The user goes to workspace 3 and clicks the tray icon at once (the
+    // popup is still recorded on workspace 1). Qt maps the same windows
+    // again and asks for the focus.
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [2, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![2]);
+    for w in [popup, main] {
+        tray_click(&c, root, 0);
+        c.map_window(w).unwrap();
+        c.flush().unwrap();
+        message(&c, root, w, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+        assert!(
+            wait_for(Duration::from_millis(1500), || viewable(&c, w)),
+            "a window shown again from the tray stayed on the workspace it was closed on"
+        );
+        wait(|| values(&c, w, "_NET_WM_DESKTOP") == vec![2]);
+        wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![w]);
+        assert_eq!(
+            values(&c, root, "_NET_CURRENT_DESKTOP"),
+            vec![2],
+            "showing a window from the tray switched the workspace"
+        );
+        withdraw(&c, root, w);
+        wait(|| !viewable(&c, w));
+    }
+
+    // Activating a window its client withdrew does nothing: it used to
+    // switch the screen to the workspace the window was closed on.
+    message(&c, root, root, "_NET_CURRENT_DESKTOP", [0, 0, 0, 0, 0]);
+    wait(|| values(&c, root, "_NET_CURRENT_DESKTOP") == vec![0]);
+    message(&c, root, main, "_NET_ACTIVE_WINDOW", [2, 0, 0, 0, 0]);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(values(&c, root, "_NET_CURRENT_DESKTOP"), vec![0]);
+    assert!(!viewable(&c, main));
+
+    for w in [main, popup, leader] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut wm);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[ignore = "requires isolated X server"]
+fn a_click_on_the_empty_desktop_closes_a_focused_tray_popup() {
+    let dir = std::env::temp_dir().join(format!("niruwm-tray-desktop-{}", std::process::id()));
+    let mut wm = plain_wm(&dir, &[], false);
+    let (c, s) = x11rb::connect(None).unwrap();
+    let root = c.setup().roots[s].root;
+    wait_ready(&c, root, &wm);
+    let leader = qt_leader(&c, root);
+    let popup = qt_window(&c, root, leader, true, 4242, true);
+    tray_click(&c, root, 0);
+    c.map_window(popup).unwrap();
+    c.flush().unwrap();
+    wait(|| viewable(&c, popup));
+    wait(|| values(&c, root, "_NET_ACTIVE_WINDOW") == vec![popup]);
+    asked_to_close(&c, popup);
+
+    // A click on the desktop, outside every window: no window takes the
+    // focus, so only the manager can tell the popup it was left.
+    let click = ButtonPressEvent {
+        response_type: BUTTON_PRESS_EVENT,
+        detail: 1,
+        sequence: 0,
+        time: x11rb::CURRENT_TIME,
+        root,
+        event: root,
+        child: x11rb::NONE,
+        root_x: 900,
+        root_y: 700,
+        event_x: 900,
+        event_y: 700,
+        state: KeyButMask::default(),
+        same_screen: true,
+    };
+    c.send_event(false, root, EventMask::BUTTON_PRESS, click)
+        .unwrap();
+    c.flush().unwrap();
+    assert!(
+        wait_for(Duration::from_secs(2), || asked_to_close(&c, popup)),
+        "a click on the desktop left the tray popup up"
+    );
+
+    for w in [popup, leader] {
+        c.destroy_window(w).unwrap();
+    }
+    c.flush().unwrap();
+    quit_wm(&c, root, &mut wm);
+    std::fs::remove_dir_all(dir).unwrap();
+}

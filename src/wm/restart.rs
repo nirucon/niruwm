@@ -307,7 +307,9 @@ impl Wm {
                     .is_some_and(|a| a.map_state == MapState::UNMAPPED)
             })
             .collect();
-        self.withdrawn.extend(unheard);
+        for w in unheard {
+            self.withdraw(w);
+        }
         let state = self.restart_state();
         if let Err(e) = write(&state) {
             eprintln!("niruwm: restart refused: cannot save the window state: {e}");

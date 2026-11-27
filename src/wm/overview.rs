@@ -476,6 +476,8 @@ impl Wm {
                     .iter()
                     .filter(|c| c.monitor == mi)
                     .filter(|c| self.scratch_owner(c.win).is_none() && c.swallowed_by.is_none())
+                    // Closed to a tray: on no workspace.
+                    .filter(|c| !self.withdrawn.contains(&c.win))
                     // Sticky windows are on every workspace; list them once,
                     // on the one shown.
                     .filter(|c| if c.sticky { t == current } else { c.tag == t })
@@ -600,6 +602,7 @@ impl Wm {
                         c.monitor == monitor
                             && c.tag == index as u32
                             && c.swallowed_by.is_none()
+                            && !wm.withdrawn.contains(&c.win)
                             && wm.scratch_owner(c.win).is_none()
                     })
                     .map(|c| c.win)

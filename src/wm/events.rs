@@ -172,7 +172,7 @@ impl Wm {
                             Some(true) => {
                                 self.kept.remove(&e.window);
                                 self.hidden.remove(&e.window);
-                                self.withdrawn.insert(e.window);
+                                self.withdraw(e.window);
                                 self.arrange()?;
                             }
                             Some(false) => {}
@@ -191,7 +191,7 @@ impl Wm {
                         if synthetic && self.clients.iter().any(|c| c.win == e.window) {
                             self.hidden.remove(&e.window);
                             self.kept.remove(&e.window);
-                            if self.withdrawn.insert(e.window) {
+                            if self.withdraw(e.window) {
                                 self.arrange()?;
                             }
                         }
@@ -211,7 +211,7 @@ impl Wm {
                                 // workspace take the space at once (a window
                                 // closed to a tray used to leave a hole until
                                 // the next workspace switch).
-                                if self.withdrawn.insert(e.window) {
+                                if self.withdraw(e.window) {
                                     self.arrange()?;
                                 }
                             }
@@ -326,6 +326,9 @@ impl Wm {
                     }
                 }
                 Event::ButtonPress(e) => {
+                    if e.event == self.root && e.child == x11rb::NONE {
+                        self.desktop_clicked()?;
+                    }
                     if !self.mouse_button(e)? {
                         return Ok(false);
                     }

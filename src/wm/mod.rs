@@ -1067,7 +1067,10 @@ impl Wm {
             .map(|m| m.active as u32)
             .unwrap_or(0);
         let target = self.clients.iter().find(|c| {
-            c.monitor == self.focused_monitor && c.tag == active && c.swallowed_by.is_none()
+            c.monitor == self.focused_monitor
+                && c.tag == active
+                && c.swallowed_by.is_none()
+                && !self.withdrawn.contains(&c.win)
         });
         if let Some(c) = target {
             let w = c.win;
